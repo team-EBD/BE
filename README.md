@@ -34,6 +34,20 @@ cp .env.example .env
 uvicorn app.main:app --reload
 ```
 
+## DB 마이그레이션 & 시드 (Phase 1)
+
+```bash
+# 1) 스키마 생성 (17개 테이블)
+alembic upgrade head
+
+# 2) 음식 영양 시드 40종 적재 (멱등 — 여러 번 실행해도 40행)
+python -m scripts.seed_nutrition_items
+```
+
+- 모델은 `app/models/`(ERD 1:1, 17개 테이블), 마이그레이션은 `alembic/versions/`.
+- 새 모델/컬럼 추가 후 마이그레이션 생성: `alembic revision --autogenerate -m "메시지"`
+- 시드 원본: `seed/nutrition_items_seed.json` (목업 40종, 정식 공공 영양DB로 교체 예정)
+
 ## 테스트
 
 ```bash
