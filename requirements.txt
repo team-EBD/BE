@@ -1,0 +1,19 @@
+# --- Web framework ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+
+# --- Settings / validation ---
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# --- DB ---
+sqlalchemy==2.0.36
+alembic==1.14.0
+psycopg[binary]==3.2.3
+
+# --- Auth (자체 JWT / 소셜 토큰 검증) ---
+python-jose[cryptography]==3.3.0
+httpx==0.28.1
+
+# --- Dev / test ---
+pytest==8.3.4
