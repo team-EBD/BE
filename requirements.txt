@@ -15,5 +15,8 @@ psycopg[binary]==3.2.3
 python-jose[cryptography]==3.3.0
 httpx==0.28.1
 
+# --- 이미지 업로드 (multipart) ---
+python-multipart==0.0.20
+
 # --- Dev / test ---
 pytest==8.3.4

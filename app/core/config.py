@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     # AI 서버가 기본 8000을 쓰므로 BE(8000)와 겹치지 않게 별도 포트로 띄운다.
     ai_server_base_url: str = "http://localhost:8001"
     ai_request_timeout_seconds: float = 20.0
+    # mock: AI 서버 없이 고정 응답(개발/테스트) / real: 실제 AI 서버 호출
+    ai_client_mode: str = "real"
+
+    # --- 이미지 스토리지 (Phase 4) ---
+    # dev 는 로컬 디스크(main.py 가 /static 으로 서빙). 운영은 S3 호환으로 교체.
+    storage_dir: str = "./uploads"
+    storage_base_url: str = "http://localhost:8000/static"
 
     @computed_field  # type: ignore[prop-decorator]
     @property
