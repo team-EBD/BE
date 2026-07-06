@@ -1,11 +1,25 @@
-"""API v1 라우터 집합.
-
-이후 Phase 에서 auth, users, meals, foods, nutrition, recommendations, consent
-라우터가 여기에 include 된다.
-"""
+"""API v1 라우터 집합 (명세서 2장 — 26개 엔드포인트)."""
 from fastapi import APIRouter
 
-from app.api.v1 import health
+from app.api.v1 import (
+    ai_call_logs,
+    auth,
+    foods,
+    health,
+    meals,
+    nutrition,
+    push_tokens,
+    recommendations,
+    users,
+)
 
 api_router = APIRouter()
 api_router.include_router(health.router)
+api_router.include_router(auth.router)
+api_router.include_router(users.router)
+api_router.include_router(push_tokens.router)
+api_router.include_router(meals.router)
+api_router.include_router(foods.router)
+api_router.include_router(nutrition.router)
+api_router.include_router(recommendations.router)
+api_router.include_router(ai_call_logs.router)

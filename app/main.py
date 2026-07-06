@@ -2,9 +2,12 @@
 
 - `/v1` 프리픽스 라우팅 (명세서 1.1)
 - 공통 예외 핸들러 등록 (명세서 1.4/1.5)
-이후 모든 도메인 라우터는 app.api.v1.api_router 에 붙는다.
+- /static: 로컬 스토리지 이미지 서빙 (dev 전용 — 운영은 Object Storage URL)
 """
+from pathlib import Path
+
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from app.api.v1 import api_router
 from app.core.config import settings
@@ -19,6 +22,9 @@ app = FastAPI(
 
 register_exception_handlers(app)
 app.include_router(api_router, prefix=settings.api_v1_prefix)
+
+Path(settings.storage_dir).mkdir(parents=True, exist_ok=True)
+app.mount("/static", StaticFiles(directory=settings.storage_dir), name="static")
 
 
 @app.get("/", tags=["health"])
