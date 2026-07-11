@@ -17,10 +17,24 @@ class AICallLogPayload(BaseModel):
     latency_ms: int = 0
 
 
+class AINutritionEstimate(BaseModel):
+    """AI 서버(LLM)가 추정한 1인분 기준 영양값.
+
+    영양 DB 매칭 실패 시 기록 초안의 fallback 으로 사용한다.
+    """
+
+    base_serving: str = "1인분"
+    calories: float
+    carbs: float
+    protein: float
+    fat: float
+
+
 class AICandidate(BaseModel):
     food_name: str
     confidence: float
     estimated_serving: float = 1.0
+    nutrition: AINutritionEstimate | None = None
 
 
 class AnalyzeResult(BaseModel):

@@ -90,6 +90,8 @@ def analyze_meal_image(
         db.add(row)
         db.flush()
 
+        # 영양값 우선순위: ① 영양 DB 매칭(정확) ② AI 추정치(초안 fallback).
+        # 시드 DB에 없는 음식도 사용자가 수정 가능한 초안으로 기록을 이어갈 수 있다.
         nutrition = None
         habit_adjusted = None
         if matched is not None:
@@ -100,12 +102,20 @@ def analyze_meal_image(
                 protein=float(matched.protein),
                 fat=float(matched.fat),
             )
-            if applied:  # 식습관 설정 없으면 생략 (명세서 6.1)
-                habit_adjusted = HabitAdjusted(
-                    applied_factor=factor,
-                    applied_corrections=applied,
-                    calories=round(float(matched.calories) * factor, 1),
-                )
+        elif cand.nutrition is not None:
+            nutrition = CandidateNutrition(
+                base_serving=cand.nutrition.base_serving,
+                calories=float(cand.nutrition.calories),
+                carbs=float(cand.nutrition.carbs),
+                protein=float(cand.nutrition.protein),
+                fat=float(cand.nutrition.fat),
+            )
+        if nutrition is not None and applied:  # 식습관 설정 없으면 생략 (명세서 6.1)
+            habit_adjusted = HabitAdjusted(
+                applied_factor=factor,
+                applied_corrections=applied,
+                calories=round(nutrition.calories * factor, 1),
+            )
         candidates.append(
             AnalyzeCandidate(
                 food_candidate_id=row.id,
