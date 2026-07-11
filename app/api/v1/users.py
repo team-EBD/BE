@@ -53,6 +53,9 @@ def _me_response(db: DB, user) -> MeDetailResponse:
         nickname=user.nickname,
         household_type=profile.household_type if profile else None,
         daily_goal_calories=profile.goal_calories if profile else None,
+        gender=profile.gender if profile else None,
+        height=float(profile.height) if profile and profile.height is not None else None,
+        weight=float(profile.weight) if profile and profile.weight is not None else None,
         created_at=user.created_at,
     )
 
@@ -67,7 +70,14 @@ def update_me(body: UpdateMeRequest, user: CurrentUser, db: DB) -> MeDetailRespo
     if body.nickname is not None:
         user.nickname = body.nickname
 
-    if body.household_type is not None or body.daily_goal_calories is not None:
+    profile_fields = (
+        body.household_type,
+        body.daily_goal_calories,
+        body.gender,
+        body.height,
+        body.weight,
+    )
+    if any(value is not None for value in profile_fields):
         profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user.id))
         if profile is None:
             goals = derive_macro_goals(body.daily_goal_calories or DEFAULT_GOALS["calories"])
@@ -87,6 +97,12 @@ def update_me(body: UpdateMeRequest, user: CurrentUser, db: DB) -> MeDetailRespo
             profile.goal_carbs = macros["carbs"]
             profile.goal_protein = macros["protein"]
             profile.goal_fat = macros["fat"]
+        if body.gender is not None:
+            profile.gender = body.gender
+        if body.height is not None:
+            profile.height = body.height
+        if body.weight is not None:
+            profile.weight = body.weight
 
     db.commit()
     return _me_response(db, user)
