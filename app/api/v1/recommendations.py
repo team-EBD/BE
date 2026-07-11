@@ -3,10 +3,13 @@
 - NFR-010: 사용자 명시 호출 시에만. 모든 응답에 caution_text (FR-REC-003).
 - BE 가 daily_summary 를 계산해 AI 서버에 전달한다(현행 internal 계약).
 - 실패 시 502 AI_PROVIDER_ERROR / 504 AI_TIMEOUT (명세서 10.1).
+  AI 서버는 실패도 200 + status=failed 로 주므로, reason 을 서버 로그와
+  error.details 에 남겨 5xx 의 원인(no_candidates/provider_error 등)을 추적 가능하게 한다.
 - 위치 기반(10.3)은 위치 동의 사용자만(403), 좌표는 Body 로만 받는다.
 """
 from __future__ import annotations
 
+import logging
 from datetime import date
 
 from fastapi import APIRouter, Depends
@@ -30,6 +33,8 @@ from app.schemas.recommendation import (
     RecommendationItem,
 )
 from app.services.summary import aggregate_day, get_goals
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/recommendations", tags=["recommendations"])
 
@@ -77,9 +82,18 @@ def _call_and_log(
 
     if result.status == "failed":
         db.commit()  # 실패도 로그는 남긴다 (횡단 관심사: AI 로깅)
-        if result.reason == "ai_timeout":
-            raise APIError(504, "AI_TIMEOUT", "AI 응답 시간이 초과되었습니다.")
-        raise APIError(502, "AI_PROVIDER_ERROR", "AI 추천 호출에 실패했습니다.")
+        reason = result.reason or "provider_error"
+        # AI 서버는 실패도 200 + status=failed 로 응답하므로, 여기서 reason 을
+        # 남기지 않으면 5xx 원인을 알 수 없다 (예: no_candidates=후보 DB 비어있음,
+        # provider_error=AI 서버 DB 접속/Gemini 오류, invalid_response=응답 계약 불일치).
+        logger.warning(
+            "AI recommend 실패: reason=%s latency_ms=%d user_id=%d ai_call_log_id=%d",
+            reason, result.ai_call_log.latency_ms, user.id, call_log.id,
+        )
+        details = [{"field": "ai", "reason": reason}]
+        if reason == "ai_timeout":
+            raise APIError(504, "AI_TIMEOUT", "AI 응답 시간이 초과되었습니다.", details=details)
+        raise APIError(502, "AI_PROVIDER_ERROR", "AI 추천 호출에 실패했습니다.", details=details)
 
     db.add(
         RecommendationLog(

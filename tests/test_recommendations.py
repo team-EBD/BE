@@ -40,7 +40,9 @@ def test_next_meal_timeout_504(client, auth_headers):
         "/v1/recommendations/next-meal", headers=auth_headers, json={"date": "2026-06-27"}
     )
     assert res.status_code == 504
-    assert res.json()["error"]["code"] == "AI_TIMEOUT"
+    error = res.json()["error"]
+    assert error["code"] == "AI_TIMEOUT"
+    assert error["details"] == [{"field": "ai", "reason": "ai_timeout"}]
 
 
 def test_next_meal_provider_error_502(client, auth_headers):
@@ -49,7 +51,38 @@ def test_next_meal_provider_error_502(client, auth_headers):
         "/v1/recommendations/next-meal", headers=auth_headers, json={"date": "2026-06-27"}
     )
     assert res.status_code == 502
-    assert res.json()["error"]["code"] == "AI_PROVIDER_ERROR"
+    error = res.json()["error"]
+    assert error["code"] == "AI_PROVIDER_ERROR"
+    assert error["details"] == [{"field": "ai", "reason": "provider_error"}]
+
+
+def test_menu_no_candidates_502_with_reason(client, auth_headers):
+    """AI 서버가 200 + status=failed(no_candidates) 를 줘도 502 에 사유가 남는다."""
+    app.dependency_overrides[get_ai_client] = lambda: FailingAIClient("no_candidates")
+    res = client.post(
+        "/v1/recommendations/menu",
+        headers=auth_headers,
+        json={"meal_type": "lunch"},
+    )
+    assert res.status_code == 502
+    error = res.json()["error"]
+    assert error["code"] == "AI_PROVIDER_ERROR"
+    assert error["details"] == [{"field": "ai", "reason": "no_candidates"}]
+
+
+def test_failed_reason_visible_in_ai_call_logs(client, auth_headers):
+    """실패 사유(error_message)가 운영 조회 API 에 노출된다 (명세서 6.2)."""
+    app.dependency_overrides[get_ai_client] = lambda: FailingAIClient("no_candidates")
+    client.post(
+        "/v1/recommendations/next-meal", headers=auth_headers, json={"date": "2026-06-27"}
+    )
+    res = client.get(
+        "/v1/ai-call-logs", headers=auth_headers, params={"status": "failed"}
+    )
+    items = res.json()["items"]
+    assert len(items) == 1
+    assert items[0]["status"] == "failed"
+    assert items[0]["error_message"] == "no_candidates"
 
 
 def test_menu_exceed_flag(client, auth_headers):
