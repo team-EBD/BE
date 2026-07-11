@@ -1,0 +1,71 @@
+"""Mock AI 클라이언트 (개발/테스트용 고정 응답).
+
+AI 서버 없이도 분석/추천 경로 전체(E2E)가 돌게 한다. 응답 형태는
+실제 AI 서버 계약과 동일하다.
+"""
+from __future__ import annotations
+
+from app.ai_client.base import (
+    AICallLogPayload,
+    AICandidate,
+    AIRecommendation,
+    AnalyzeResult,
+    RecommendResult,
+)
+
+MOCK_MODEL = "mock-model"
+
+
+class MockAIClient:
+    def analyze(self, image_url: str, eating_habits: dict | None = None) -> AnalyzeResult:
+        return AnalyzeResult(
+            status="success",
+            draft_notice="AI가 분석한 기록 초안입니다.",
+            candidates=[
+                AICandidate(food_name="김치찌개", confidence=0.87, estimated_serving=1.0),
+                AICandidate(food_name="된장찌개", confidence=0.08, estimated_serving=1.0),
+                AICandidate(food_name="순두부찌개", confidence=0.05, estimated_serving=1.0),
+            ],
+            ai_call_log=AICallLogPayload(
+                provider="google",
+                model_name=MOCK_MODEL,
+                task_type="analyze",
+                status="success",
+                latency_ms=42,
+            ),
+        )
+
+    def recommend(
+        self, daily_summary: dict, preferred_category: str, meal_timing: str
+    ) -> RecommendResult:
+        return RecommendResult(
+            status="success",
+            recommendations=[
+                AIRecommendation(
+                    name="닭가슴살 샐러드",
+                    category=preferred_category,
+                    estimated_calories=320,
+                    reason="오늘 부족한 단백질을 보충하기 좋아요.",
+                ),
+                AIRecommendation(
+                    name="연어 포케",
+                    category=preferred_category,
+                    estimated_calories=450,
+                    reason="가볍지만 포만감 있는 한 끼예요.",
+                ),
+                AIRecommendation(
+                    name="두부 유부초밥",
+                    category=preferred_category,
+                    estimated_calories=380,
+                    reason="남은 칼로리 안에서 즐길 수 있어요.",
+                ),
+            ],
+            caution_text="추천은 생활 식단 참고용이며 의학적 조언이 아닙니다.",
+            ai_call_log=AICallLogPayload(
+                provider="google",
+                model_name=MOCK_MODEL,
+                task_type="recommend",
+                status="success",
+                latency_ms=42,
+            ),
+        )
