@@ -109,6 +109,7 @@ def analyze_meal_image(
         candidates.append(
             AnalyzeCandidate(
                 food_candidate_id=row.id,
+                nutrition_item_id=row.nutrition_item_id,
                 normalized_name=row.normalized_name,
                 confidence_score=float(cand.confidence),
                 estimated_serving=float(cand.estimated_serving),

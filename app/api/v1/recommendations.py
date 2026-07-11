@@ -20,7 +20,7 @@ from app.ai_client import get_ai_client
 from app.ai_client.base import AIClient, RecommendResult
 from app.core.deps import DB, CurrentUser
 from app.core.errors import APIError
-from app.core.timeutil import KST, now_utc
+from app.core.timeutil import KST, now_utc, to_kst
 from app.models import AiCallLog, LocationConsent, RecommendationLog, User
 from app.schemas.recommendation import (
     LocationMenuRequest,
@@ -40,6 +40,11 @@ router = APIRouter(prefix="/recommendations", tags=["recommendations"])
 
 DEFAULT_CATEGORY = "convenience_store"
 DEFAULT_CAUTION = "추천은 생활 식단 참고용이며 의학적 조언이 아닙니다."
+
+
+def _default_meal_timing() -> str:
+    """요청에 meal_timing 이 없을 때의 기본값 — KST 현재 시각 기준 (15시 이전 lunch)."""
+    return "lunch" if to_kst(now_utc()).hour < 15 else "dinner"
 
 
 def _daily_summary_payload(db: Session, user_id: int, day: date) -> dict:
@@ -117,7 +122,7 @@ def next_meal(
     db: DB,
     ai: AIClient = Depends(get_ai_client),
 ) -> NextMealResponse:
-    meal_timing = body.meal_timing or ("lunch" if now_utc().astimezone(KST).hour < 15 else "dinner")
+    meal_timing = body.meal_timing or _default_meal_timing()
     result, call_log = _call_and_log(
         db, user, ai, body.date, body.preferred_category or DEFAULT_CATEGORY, meal_timing
     )
@@ -182,7 +187,7 @@ def location_based_menu(
         raise APIError(403, "FORBIDDEN", "위치 정보 동의가 필요합니다.")
 
     today = now_utc().astimezone(KST).date()
-    meal_timing = "lunch" if now_utc().astimezone(KST).hour < 15 else "dinner"
+    meal_timing = body.meal_timing or _default_meal_timing()
     result, call_log = _call_and_log(
         db, user, ai, today, body.category or DEFAULT_CATEGORY, meal_timing
     )

@@ -43,6 +43,7 @@ class HabitAdjusted(BaseModel):
 
 class AnalyzeCandidate(BaseModel):
     food_candidate_id: int
+    nutrition_item_id: int | None = None  # 매칭된 영양 DB 항목 (식단 저장 시 참조)
     normalized_name: str
     confidence_score: float
     estimated_serving: float

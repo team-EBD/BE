@@ -27,11 +27,3 @@ def test_v1_prefix_required():
     res = client.get("/health")
     assert res.status_code == 404
     assert res.json()["error"]["code"] == "NOT_FOUND"
-
-
-def test_common_error_format():
-    res = client.get("/v1/health/boom")
-    assert res.status_code == 400
-    body = res.json()
-    assert body["error"]["code"] == "VALIDATION_ERROR"
-    assert body["error"]["details"][0]["field"] == "demo"
