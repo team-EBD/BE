@@ -21,3 +21,4 @@ pgdata/
 
 # 임시 SQLite (autogenerate/테스트 검증용)
 *.db
+.pytest_tmp/

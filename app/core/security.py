@@ -1,12 +1,14 @@
-"""자체 JWT 발급/검증 (Phase 2).
+"""자체 JWT 발급/검증 (Phase 2) + 이메일 가입용 비밀번호 해싱.
 
 - Access(기본 30분) / Refresh(기본 14일). 페이로드 `type` 으로 구분한다.
 - Refresh 토큰은 원문을 저장하지 않고 SHA-256 해시만 refresh_tokens 에 남긴다.
-- 비밀번호 해싱은 없다(소셜 로그인 전용).
+- 비밀번호는 stdlib PBKDF2-SHA256 으로 해싱한다(외부 의존성 없음).
 """
 from __future__ import annotations
 
 import hashlib
+import hmac
+import secrets
 import uuid
 from datetime import timedelta
 from typing import Any
@@ -65,3 +67,35 @@ def decode_token(token: str, expected_type: str) -> dict[str, Any]:
 def hash_token(token: str) -> str:
     """refresh_tokens.token_hash 저장용 SHA-256 hex."""
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+# --- 비밀번호 해싱 (이메일 가입, stdlib PBKDF2) ---
+
+PBKDF2_ALGORITHM = "pbkdf2_sha256"
+PBKDF2_ITERATIONS = 240_000
+
+
+def hash_password(password: str) -> str:
+    """users.password_hash 저장용 문자열.
+
+    형식: "pbkdf2_sha256$<iterations>$<salt_hex>$<hash_hex>"
+    """
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", password.encode(), salt, PBKDF2_ITERATIONS
+    )
+    return f"{PBKDF2_ALGORITHM}${PBKDF2_ITERATIONS}${salt.hex()}${digest.hex()}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    """저장된 해시와 대조. 형식 오류는 False 로 처리한다(타이밍 안전 비교)."""
+    try:
+        algorithm, iterations, salt_hex, hash_hex = stored.split("$")
+        if algorithm != PBKDF2_ALGORITHM:
+            return False
+        digest = hashlib.pbkdf2_hmac(
+            "sha256", password.encode(), bytes.fromhex(salt_hex), int(iterations)
+        )
+    except (ValueError, TypeError):
+        return False
+    return hmac.compare_digest(digest.hex(), hash_hex)

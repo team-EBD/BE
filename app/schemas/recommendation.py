@@ -56,6 +56,7 @@ class LocationMenuRequest(BaseModel):
     longitude: float = Field(ge=-180, le=180)
     category: Category | None = None
     remaining_calories: int | None = Field(default=None, ge=0)
+    meal_timing: Literal["lunch", "dinner"] | None = None
 
 
 class LocationMenuResponse(BaseModel):
