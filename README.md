@@ -54,6 +54,20 @@ python -m scripts.seed_nutrition_items
 pytest
 ```
 
+## 이미지 스토리지 (Phase 4)
+
+- FE 가 `POST /v1/meals/images` 로 이미지를 전송하면 BE 가 스토리지에 저장하고
+  접근 URL 을 `meal_images.image_url` 로 DB 에 기록한 뒤 응답한다.
+- `.env` 의 `STORAGE_BACKEND` 로 전환한다: `local`(디스크, `main.py` 가 `/static` 서빙, dev) /
+  `firebase`(Firebase Storage, 운영/실연동).
+- `firebase` 사용 시 `.env` 에 아래를 채운다:
+  - `FIREBASE_STORAGE_BUCKET` — 버킷 이름(보통 `<project-id>.appspot.com`)
+  - 자격증명 — `FIREBASE_CREDENTIALS_JSON`(서비스 계정 JSON 문자열, 배포 환경변수용) 또는
+    `FIREBASE_CREDENTIALS_FILE`(파일 경로) 중 하나. 둘 다 비우면 ADC
+    (`GOOGLE_APPLICATION_CREDENTIALS`/GCP 메타데이터 서버)로 폴백.
+- 반환 URL 은 다운로드 토큰이 포함된 `https://firebasestorage.googleapis.com/v0/b/...`
+  형식이라 FE 가 별도 인증 없이 바로 로드할 수 있다.
+
 ## AI 서버 연동 (Phase 8)
 
 - `.env` 의 `AI_CLIENT_MODE` 로 전환한다: `mock`(AI 서버 없이 고정 응답) / `real`(AI 서버 호출).
