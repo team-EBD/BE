@@ -12,6 +12,10 @@ class UpdateMeRequest(BaseModel):
     nickname: str | None = Field(default=None, min_length=2, max_length=20)
     household_type: Literal["single", "multi", "none"] | None = None
     daily_goal_calories: int | None = Field(default=None, ge=500, le=10000)
+    # 신체 정보 — 소셜 가입 사용자는 가입 시 입력하지 않으므로 온보딩에서 보완한다.
+    gender: Literal["male", "female"] | None = None
+    height: float | None = Field(default=None, ge=100, le=250)
+    weight: float | None = Field(default=None, ge=20, le=300)
 
 
 class MeDetailResponse(BaseModel):
@@ -20,6 +24,10 @@ class MeDetailResponse(BaseModel):
     nickname: str
     household_type: str | None
     daily_goal_calories: int | None
+    # 신체 정보 (미입력 시 null — FE가 프로필 보완 화면 노출 판단에 사용)
+    gender: str | None
+    height: float | None
+    weight: float | None
     created_at: KSTDateTime
 
 

@@ -23,6 +23,40 @@ def test_patch_me_updates_profile(client, auth_headers):
     assert body["daily_goal_calories"] == 1800
 
 
+def test_me_body_fields_default_null(client, auth_headers):
+    """소셜 가입 직후처럼 프로필이 없으면 신체 정보는 null 이어야 한다."""
+    res = client.get("/v1/users/me", headers=auth_headers)
+    assert res.status_code == 200
+    body = res.json()
+    assert body["gender"] is None
+    assert body["height"] is None
+    assert body["weight"] is None
+
+
+def test_patch_me_body_fields(client, auth_headers):
+    """FE 프로필 보완 화면이 보내는 신체 정보 저장 → 조회 시 반영."""
+    res = client.patch(
+        "/v1/users/me",
+        headers=auth_headers,
+        json={"gender": "female", "height": 165.5, "weight": 55.2},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["gender"] == "female"
+    assert body["height"] == 165.5
+    assert body["weight"] == 55.2
+
+    res2 = client.get("/v1/users/me", headers=auth_headers)
+    assert res2.json()["gender"] == "female"
+    assert res2.json()["height"] == 165.5
+
+
+def test_patch_me_body_fields_validation_400(client, auth_headers):
+    res = client.patch("/v1/users/me", headers=auth_headers, json={"height": 20})
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
 def test_patch_me_invalid_nickname_400(client, auth_headers):
     res = client.patch("/v1/users/me", headers=auth_headers, json={"nickname": "a"})
     assert res.status_code == 400
