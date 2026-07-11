@@ -14,6 +14,7 @@ class AiCallLogItem(BaseModel):
     task_type: str
     status: str
     latency_ms: int
+    error_message: str | None  # 실패 사유 (no_candidates/provider_error/ai_timeout 등)
     token: int | None
     cost: float | None
     created_at: KSTDateTime

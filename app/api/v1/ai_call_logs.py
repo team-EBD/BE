@@ -61,6 +61,7 @@ def list_ai_call_logs(
                 task_type=log.task_type,
                 status=log.status,
                 latency_ms=log.latency_ms,
+                error_message=log.error_message,
                 token=token_total,
                 cost=float(log.cost_estimate) if log.cost_estimate is not None else None,
                 created_at=log.created_at,
