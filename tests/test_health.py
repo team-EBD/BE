@@ -11,7 +11,7 @@ client = TestClient(app, raise_server_exceptions=False)
 
 
 def test_root_ok():
-    res = client.get("/")
+    res = client.get("/healthz")
     assert res.status_code == 200
     assert res.json()["status"] == "ok"
 

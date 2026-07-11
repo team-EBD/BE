@@ -27,6 +27,6 @@ Path(settings.storage_dir).mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=settings.storage_dir), name="static")
 
 
-@app.get("/", tags=["health"])
+@app.get("/healthz", tags=["health"])
 def root() -> dict[str, str]:
     return {"service": "eatlog-api", "status": "ok", "docs": "/docs"}
