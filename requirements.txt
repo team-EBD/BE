@@ -18,5 +18,8 @@ httpx==0.28.1
 # --- 이미지 업로드 (multipart) ---
 python-multipart==0.0.20
 
+# --- 이미지 스토리지 (Firebase Storage) ---
+firebase-admin==6.5.0
+
 # --- Dev / test ---
 pytest==8.3.4

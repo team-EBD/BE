@@ -47,9 +47,18 @@ class Settings(BaseSettings):
     ai_client_mode: str = "real"
 
     # --- 이미지 스토리지 (Phase 4) ---
-    # dev 는 로컬 디스크(main.py 가 /static 으로 서빙). 운영은 S3 호환으로 교체.
+    # storage_backend: local(디스크, main.py 가 /static 서빙) | firebase(Firebase Storage)
+    storage_backend: str = "local"
     storage_dir: str = "./uploads"
     storage_base_url: str = "http://localhost:8000/static"
+
+    # --- Firebase Storage (storage_backend=firebase 일 때 사용) ---
+    # 버킷 이름은 보통 `<project-id>.appspot.com`.
+    firebase_storage_bucket: str = ""
+    # 자격증명: JSON 문자열(배포 환경변수) 또는 서비스 계정 파일 경로 중 하나.
+    # 둘 다 비면 ADC(GOOGLE_APPLICATION_CREDENTIALS/메타데이터 서버)로 폴백.
+    firebase_credentials_json: str = ""
+    firebase_credentials_file: str = ""
 
     @computed_field  # type: ignore[prop-decorator]
     @property
