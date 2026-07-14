@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from app.ai_client import get_ai_client
 from app.ai_client.base import failed_recommend
+from app.ai_client.mock import MockAIClient
 from app.main import app
 from tests.test_meals import create_meal
 
@@ -14,8 +15,21 @@ class FailingAIClient:
     def analyze(self, image_url, eating_habits=None):
         raise AssertionError("not used")
 
-    def recommend(self, daily_summary, preferred_category, meal_timing):
+    def recommend(self, daily_summary, preferred_category, meal_timing, user_history_context=None):
         return failed_recommend(self.reason)
+
+
+class RecordingAIClient(MockAIClient):
+    """recommend 로 전달된 user_history_context 를 기록하는 성공 클라이언트."""
+
+    def __init__(self) -> None:
+        self.history_calls: list = []
+
+    def recommend(self, daily_summary, preferred_category, meal_timing, user_history_context=None):
+        self.history_calls.append(user_history_context)
+        return super().recommend(
+            daily_summary, preferred_category, meal_timing, user_history_context
+        )
 
 
 def test_next_meal_success(client, auth_headers):
@@ -151,3 +165,33 @@ def test_recommendation_logged(client, auth_headers):
         "/v1/ai-call-logs", headers=auth_headers, params={"task_type": "recommend"}
     )
     assert res.json()["pagination"]["total"] == 1
+
+
+def test_next_meal_passes_today_food_history_to_ai(client, auth_headers):
+    """오늘 먹은 음식 이름·직전 식사가 user_history_context 로 AI에 전달된다."""
+    create_meal(client, auth_headers)  # lunch: 김치찌개, 공기밥 (2026-06-27)
+    recording = RecordingAIClient()
+    app.dependency_overrides[get_ai_client] = lambda: recording
+    res = client.post(
+        "/v1/recommendations/next-meal",
+        headers=auth_headers,
+        json={"date": "2026-06-27", "preferred_category": "convenience_store"},
+    )
+    assert res.status_code == 200
+    history = recording.history_calls[-1]
+    assert history["today_foods"] == ["김치찌개", "공기밥"]
+    assert history["last_meal_type"] == "lunch"
+    assert history["last_meal_foods"] == ["김치찌개", "공기밥"]
+
+
+def test_next_meal_without_meals_sends_no_history(client, auth_headers):
+    """기록이 없는 날은 user_history_context 를 보내지 않는다(None)."""
+    recording = RecordingAIClient()
+    app.dependency_overrides[get_ai_client] = lambda: recording
+    res = client.post(
+        "/v1/recommendations/next-meal",
+        headers=auth_headers,
+        json={"date": "2026-06-27"},
+    )
+    assert res.status_code == 200
+    assert recording.history_calls[-1] is None

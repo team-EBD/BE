@@ -36,7 +36,11 @@ class MockAIClient:
         )
 
     def recommend(
-        self, daily_summary: dict, preferred_category: str, meal_timing: str
+        self,
+        daily_summary: dict,
+        preferred_category: str,
+        meal_timing: str,
+        user_history_context: dict | None = None,
     ) -> RecommendResult:
         return RecommendResult(
             status="success",
