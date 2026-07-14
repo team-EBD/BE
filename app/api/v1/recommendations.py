@@ -20,8 +20,15 @@ from app.ai_client import get_ai_client
 from app.ai_client.base import AIClient, RecommendResult
 from app.core.deps import DB, CurrentUser
 from app.core.errors import APIError
-from app.core.timeutil import KST, now_utc, to_kst
-from app.models import AiCallLog, LocationConsent, RecommendationLog, User
+from app.core.timeutil import KST, kst_day_bounds, now_utc, to_kst
+from app.models import (
+    AiCallLog,
+    LocationConsent,
+    MealItem,
+    MealRecord,
+    RecommendationLog,
+    User,
+)
 from app.schemas.recommendation import (
     LocationMenuRequest,
     LocationMenuResponse,
@@ -61,6 +68,44 @@ def _daily_summary_payload(db: Session, user_id: int, day: date) -> dict:
     }
 
 
+def _history_context_payload(db: Session, user_id: int, day: date) -> dict | None:
+    """오늘 먹은 음식 이력 → AI RecommendRequest.user_history_context 계약.
+
+    reason 이 실제 먹은 음식(특히 직전 식사)을 근거로 작성되도록 음식 이름을
+    eaten_at 순으로 전달한다. 기록이 없으면 None(필드 생략).
+    """
+    start, end = kst_day_bounds(day)
+    records = db.scalars(
+        select(MealRecord)
+        .where(
+            MealRecord.user_id == user_id,
+            MealRecord.deleted_at.is_(None),
+            MealRecord.eaten_at >= start,
+            MealRecord.eaten_at < end,
+        )
+        .order_by(MealRecord.eaten_at)
+    ).all()
+    if not records:
+        return None
+
+    items_by_record: dict[int, list[str]] = {r.id: [] for r in records}
+    items = db.scalars(
+        select(MealItem)
+        .where(MealItem.meal_record_id.in_(items_by_record))
+        .order_by(MealItem.id)
+    ).all()
+    for item in items:
+        items_by_record[item.meal_record_id].append(item.food_name)
+
+    today_foods = [name for r in records for name in items_by_record[r.id]]
+    last = records[-1]
+    return {
+        "today_foods": today_foods,
+        "last_meal_type": last.meal_type,
+        "last_meal_foods": items_by_record[last.id],
+    }
+
+
 def _call_and_log(
     db: Session,
     user: User,
@@ -71,7 +116,10 @@ def _call_and_log(
 ) -> tuple[RecommendResult, AiCallLog]:
     """AI 추천 호출 + ai_call_logs 기록(성공/실패 예외 없이). 실패 시 5xx 변환."""
     summary_payload = _daily_summary_payload(db, user.id, day)
-    result = ai.recommend(summary_payload, preferred_category, meal_timing)
+    history_payload = _history_context_payload(db, user.id, day)
+    result = ai.recommend(
+        summary_payload, preferred_category, meal_timing, history_payload
+    )
 
     call_log = AiCallLog(
         user_id=user.id,

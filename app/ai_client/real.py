@@ -49,13 +49,19 @@ class RealAIClient:
         return parse_analyze(data or {})
 
     def recommend(
-        self, daily_summary: dict, preferred_category: str, meal_timing: str
+        self,
+        daily_summary: dict,
+        preferred_category: str,
+        meal_timing: str,
+        user_history_context: dict | None = None,
     ) -> RecommendResult:
         payload = {
             "daily_summary": daily_summary,
             "preferred_category": preferred_category,
             "meal_timing": meal_timing,
         }
+        if user_history_context:
+            payload["user_history_context"] = user_history_context
         data, error, latency = self._post("/internal/recommend", payload)
         if error:
             return failed_recommend(error, latency)
