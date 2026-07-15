@@ -1,7 +1,16 @@
-"""Phase 7 DoD — 일간/주간 요약 (LLM 미사용, 규칙 기반)."""
+"""Phase 7 DoD — 일간/주간/월간 요약 (LLM 미사용, 규칙 기반)."""
 from __future__ import annotations
 
 from tests.test_meals import MEAL_PAYLOAD, create_meal
+
+
+def meal_on(day: str) -> dict:
+    """해당 KST 날짜 정오에 먹은 MEAL_PAYLOAD (524 kcal, 탄81/단20.9/지11.8)."""
+    return {**MEAL_PAYLOAD, "eaten_at": f"{day}T12:00:00+09:00"}
+
+
+# MEAL_PAYLOAD 의 칼로리 기여 비율: 탄 324 / 단 83.6 / 지 106.2 (총 513.8 kcal)
+MEAL_MACRO_RATIO = {"carbs": 63, "protein": 16, "fat": 21}
 
 
 def test_daily_summary_empty_day(client, auth_headers):
@@ -65,3 +74,174 @@ def test_weekly_summary(client, auth_headers):
     assert body["week_end"] == "2026-06-28"
     assert body["recorded_days"] == 2
     assert body["average"]["calories"] == 524
+
+
+# ---------------------------------------------------------------- daily 확장
+
+
+def test_daily_summary_streak_and_macro_ratio(client, auth_headers):
+    for day in ("2026-06-25", "2026-06-26", "2026-06-27"):
+        create_meal(client, auth_headers, meal_on(day))
+    res = client.get(
+        "/v1/nutrition/daily-summary", headers=auth_headers, params={"date": "2026-06-27"}
+    )
+    body = res.json()
+    assert body["streak_days"] == 3
+    assert body["macro_ratio"] == MEAL_MACRO_RATIO
+    # 해당 date 에 기록이 없으면 date-1 부터 거꾸로 센다
+    res = client.get(
+        "/v1/nutrition/daily-summary", headers=auth_headers, params={"date": "2026-06-28"}
+    )
+    assert res.json()["streak_days"] == 3
+
+
+def test_daily_summary_streak_broken_by_gap(client, auth_headers):
+    create_meal(client, auth_headers, meal_on("2026-06-25"))
+    create_meal(client, auth_headers, meal_on("2026-06-27"))
+    res = client.get(
+        "/v1/nutrition/daily-summary", headers=auth_headers, params={"date": "2026-06-27"}
+    )
+    assert res.json()["streak_days"] == 1
+
+
+def test_daily_summary_empty_streak_and_macro(client, auth_headers):
+    res = client.get(
+        "/v1/nutrition/daily-summary", headers=auth_headers, params={"date": "2026-06-01"}
+    )
+    body = res.json()
+    assert body["streak_days"] == 0
+    assert body["macro_ratio"] == {"carbs": 0, "protein": 0, "fat": 0}
+
+
+# --------------------------------------------------------------- weekly 확장
+
+
+def test_weekly_summary_extended_fields(client, auth_headers):
+    create_meal(client, auth_headers, meal_on("2026-06-27"))
+    create_meal(client, auth_headers, meal_on("2026-06-25"))
+    res = client.get(
+        "/v1/nutrition/weekly-summary",
+        headers=auth_headers,
+        params={"week_start": "2026-06-22"},
+    )
+    body = res.json()
+    assert body["goal_calories"] == 2000
+    assert body["achieved_days"] == 2  # 두 날 모두 기록 있고 524 <= 2000
+    assert len(body["days"]) == 7
+    by_date = {d["date"]: d for d in body["days"]}
+    assert by_date["2026-06-27"] == {
+        "date": "2026-06-27", "calories": 524, "meal_count": 1, "achieved": True
+    }
+    assert by_date["2026-06-23"]["meal_count"] == 0
+    assert by_date["2026-06-23"]["achieved"] is False
+    assert body["macro_ratio"] == MEAL_MACRO_RATIO
+    assert body["top_food"]["count"] == 2  # 김치찌개/공기밥 각 2회 (동률)
+    assert body["prev_week"] == {"achieved_days": 0, "average_calories": 0}
+    assert "달성일" in body["summary_text"]  # 지난주(0일) 대비 증가 → 칭찬
+
+
+def test_weekly_summary_empty_week(client, auth_headers):
+    res = client.get(
+        "/v1/nutrition/weekly-summary",
+        headers=auth_headers,
+        params={"week_start": "2026-06-01"},
+    )
+    body = res.json()
+    assert body["recorded_days"] == 0
+    assert body["achieved_days"] == 0
+    assert body["top_food"] is None
+    assert body["macro_ratio"] == {"carbs": 0, "protein": 0, "fat": 0}
+    assert all(d["meal_count"] == 0 and d["achieved"] is False for d in body["days"])
+    assert "기록이 없어요" in body["summary_text"]
+
+
+def test_weekly_summary_prev_week_comparison(client, auth_headers):
+    create_meal(client, auth_headers, meal_on("2026-06-17"))  # 직전 주 (6/15~6/21)
+    create_meal(client, auth_headers, meal_on("2026-06-25"))
+    res = client.get(
+        "/v1/nutrition/weekly-summary",
+        headers=auth_headers,
+        params={"week_start": "2026-06-22"},
+    )
+    body = res.json()
+    assert body["prev_week"] == {"achieved_days": 1, "average_calories": 524}
+
+
+# --------------------------------------------------------------- monthly
+
+
+def test_monthly_summary_with_meals(client, auth_headers):
+    for day in ("2026-06-25", "2026-06-26", "2026-06-27"):
+        create_meal(client, auth_headers, meal_on(day))
+    res = client.get(
+        "/v1/nutrition/monthly-summary", headers=auth_headers, params={"month": "2026-06"}
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["month"] == "2026-06"
+    assert body["goal_calories"] == 2000
+    assert body["days_counted"] == 30
+    assert body["recorded_days"] == 3
+    assert body["achieved_days"] == 3
+    assert body["achievement_rate"] == 0.1  # 3/30
+    assert body["average_calories"] == 524
+    assert body["longest_streak"] == 3
+    # weeks: 6/1~7, 8~14, 15~21, 22~28, 29~30 (마지막은 잔여 2일)
+    assert len(body["weeks"]) == 5
+    assert body["weeks"][0]["start"] == "2026-06-01"
+    assert body["weeks"][0]["end"] == "2026-06-07"
+    assert body["weeks"][4]["start"] == "2026-06-29"
+    assert body["weeks"][4]["end"] == "2026-06-30"
+    week4 = body["weeks"][3]
+    assert week4["recorded_days"] == 3
+    assert week4["achieved_days"] == 3
+    assert week4["average_calories"] == 524
+    assert week4["macro_ratio"] == MEAL_MACRO_RATIO
+    assert body["weeks"][0]["recorded_days"] == 0
+    # top_foods: 김치찌개/공기밥 각 3회
+    assert {f["name"] for f in body["top_foods"]} == {"김치찌개", "공기밥"}
+    assert all(f["count"] == 3 for f in body["top_foods"])
+    assert body["insights"] == []  # 기록 있는 주가 1개 → 인사이트 없음
+    assert isinstance(body["summary_text"], str) and body["summary_text"]
+
+
+def test_monthly_summary_prev_month(client, auth_headers):
+    for day in ("2026-06-25", "2026-06-26", "2026-06-27"):
+        create_meal(client, auth_headers, meal_on(day))
+    res = client.get(
+        "/v1/nutrition/monthly-summary", headers=auth_headers, params={"month": "2026-07"}
+    )
+    body = res.json()
+    assert body["recorded_days"] == 0
+    assert body["prev_month"] == {
+        "longest_streak": 3,
+        "average_calories": 524,
+        "achievement_rate": 0.1,
+    }
+    assert "기록이 없어요" in body["summary_text"]
+
+
+def test_monthly_summary_empty_month(client, auth_headers):
+    res = client.get(
+        "/v1/nutrition/monthly-summary", headers=auth_headers, params={"month": "2026-05"}
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["days_counted"] == 31
+    assert body["recorded_days"] == 0
+    assert body["achieved_days"] == 0
+    assert body["achievement_rate"] == 0.0
+    assert body["average_calories"] == 0
+    assert body["longest_streak"] == 0
+    assert body["top_foods"] == []
+    assert body["insights"] == []
+    assert len(body["weeks"]) == 5
+    assert all(w["recorded_days"] == 0 for w in body["weeks"])
+
+
+def test_monthly_summary_invalid_month_422(client, auth_headers):
+    for bad in ("2026-13", "2026/06", "202606", "2026-6", "abcd-ef"):
+        res = client.get(
+            "/v1/nutrition/monthly-summary", headers=auth_headers, params={"month": bad}
+        )
+        assert res.status_code == 422, bad
