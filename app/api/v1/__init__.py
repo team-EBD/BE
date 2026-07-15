@@ -10,6 +10,7 @@ from app.api.v1 import (
     nutrition,
     push_tokens,
     recommendations,
+    usage,
     users,
 )
 
@@ -23,3 +24,4 @@ api_router.include_router(foods.router)
 api_router.include_router(nutrition.router)
 api_router.include_router(recommendations.router)
 api_router.include_router(ai_call_logs.router)
+api_router.include_router(usage.router)
