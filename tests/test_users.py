@@ -92,6 +92,31 @@ def test_notification_settings(client, auth_headers):
     assert res.json()["weekly_report_enabled"] is False
 
 
+def test_get_notification_settings_defaults(client, auth_headers):
+    """미설정 사용자도 GET 시 기본값을 받는다 (알림 on, 시간 미지정)."""
+    res = client.get("/v1/users/notification-settings", headers=auth_headers)
+    assert res.status_code == 200
+    body = res.json()
+    assert body["is_enabled"] is True
+    assert body["lunch_time"] is None
+    assert body["dinner_time"] is None
+    assert body["weekly_report_enabled"] is True
+
+
+def test_get_notification_settings_after_update(client, auth_headers):
+    client.patch(
+        "/v1/users/notification-settings",
+        headers=auth_headers,
+        json={"lunch_time": "11:30", "dinner_time": "18:30", "is_enabled": False},
+    )
+    res = client.get("/v1/users/notification-settings", headers=auth_headers)
+    assert res.status_code == 200
+    body = res.json()
+    assert body["is_enabled"] is False
+    assert body["lunch_time"] == "11:30"
+    assert body["dinner_time"] == "18:30"
+
+
 def test_notification_settings_bad_time_400(client, auth_headers):
     res = client.patch(
         "/v1/users/notification-settings", headers=auth_headers, json={"lunch_time": "25:99"}
