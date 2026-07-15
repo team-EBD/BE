@@ -144,6 +144,28 @@ def update_eating_habits(
 
 # --- 알림 설정 (명세서 12.1) ---
 
+def _notification_response(setting: NotificationSetting | None) -> NotificationSettingsResponse:
+    """미설정 사용자는 모델 기본값(알림 on, 시간 미지정)을 반환한다."""
+    if setting is None:
+        return NotificationSettingsResponse(
+            is_enabled=True, lunch_time=None, dinner_time=None, weekly_report_enabled=True
+        )
+    return NotificationSettingsResponse(
+        is_enabled=setting.is_enabled,
+        lunch_time=setting.lunch_time,
+        dinner_time=setting.dinner_time,
+        weekly_report_enabled=setting.weekly_report_enabled,
+    )
+
+
+@router.get("/notification-settings", response_model=NotificationSettingsResponse)
+def get_notification_settings(user: CurrentUser, db: DB) -> NotificationSettingsResponse:
+    setting = db.scalar(
+        select(NotificationSetting).where(NotificationSetting.user_id == user.id)
+    )
+    return _notification_response(setting)
+
+
 @router.patch("/notification-settings", response_model=NotificationSettingsResponse)
 def update_notification_settings(
     body: NotificationSettingsUpdateRequest, user: CurrentUser, db: DB
@@ -157,12 +179,7 @@ def update_notification_settings(
     for field, value in body.model_dump(exclude_none=True).items():
         setattr(setting, field, value)
     db.commit()
-    return NotificationSettingsResponse(
-        is_enabled=setting.is_enabled,
-        lunch_time=setting.lunch_time,
-        dinner_time=setting.dinner_time,
-        weekly_report_enabled=setting.weekly_report_enabled,
-    )
+    return _notification_response(setting)
 
 
 # --- 위치 동의 (명세서 13.1~13.2) ---
