@@ -40,6 +40,7 @@ from app.schemas.recommendation import (
     RecommendationItem,
 )
 from app.services.summary import aggregate_day, get_goals
+from app.services.usage_limit import enforce_daily_limit
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +117,7 @@ def _call_and_log(
     meal_timing: str,
 ) -> tuple[RecommendResult, AiCallLog]:
     """AI 추천 호출 + ai_call_logs 기록(성공/실패 예외 없이). 실패 시 5xx 변환."""
+    enforce_daily_limit(db, user.id, "recommend")  # 일일 한도 초과 시 429
     summary_payload = _daily_summary_payload(db, user.id, day)
     history_payload = _history_context_payload(db, user.id, day)
     result = ai.recommend(
