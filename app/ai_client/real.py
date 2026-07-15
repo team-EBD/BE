@@ -54,6 +54,7 @@ class RealAIClient:
         preferred_category: str,
         meal_timing: str,
         user_history_context: dict | None = None,
+        current_time: str | None = None,
     ) -> RecommendResult:
         payload = {
             "daily_summary": daily_summary,
@@ -62,6 +63,8 @@ class RealAIClient:
         }
         if user_history_context:
             payload["user_history_context"] = user_history_context
+        if current_time:
+            payload["current_time"] = current_time  # reason 이 시간대를 고려하게 한다
         data, error, latency = self._post("/internal/recommend", payload)
         if error:
             return failed_recommend(error, latency)
