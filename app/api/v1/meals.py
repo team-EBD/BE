@@ -35,6 +35,7 @@ from app.schemas.meal import (
     MealUpdateRequest,
 )
 from app.services.analyze import analyze_meal_image
+from app.services.usage_limit import enforce_daily_limit
 from app.services.meals import (
     create_meal,
     delete_meal,
@@ -115,6 +116,7 @@ def analyze(
     db: DB,
     ai: AIClient = Depends(get_ai_client),
 ) -> AnalyzeSuccessResponse | AnalyzeFailedResponse:
+    enforce_daily_limit(db, user.id, "analyze")  # 일일 한도 초과 시 429
     return analyze_meal_image(db, user, body.meal_image_id, ai)
 
 
