@@ -80,6 +80,7 @@ def _history_context_payload(db: Session, user_id: int, day: date) -> dict | Non
         .where(
             MealRecord.user_id == user_id,
             MealRecord.deleted_at.is_(None),
+            MealRecord.is_skipped.is_(False),  # 생략 기록은 먹은 이력이 아니다
             MealRecord.eaten_at >= start,
             MealRecord.eaten_at < end,
         )

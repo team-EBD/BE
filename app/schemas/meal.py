@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.schemas.common import KSTDateTime
 
@@ -90,14 +90,31 @@ class MealCreateRequest(BaseModel):
     eaten_at: datetime
     meal_image_id: int | None = None
     memo: str | None = Field(default=None, max_length=500)
-    items: list[MealItemInput] = Field(min_length=1)
+    # 식사 생략(안 먹음) 기록 — true 면 items 없이 저장한다 (합계 0)
+    is_skipped: bool = False
+    items: list[MealItemInput] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_items_by_skip(self) -> "MealCreateRequest":
+        if self.is_skipped and self.items:
+            raise ValueError("생략한 식사에는 items 를 포함할 수 없습니다.")
+        if not self.is_skipped and not self.items:
+            raise ValueError("items 는 최소 1개 이상이어야 합니다.")
+        return self
 
 
 class MealUpdateRequest(BaseModel):
     meal_type: MealType | None = None
     eaten_at: datetime | None = None
     memo: str | None = Field(default=None, max_length=500)
+    is_skipped: bool | None = None
     items: list[MealItemInput] | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_items_by_skip(self) -> "MealUpdateRequest":
+        if self.is_skipped is True and self.items:
+            raise ValueError("생략한 식사에는 items 를 포함할 수 없습니다.")
+        return self
 
 
 # --- 식단 응답 (8.1~8.6) ---
@@ -112,6 +129,7 @@ class MealCreateResponse(BaseModel):
     meal_id: int
     meal_type: str
     eaten_at: KSTDateTime
+    is_skipped: bool
     total_calories: float
     total_carbs: float
     total_protein: float
@@ -134,6 +152,7 @@ class MealDetailResponse(BaseModel):
     meal_id: int
     meal_type: str
     eaten_at: KSTDateTime
+    is_skipped: bool
     memo: str | None
     image_url: str | None
     total_calories: float
@@ -152,6 +171,7 @@ class MealListEntry(BaseModel):
     meal_id: int
     meal_type: str
     eaten_at: KSTDateTime
+    is_skipped: bool
     image_url: str | None
     total_calories: float
 

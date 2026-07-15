@@ -183,6 +183,7 @@ def list_meals(
                 meal_id=m.id,
                 meal_type=m.meal_type,
                 eaten_at=m.eaten_at,
+                is_skipped=m.is_skipped,
                 image_url=_image_url(db, m),
                 total_calories=float(m.total_calories),
             )
@@ -208,6 +209,7 @@ def create(body: MealCreateRequest, user: CurrentUser, db: DB) -> MealCreateResp
         meal_id=meal.id,
         meal_type=meal.meal_type,
         eaten_at=meal.eaten_at,
+        is_skipped=meal.is_skipped,
         total_calories=float(meal.total_calories),
         total_carbs=float(meal.total_carbs),
         total_protein=float(meal.total_protein),
@@ -225,6 +227,7 @@ def _detail_response(db, meal: MealRecord) -> MealDetailResponse:
         meal_id=meal.id,
         meal_type=meal.meal_type,
         eaten_at=meal.eaten_at,
+        is_skipped=meal.is_skipped,
         memo=meal.memo,
         image_url=_image_url(db, meal),
         total_calories=float(meal.total_calories),
