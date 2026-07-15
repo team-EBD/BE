@@ -51,8 +51,14 @@ DEFAULT_CAUTION = "추천은 생활 식단 참고용이며 의학적 조언이 �
 
 
 def _default_meal_timing() -> str:
-    """요청에 meal_timing 이 없을 때의 기본값 — KST 현재 시각 기준 (15시 이전 lunch)."""
-    return "lunch" if to_kst(now_utc()).hour < 15 else "dinner"
+    """요청에 meal_timing 이 없을 때의 기본값 — KST 현재 시각 기준.
+
+    10시 이전 breakfast / 15시 이전 lunch / 그 외 dinner.
+    """
+    hour = to_kst(now_utc()).hour
+    if hour < 10:
+        return "breakfast"
+    return "lunch" if hour < 15 else "dinner"
 
 
 def _daily_summary_payload(db: Session, user_id: int, day: date) -> dict:
@@ -120,8 +126,11 @@ def _call_and_log(
     enforce_daily_limit(db, user.id, "recommend")  # 일일 한도 초과 시 429
     summary_payload = _daily_summary_payload(db, user.id, day)
     history_payload = _history_context_payload(db, user.id, day)
+    # 현재 KST 시각을 함께 전달 — AI reason 이 시간대(늦은 밤 등)를 고려한다
+    current_time = to_kst(now_utc()).strftime("%H:%M")
     result = ai.recommend(
-        summary_payload, preferred_category, meal_timing, history_payload
+        summary_payload, preferred_category, meal_timing, history_payload,
+        current_time=current_time,
     )
 
     call_log = AiCallLog(

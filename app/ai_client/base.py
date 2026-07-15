@@ -71,6 +71,7 @@ class AIClient(Protocol):
         preferred_category: str,
         meal_timing: str,
         user_history_context: dict | None = None,
+        current_time: str | None = None,
     ) -> RecommendResult:
         ...
 
