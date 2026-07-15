@@ -15,20 +15,29 @@ class FailingAIClient:
     def analyze(self, image_url, eating_habits=None):
         raise AssertionError("not used")
 
-    def recommend(self, daily_summary, preferred_category, meal_timing, user_history_context=None):
+    def recommend(
+        self, daily_summary, preferred_category, meal_timing,
+        user_history_context=None, current_time=None,
+    ):
         return failed_recommend(self.reason)
 
 
 class RecordingAIClient(MockAIClient):
-    """recommend 로 전달된 user_history_context 를 기록하는 성공 클라이언트."""
+    """recommend 로 전달된 user_history_context/current_time 을 기록하는 성공 클라이언트."""
 
     def __init__(self) -> None:
         self.history_calls: list = []
+        self.time_calls: list = []
 
-    def recommend(self, daily_summary, preferred_category, meal_timing, user_history_context=None):
+    def recommend(
+        self, daily_summary, preferred_category, meal_timing,
+        user_history_context=None, current_time=None,
+    ):
         self.history_calls.append(user_history_context)
+        self.time_calls.append(current_time)
         return super().recommend(
-            daily_summary, preferred_category, meal_timing, user_history_context
+            daily_summary, preferred_category, meal_timing,
+            user_history_context, current_time,
         )
 
 
@@ -195,3 +204,34 @@ def test_next_meal_without_meals_sends_no_history(client, auth_headers):
     )
     assert res.status_code == 200
     assert recording.history_calls[-1] is None
+
+
+def test_recommend_passes_current_time_to_ai(client, auth_headers):
+    """추천 호출 시 현재 KST 시각(HH:MM)이 AI 에 전달된다."""
+    import re
+
+    recording = RecordingAIClient()
+    app.dependency_overrides[get_ai_client] = lambda: recording
+    res = client.post(
+        "/v1/recommendations/next-meal",
+        headers=auth_headers,
+        json={"date": "2026-06-27"},
+    )
+    assert res.status_code == 200
+    assert re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", recording.time_calls[-1])
+
+
+def test_default_meal_timing_by_kst_hour(monkeypatch):
+    """meal_timing 미지정 시 KST 시각 기준: <10 breakfast, <15 lunch, 이후 dinner."""
+    from datetime import datetime, timezone
+
+    import app.api.v1.recommendations as rec
+
+    def at_kst_hour(hour):
+        # KST(h) = UTC(h-9)
+        return datetime(2026, 7, 15, (hour - 9) % 24, 30, tzinfo=timezone.utc)
+
+    for hour, expected in [(7, "breakfast"), (9, "breakfast"), (10, "lunch"),
+                           (14, "lunch"), (15, "dinner"), (22, "dinner")]:
+        monkeypatch.setattr(rec, "now_utc", lambda h=hour: at_kst_hour(h))
+        assert rec._default_meal_timing() == expected, hour
