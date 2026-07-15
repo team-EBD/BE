@@ -95,6 +95,7 @@ def create_meal(db: Session, user: User, body: MealCreateRequest) -> MealRecord:
         meal_image_id=body.meal_image_id,
         meal_type=body.meal_type,
         eaten_at=eaten_at,
+        is_skipped=body.is_skipped,
         memo=body.memo,
         total_calories=totals["calories"],
         total_carbs=totals["carbs"],
@@ -121,7 +122,24 @@ def update_meal(db: Session, user: User, meal_id: int, body: MealUpdateRequest) 
     if body.memo is not None:
         meal.memo = body.memo
 
+    if body.is_skipped is True:
+        # 생략으로 전환 — 기존 항목 제거 + 합계 0 (correction_logs 는 이력이므로 유지)
+        meal.is_skipped = True
+        for old in db.scalars(select(MealItem).where(MealItem.meal_record_id == meal.id)):
+            db.delete(old)
+        db.flush()
+        meal.total_calories = 0
+        meal.total_carbs = 0
+        meal.total_protein = 0
+        meal.total_fat = 0
+    elif body.is_skipped is False and meal.is_skipped and body.items is None:
+        raise APIError(
+            400, "VALIDATION_ERROR", "생략을 해제하려면 items 를 함께 보내야 합니다.",
+            details=[{"field": "items", "reason": "required"}],
+        )
+
     if body.items is not None:
+        meal.is_skipped = False  # 항목이 담기면 생략 기록이 아니다
         # 항목 전체 교체(기존 항목·보정 로그는 이력이므로 로그는 남기고 항목만 재구성)
         for old in db.scalars(select(MealItem).where(MealItem.meal_record_id == meal.id)):
             db.delete(old)

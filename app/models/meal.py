@@ -9,12 +9,14 @@ from datetime import datetime
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     ForeignKey,
     Numeric,
     String,
     Text,
     func,
 )
+from sqlalchemy import false as sa_false
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -49,6 +51,9 @@ class MealRecord(Base):
     )
     meal_type: Mapped[str] = mapped_column(String(10), nullable=False)  # breakfast/lunch/dinner/snack
     eaten_at: Mapped[datetime] = mapped_column(TZDateTime, nullable=False)
+    is_skipped: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=sa_false()
+    )  # 식사 생략(안 먹음) 기록 — items 없이 저장
     memo: Mapped[str | None] = mapped_column(Text, nullable=True)
     total_calories: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False, default=0)  # 합계 캐시
     total_carbs: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False, default=0)

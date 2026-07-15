@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.core.timeutil import kst_day_bounds
@@ -41,7 +41,11 @@ def get_goals(db: Session, user_id: int) -> dict[str, int]:
 
 
 def aggregate_day(db: Session, user_id: int, day: date) -> dict:
-    """해당 KST 날짜의 합계·끼니 수 (soft delete 제외)."""
+    """해당 KST 날짜의 합계·끼니 수 (soft delete 제외).
+
+    끼니 수(meal_count)는 실제로 먹은 기록만 센다 — 생략(is_skipped) 기록은
+    영양 합계(0)에는 무해하지만 '몇 끼 먹었는지'에는 포함하면 안 된다.
+    """
     start, end = kst_day_bounds(day)
     row = db.execute(
         select(
@@ -49,7 +53,9 @@ def aggregate_day(db: Session, user_id: int, day: date) -> dict:
             func.coalesce(func.sum(MealRecord.total_carbs), 0),
             func.coalesce(func.sum(MealRecord.total_protein), 0),
             func.coalesce(func.sum(MealRecord.total_fat), 0),
-            func.count(MealRecord.id),
+            func.coalesce(
+                func.sum(case((MealRecord.is_skipped.is_(False), 1), else_=0)), 0
+            ),
         ).where(
             MealRecord.user_id == user_id,
             MealRecord.deleted_at.is_(None),
