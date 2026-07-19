@@ -12,7 +12,8 @@ from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.core.timeutil import kst_date_of, kst_day_bounds
-from app.models import DailyNutritionSummary, MealItem, MealRecord, UserProfile
+from app.models import DailyNutritionSummary, MealImage, MealItem, MealRecord, UserProfile
+from app.services.image_retention import retention_cutoff_utc
 
 # 목표 미설정 사용자 기본값 (명세서 9.1 예시 준용)
 DEFAULT_GOALS = {"calories": 2000, "carbs": 250, "protein": 120, "fat": 65}
@@ -165,10 +166,38 @@ def streak_days(db: Session, user_id: int, day: date) -> int:
     return streak
 
 
+def _food_image_url(
+    db: Session, user_id: int, food_name: str, start, end
+) -> str | None:
+    """해당 음식이 담긴 가장 최근 기록의 사진 URL (리포트 대표 이미지).
+
+    이미지 보존 기간(저번달 1일~, image_retention) 밖 사진은 제외한다.
+    """
+    row = db.execute(
+        select(MealImage.image_url)
+        .join(MealRecord, MealRecord.meal_image_id == MealImage.id)
+        .join(MealItem, MealItem.meal_record_id == MealRecord.id)
+        .where(
+            MealRecord.user_id == user_id,
+            MealRecord.deleted_at.is_(None),
+            MealItem.food_name == food_name,
+            MealRecord.eaten_at >= start,
+            MealRecord.eaten_at < end,
+            MealImage.uploaded_at >= retention_cutoff_utc(),
+        )
+        .order_by(MealRecord.eaten_at.desc())
+        .limit(1)
+    ).first()
+    return row[0] if row else None
+
+
 def top_foods_in_range(
     db: Session, user_id: int, start_day: date, end_day: date, limit: int
 ) -> list[dict]:
-    """기간 내 MealItem.food_name 최빈 상위 N — aggregate_day 와 동일한 meal 상태 조건."""
+    """기간 내 MealItem.food_name 최빈 상위 N — aggregate_day 와 동일한 meal 상태 조건.
+
+    각 음식에는 대표 사진(image_url — 그 음식이 담긴 최근 기록의 사진)을 함께 담는다.
+    """
     start, _ = kst_day_bounds(start_day)
     _, end = kst_day_bounds(end_day)
     count = func.count(MealItem.id)
@@ -185,7 +214,14 @@ def top_foods_in_range(
         .order_by(count.desc(), MealItem.food_name)
         .limit(limit)
     ).all()
-    return [{"name": name, "count": int(cnt)} for name, cnt in rows]
+    return [
+        {
+            "name": name,
+            "count": int(cnt),
+            "image_url": _food_image_url(db, user_id, name, start, end),
+        }
+        for name, cnt in rows
+    ]
 
 
 def build_summary_text(total: dict, goals: dict, meal_count: int) -> str:

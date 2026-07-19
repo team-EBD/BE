@@ -140,6 +140,35 @@ def test_weekly_summary_extended_fields(client, auth_headers):
     assert "달성일" in body["summary_text"]  # 지난주(0일) 대비 증가 → 칭찬
 
 
+def test_weekly_top_food_has_representative_image(client, auth_headers):
+    """top_food 에는 그 음식이 담긴 최근 기록의 사진이 대표 이미지로 실린다."""
+    from tests.test_images import upload
+
+    image = upload(client, auth_headers).json()
+    with_photo = {**meal_on("2026-06-27"), "meal_image_id": image["meal_image_id"]}
+    create_meal(client, auth_headers, with_photo)
+    create_meal(client, auth_headers, meal_on("2026-06-25"))  # 사진 없는 기록
+
+    res = client.get(
+        "/v1/nutrition/weekly-summary",
+        headers=auth_headers,
+        params={"week_start": "2026-06-22"},
+    )
+    top = res.json()["top_food"]
+    assert top["image_url"] == image["image_url"]
+
+
+def test_top_food_image_none_without_photo(client, auth_headers):
+    """사진 없는 기록만 있으면 image_url 은 null (아이콘 폴백은 FE 담당)."""
+    create_meal(client, auth_headers, meal_on("2026-06-27"))
+    res = client.get(
+        "/v1/nutrition/weekly-summary",
+        headers=auth_headers,
+        params={"week_start": "2026-06-22"},
+    )
+    assert res.json()["top_food"]["image_url"] is None
+
+
 def test_weekly_summary_empty_week(client, auth_headers):
     res = client.get(
         "/v1/nutrition/weekly-summary",
