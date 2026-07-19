@@ -33,6 +33,9 @@ class User(Base):
     social_id: Mapped[str] = mapped_column(String(255), nullable=False)
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     nickname: Mapped[str] = mapped_column(String(50), nullable=False)
+    # 닉네임 중복 허용용 식별 태그(0001~9999) — 표시형식 "닉네임#0001".
+    # (닉네임, 태그) 쌍이 유일 → 닉네임 선점(스쿼팅)이 성립하지 않는다.
+    nickname_tag: Mapped[str] = mapped_column(String(4), nullable=False, server_default="0000")
     profile_image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     # 이메일 가입 사용자만 사용 (소셜 전용 계정은 NULL)
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -41,6 +44,7 @@ class User(Base):
 
     __table_args__ = (
         UniqueConstraint("social_provider", "social_id", name="uq_users_provider_social_id"),
+        UniqueConstraint("nickname", "nickname_tag", name="uq_users_nickname_tag"),
     )
 
 
