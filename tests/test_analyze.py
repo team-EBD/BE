@@ -30,13 +30,30 @@ def test_analyze_success_with_matching(client, auth_headers):
     assert res.status_code == 200
     body = res.json()
     assert body["draft_notice"]
-    assert 1 <= len(body["candidates"]) <= 3
+    # mock: 음식 0(찌개 대체 예측 3개) + 음식 1(공기밥) = 4개
+    assert 1 <= len(body["candidates"]) <= 15
     top = body["candidates"][0]
     # mock 1순위 "김치찌개" → 시드 매칭 → 영양 초안 포함
     assert top["normalized_name"] == "김치찌개"
+    assert top["food_index"] == 0
     assert top["nutrition"]["calories"] == 320.0
     assert top["habit_adjusted"] is None  # 식습관 미설정 시 생략
     assert body["ai_call_log_id"] > 0
+
+
+def test_analyze_groups_by_food_index(client, auth_headers):
+    """같은 음식의 대체 예측은 같은 food_index, 다른 음식은 다른 food_index."""
+    image_id = upload_image_id(client, auth_headers)
+    res = client.post(
+        "/v1/meals/analyze", headers=auth_headers, json={"meal_image_id": image_id}
+    )
+    body = res.json()
+    groups = [c["food_index"] for c in body["candidates"]]
+    assert groups == [0, 0, 0, 1]  # mock: 찌개 3개 예측 + 공기밥
+    # 음식당 예측 3개 초과 금지
+    from collections import Counter
+
+    assert max(Counter(groups).values()) <= 3
 
 
 def test_analyze_habit_adjusted(client, auth_headers):

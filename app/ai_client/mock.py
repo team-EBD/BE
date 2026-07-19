@@ -22,9 +22,11 @@ class MockAIClient:
             status="success",
             draft_notice="AI가 분석한 기록 초안입니다.",
             candidates=[
-                AICandidate(food_name="김치찌개", confidence=0.87, estimated_serving=1.0),
-                AICandidate(food_name="된장찌개", confidence=0.08, estimated_serving=1.0),
-                AICandidate(food_name="순두부찌개", confidence=0.05, estimated_serving=1.0),
+                # 음식 0: 찌개류 대체 예측 3개, 음식 1: 공기밥 (여러 음식 그룹핑 검증용)
+                AICandidate(food_index=0, food_name="김치찌개", confidence=0.87, estimated_serving=1.0),
+                AICandidate(food_index=0, food_name="된장찌개", confidence=0.08, estimated_serving=1.0),
+                AICandidate(food_index=0, food_name="순두부찌개", confidence=0.05, estimated_serving=1.0),
+                AICandidate(food_index=1, food_name="공기밥", confidence=0.95, estimated_serving=1.0),
             ],
             ai_call_log=AICallLogPayload(
                 provider="google",
