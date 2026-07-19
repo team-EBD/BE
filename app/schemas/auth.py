@@ -25,6 +25,7 @@ class UserOut(BaseModel):
     social_provider: str
     email: str | None
     nickname: str
+    nickname_tag: str
     profile_image_url: str | None
 
 
@@ -76,6 +77,7 @@ class EmailAuthUserOut(BaseModel):
     id: int
     email: str | None
     nickname: str
+    nickname_tag: str
 
 
 class EmailAuthResponse(BaseModel):

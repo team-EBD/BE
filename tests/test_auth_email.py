@@ -120,3 +120,31 @@ def test_signup_refresh_token_works(client):
         headers={"Authorization": f"Bearer {new_tokens['access_token']}"},
     )
     assert me.status_code == 200
+
+
+def test_duplicate_nickname_allowed_with_distinct_tags(client):
+    """같은 닉네임으로 여러 명 가입 가능 — 태그(#0001~#9999)로 구분된다."""
+    first = signup(client)
+    second = signup(client, email="bob@example.com")
+    assert first.status_code == 201 and second.status_code == 201
+
+    tag1 = first.json()["user"]["nickname_tag"]
+    tag2 = second.json()["user"]["nickname_tag"]
+    assert len(tag1) == 4 and tag1.isdigit() and tag1 != "0000"
+    assert tag1 != tag2  # 동일 닉네임이면 태그는 반드시 달라야 한다
+
+
+def test_nickname_change_keeps_tag_when_free(client):
+    """닉네임 변경 시 새 닉네임에서 기존 태그가 비어 있으면 유지한다."""
+    res = signup(client)
+    token = res.json()["access_token"]
+    tag = res.json()["user"]["nickname_tag"]
+
+    me = client.patch(
+        "/v1/users/me",
+        json={"nickname": "새닉네임"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert me.status_code == 200
+    assert me.json()["nickname"] == "새닉네임"
+    assert me.json()["nickname_tag"] == tag

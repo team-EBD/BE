@@ -36,6 +36,7 @@ from app.schemas.auth import (
     SocialLoginRequest,
     SocialLoginResponse,
 )
+from app.services.nickname import allocate_nickname_tag
 from app.services.summary import DEFAULT_GOALS, derive_macro_goals
 from app.social_client import SocialIdentity, verify_social_token
 
@@ -83,6 +84,7 @@ def social_login(
             social_id=identity.social_id,
             email=identity.email,
             nickname=identity.nickname,
+            nickname_tag=allocate_nickname_tag(db, identity.nickname),
             profile_image_url=identity.profile_image_url,
         )
         db.add(user)
@@ -112,6 +114,7 @@ def email_signup(body: EmailSignupRequest, db: DB) -> EmailAuthResponse:
         social_id=email_lower,
         email=body.email,
         nickname=body.nickname,
+        nickname_tag=allocate_nickname_tag(db, body.nickname),
         password_hash=hash_password(body.password),
     )
     db.add(user)

@@ -31,6 +31,7 @@ from app.schemas.user import (
     TermsAgreementResponse,
     UpdateMeRequest,
 )
+from app.services.nickname import allocate_nickname_tag
 from app.services.summary import DEFAULT_GOALS, derive_macro_goals
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -51,6 +52,7 @@ def _me_response(db: DB, user) -> MeDetailResponse:
         id=user.id,
         email=user.email,
         nickname=user.nickname,
+        nickname_tag=user.nickname_tag,
         household_type=profile.household_type if profile else None,
         daily_goal_calories=profile.goal_calories if profile else None,
         gender=profile.gender if profile else None,
@@ -67,7 +69,11 @@ def get_me(user: CurrentUser, db: DB) -> MeDetailResponse:
 
 @router.patch("/me", response_model=MeDetailResponse)
 def update_me(body: UpdateMeRequest, user: CurrentUser, db: DB) -> MeDetailResponse:
-    if body.nickname is not None:
+    if body.nickname is not None and body.nickname != user.nickname:
+        # 새 닉네임에서 기존 태그가 비어 있으면 유지, 쓰이고 있으면 새로 할당
+        user.nickname_tag = allocate_nickname_tag(
+            db, body.nickname, keep_tag=user.nickname_tag, exclude_user_id=user.id
+        )
         user.nickname = body.nickname
 
     profile_fields = (

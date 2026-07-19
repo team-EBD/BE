@@ -22,6 +22,7 @@ class MeDetailResponse(BaseModel):
     id: int
     email: str | None
     nickname: str
+    nickname_tag: str  # 표시형식 "닉네임#0001"
     household_type: str | None
     daily_goal_calories: int | None
     # 신체 정보 (미입력 시 null — FE가 프로필 보완 화면 노출 판단에 사용)
