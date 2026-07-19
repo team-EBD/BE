@@ -8,8 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.common import KSTDateTime
 
-# email-validator 의존성 없이 쓰는 단순 이메일 형식 검사
-EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+# email-validator 의존성 없이 쓰는 단순 이메일 형식 검사.
+# TLD 는 2자 이상 요구(통용 규칙) — 진짜 유효성은 이메일 인증(추후)으로만 보장된다.
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$")
 
 
 class SocialLoginRequest(BaseModel):
@@ -35,8 +36,9 @@ class SocialLoginResponse(BaseModel):
 
 class EmailSignupRequest(BaseModel):
     email: str = Field(max_length=255)
-    password: str = Field(min_length=8, max_length=128)
-    nickname: str = Field(min_length=2, max_length=20)
+    # 길이 검사도 custom validator 에서 수행 — 어떤 위반이든 한국어 안내 한 문장으로 응답되게 한다.
+    password: str
+    nickname: str = Field(min_length=2, max_length=10)
     height: float = Field(ge=100, le=250)  # cm
     weight: float = Field(ge=20, le=300)  # kg
     gender: Literal["male", "female"]
@@ -52,8 +54,14 @@ class EmailSignupRequest(BaseModel):
     @field_validator("password")
     @classmethod
     def _validate_password(cls, value: str) -> str:
-        if not re.search(r"[A-Za-z]", value) or not re.search(r"\d", value):
-            raise ValueError("비밀번호는 영문자와 숫자를 각각 1자 이상 포함해야 합니다.")
+        if len(value) > 128:
+            raise ValueError("비밀번호는 128자 이하여야 합니다.")
+        if (
+            len(value) < 8
+            or not re.search(r"[A-Za-z]", value)
+            or not re.search(r"\d", value)
+        ):
+            raise ValueError("비밀번호는 영문자와 숫자를 포함해 8자 이상이어야 합니다.")
         return value
 
 

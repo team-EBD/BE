@@ -86,10 +86,31 @@ async def _validation_exception_handler(
         {"field": ".".join(str(p) for p in err["loc"]), "reason": err["type"]}
         for err in exc.errors()
     ]
+    # 사용자가 원인을 알 수 있도록 메시지에 필드명을 함께 담는다.
+    # 커스텀 validator 의 한국어 메시지("Value error, ..." )가 있으면 그것을 우선 노출.
+    custom_msg = next(
+        (
+            err["msg"].removeprefix("Value error, ")
+            for err in exc.errors()
+            if err["type"] == "value_error" and err.get("msg")
+        ),
+        None,
+    )
+    fields = list(
+        dict.fromkeys(
+            d["field"].removeprefix("body.").removeprefix("query.").removeprefix("path.")
+            for d in details
+        )
+    )
+    message = custom_msg or (
+        f"요청 값이 올바르지 않습니다. (확인 필요: {', '.join(fields)})"
+        if fields
+        else "요청 값이 올바르지 않습니다."
+    )
     return JSONResponse(
         status_code=status.HTTP_400_BAD_REQUEST,
         content=jsonable_encoder(
-            _error_body("VALIDATION_ERROR", "요청 값이 올바르지 않습니다.", details)
+            _error_body("VALIDATION_ERROR", message, details)
         ),
     )
 

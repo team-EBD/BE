@@ -9,7 +9,7 @@ from app.schemas.common import KSTDateTime
 
 
 class UpdateMeRequest(BaseModel):
-    nickname: str | None = Field(default=None, min_length=2, max_length=20)
+    nickname: str | None = Field(default=None, min_length=2, max_length=10)
     household_type: Literal["single", "multi", "none"] | None = None
     daily_goal_calories: int | None = Field(default=None, ge=500, le=10000)
     # 신체 정보 — 소셜 가입 사용자는 가입 시 입력하지 않으므로 온보딩에서 보완한다.
