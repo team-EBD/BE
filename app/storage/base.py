@@ -15,3 +15,7 @@ class Storage(Protocol):
     def save(self, key: str, data: bytes) -> StoredObject:
         """key 경로에 저장하고 접근 URL 을 반환한다. 실패 시 예외."""
         ...
+
+    def delete(self, key: str) -> None:
+        """key 경로의 객체를 삭제한다. 이미 없으면 조용히 무시한다."""
+        ...

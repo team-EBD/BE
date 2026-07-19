@@ -15,7 +15,14 @@ from app.ai_client import get_ai_client
 from app.ai_client.base import AIClient
 from app.core.deps import DB, CurrentUser
 from app.core.errors import APIError
-from app.core.timeutil import kst_date_of, kst_day_bounds, kst_month_bounds, now_utc, to_utc
+from app.core.timeutil import (
+    from_db,
+    kst_date_of,
+    kst_day_bounds,
+    kst_month_bounds,
+    now_utc,
+    to_utc,
+)
 from app.models import MealImage, MealRecord
 from app.schemas.meal import (
     AnalyzeFailedResponse,
@@ -35,6 +42,7 @@ from app.schemas.meal import (
     MealUpdateRequest,
 )
 from app.services.analyze import analyze_meal_image
+from app.services.image_retention import retention_cutoff_utc
 from app.services.usage_limit import enforce_daily_limit
 from app.services.meals import (
     create_meal,
@@ -195,10 +203,19 @@ def list_meals(
 
 
 def _image_url(db, meal: MealRecord) -> str | None:
+    """보존 기간(저번달 1일~) 안의 이미지 URL 만 내려준다.
+
+    백그라운드 정리(purge_expired_images)가 아직 안 돈 경우에도
+    응답에서 먼저 걸러 클라이언트가 만료 이미지를 받지 않게 한다.
+    """
     if meal.meal_image_id is None:
         return None
     image = db.get(MealImage, meal.meal_image_id)
-    return image.image_url if image else None
+    if image is None:
+        return None
+    if from_db(image.uploaded_at) < retention_cutoff_utc():
+        return None
+    return image.image_url
 
 
 # --- 8.1 식단 저장 ---

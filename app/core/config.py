@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     analyze_daily_limit: int = 10
     recommend_daily_limit: int = 10
 
+    # --- 이미지 보존 기간 정리 ---
+    # 저번달 1일(KST) 이전 업로드 이미지를 매일 스토리지·DB 에서 정리한다.
+    # 테스트 등에서 백그라운드 태스크를 끄고 싶으면 false.
+    image_retention_purge_enabled: bool = True
+
     # --- 이미지 스토리지 (Phase 4) ---
     # storage_backend: local(디스크, main.py 가 /static 서빙) | firebase(Firebase Storage)
     storage_backend: str = "local"
