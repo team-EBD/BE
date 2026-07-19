@@ -31,6 +31,9 @@ class AINutritionEstimate(BaseModel):
 
 
 class AICandidate(BaseModel):
+    # 사진 속 몇 번째 음식에 대한 예측인지 (0부터). 같은 food_index 후보들은
+    # "같은 음식에 대한 대체 예측"이다. 구버전 AI 서버 응답에는 없으므로 기본 0.
+    food_index: int = 0
     food_name: str
     confidence: float
     estimated_serving: float = 1.0

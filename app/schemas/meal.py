@@ -44,6 +44,9 @@ class HabitAdjusted(BaseModel):
 class AnalyzeCandidate(BaseModel):
     food_candidate_id: int
     nutrition_item_id: int | None = None  # 매칭된 영양 DB 항목 (식단 저장 시 참조)
+    # 사진 속 몇 번째 음식에 대한 예측인지 (0부터). 같은 food_index 는
+    # 같은 음식에 대한 대체 예측(최대 3개)이다.
+    food_index: int = 0
     normalized_name: str
     confidence_score: float
     estimated_serving: float

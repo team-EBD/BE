@@ -23,6 +23,34 @@ from app.services.correction import habit_factor
 from app.services.matching import base_serving_text, match_food_name, normalize_name
 
 
+# AI 서버와 동일한 상한 (AI 서버가 이미 지키지만 방어적으로 재적용)
+MAX_FOODS = 5
+MAX_PREDICTIONS_PER_FOOD = 3
+
+
+def _grouped_candidates(raw: list) -> list[tuple[int, object]]:
+    """(food_index, candidate) 목록으로 정규화한다.
+
+    - food_index 는 등장 순서 기준으로 0부터 재부여
+    - 서로 다른 음식 최대 MAX_FOODS 개, 음식당 예측 최대 MAX_PREDICTIONS_PER_FOOD 개
+    - 구버전 AI 서버(food_index 없음)는 전부 0 그룹 → 기존 상위 3개와 동일 동작
+    """
+    counts: dict[int, int] = {}
+    reindex: dict[int, int] = {}
+    grouped: list[tuple[int, object]] = []
+    for cand in raw:
+        original = getattr(cand, "food_index", 0) or 0
+        if original not in reindex:
+            if len(reindex) >= MAX_FOODS:
+                continue
+            reindex[original] = len(reindex)
+        if counts.get(original, 0) >= MAX_PREDICTIONS_PER_FOOD:
+            continue
+        counts[original] = counts.get(original, 0) + 1
+        grouped.append((reindex[original], cand))
+    return grouped
+
+
 def _save_call_log(
     db: Session, user_id: int, meal_image_id: int | None, payload: AICallLogPayload,
     error_message: str | None = None,
@@ -75,7 +103,7 @@ def analyze_meal_image(
 
     factor, applied = habit_factor(habit)
     candidates: list[AnalyzeCandidate] = []
-    for rank, cand in enumerate(result.candidates[:3], start=1):
+    for rank, (food_index, cand) in enumerate(_grouped_candidates(result.candidates), start=1):
         matched = match_food_name(db, cand.food_name)
         row = FoodCandidate(
             meal_image_id=meal_image_id,
@@ -120,6 +148,7 @@ def analyze_meal_image(
             AnalyzeCandidate(
                 food_candidate_id=row.id,
                 nutrition_item_id=row.nutrition_item_id,
+                food_index=food_index,
                 normalized_name=row.normalized_name,
                 confidence_score=float(cand.confidence),
                 estimated_serving=float(cand.estimated_serving),
