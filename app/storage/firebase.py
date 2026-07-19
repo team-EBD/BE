@@ -85,6 +85,16 @@ class FirebaseStorage:
 
         return StoredObject(storage_key=key, url=self._download_url(key, token))
 
+    def delete(self, key: str) -> None:
+        """key 경로의 객체를 삭제한다. 이미 없으면(NotFound) 조용히 무시한다."""
+        from google.api_core.exceptions import NotFound
+
+        bucket = self._get_bucket()
+        try:
+            bucket.blob(key).delete()
+        except NotFound:
+            pass
+
     def _download_url(self, key: str, token: str) -> str:
         encoded = quote(key, safe="")
         return (

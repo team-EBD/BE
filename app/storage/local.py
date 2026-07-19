@@ -19,3 +19,6 @@ class LocalStorage:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
         return StoredObject(storage_key=key, url=f"{self.base_url}/{key}")
+
+    def delete(self, key: str) -> None:
+        (self.root / key).unlink(missing_ok=True)
