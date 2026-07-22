@@ -36,8 +36,9 @@ def test_signup_201_tokens_and_profile(client, db_factory):
     )
     assert me.status_code == 200
     assert me.json()["email"] == "alice@example.com"
-    # 기본 목표 칼로리가 프로필에 저장되어 /me 에 노출된다
-    assert me.json()["daily_goal_calories"] == 2000
+    # BMR/TDEE 자동 산정 목표가 프로필에 저장되어 /me 에 노출된다
+    # (여 55kg/165.5cm/기본나이 30: BMR 1273.4 × 활동계수 1.375 ≈ 1750)
+    assert me.json()["daily_goal_calories"] == 1750
 
     # user_profiles 에 성별/키/몸무게 + 탄단지 목표(50:30:20)가 저장된다
     with db_factory() as db:
@@ -52,7 +53,9 @@ def test_signup_201_tokens_and_profile(client, db_factory):
         assert profile.gender == "female"
         assert float(profile.height) == 165.5
         assert float(profile.weight) == 55.0
-        assert (profile.goal_carbs, profile.goal_protein, profile.goal_fat) == (250, 150, 44)
+        assert profile.goal_source == "auto"
+        # 탄단지 목표는 자동 산정 칼로리(1750)의 50:30:20 유도값
+        assert (profile.goal_carbs, profile.goal_protein, profile.goal_fat) == (219, 131, 39)
 
 
 def test_signup_duplicate_email_409(client):

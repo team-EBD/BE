@@ -36,6 +36,7 @@ from app.schemas.auth import (
     SocialLoginRequest,
     SocialLoginResponse,
 )
+from app.services.goals import personalized_goals
 from app.services.nickname import allocate_nickname_tag
 from app.services.summary import DEFAULT_GOALS, derive_macro_goals
 from app.social_client import SocialIdentity, verify_social_token
@@ -120,15 +121,20 @@ def email_signup(body: EmailSignupRequest, db: DB) -> EmailAuthResponse:
     db.add(user)
     db.flush()  # id 확보
 
-    # 온보딩 입력(성별/키/몸무게) + 기본 목표 (칼로리 2000, 탄단지 50:30:20 유도)
-    macros = derive_macro_goals(DEFAULT_GOALS["calories"])
+    # 온보딩 입력(성별/키/몸무게)으로 BMR/TDEE 기반 목표를 자동 산정한다.
+    # (신체정보 부족 시에만 기본 목표 2000 kcal 사용 — 가입 스키마상 발생하지 않음)
+    goals = personalized_goals(body.gender, None, body.height, body.weight) or {
+        "calories": DEFAULT_GOALS["calories"],
+        **derive_macro_goals(DEFAULT_GOALS["calories"]),
+    }
     db.add(
         UserProfile(
             user_id=user.id,
-            goal_calories=DEFAULT_GOALS["calories"],
-            goal_carbs=macros["carbs"],
-            goal_protein=macros["protein"],
-            goal_fat=macros["fat"],
+            goal_calories=goals["calories"],
+            goal_carbs=goals["carbs"],
+            goal_protein=goals["protein"],
+            goal_fat=goals["fat"],
+            goal_source="auto",
             gender=body.gender,
             height=body.height,
             weight=body.weight,

@@ -16,6 +16,9 @@ class UpdateMeRequest(BaseModel):
     gender: Literal["male", "female"] | None = None
     height: float | None = Field(default=None, ge=100, le=250)
     weight: float | None = Field(default=None, ge=20, le=300)
+    birth_year: int | None = Field(default=None, ge=1900, le=2100)
+    # "auto" 전송 시 직접 설정(manual) 목표를 버리고 BMR/TDEE 자동 산정으로 되돌린다
+    goal_source: Literal["auto"] | None = None
 
 
 class MeDetailResponse(BaseModel):
@@ -29,6 +32,9 @@ class MeDetailResponse(BaseModel):
     gender: str | None
     height: float | None
     weight: float | None
+    birth_year: int | None
+    # 목표 출처: auto(BMR 자동 산정) / manual(직접 설정). 프로필 없으면 null.
+    goal_source: str | None
     created_at: KSTDateTime
 
 

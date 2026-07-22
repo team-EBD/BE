@@ -73,6 +73,10 @@ class UserProfile(Base):
     goal_carbs: Mapped[int] = mapped_column(Integer, nullable=False)
     goal_protein: Mapped[int] = mapped_column(Integer, nullable=False)
     goal_fat: Mapped[int] = mapped_column(Integer, nullable=False)
+    # 목표 출처: auto(BMR/TDEE 자동 산정) / manual(사용자 직접 설정 — 자동 재계산 금지)
+    goal_source: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="auto", server_default="auto"
+    )
     gender: Mapped[str | None] = mapped_column(String(10), nullable=True)
     birth_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     height: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
