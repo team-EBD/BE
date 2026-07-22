@@ -55,6 +55,15 @@ class Settings(BaseSettings):
     # 테스트 등에서 백그라운드 태스크를 끄고 싶으면 false.
     image_retention_purge_enabled: bool = True
 
+    # --- 푸시 발송 ---
+    # push_backend: mock(로그만, dev/테스트) | fcm(Firebase Cloud Messaging, 운영)
+    push_backend: str = "mock"
+    # 주간 리포트 도착 푸시 — 매주 지정 요일(mon~sun)·시각(KST) 발송.
+    # 기본 일요일: 리포트 주 단위(일~토)가 토요일 밤에 완결된 직후 아침.
+    weekly_report_push_enabled: bool = True
+    weekly_report_push_day: str = "sun"
+    weekly_report_push_time: str = "09:00"  # HH:mm
+
     # --- 이미지 스토리지 (Phase 4) ---
     # storage_backend: local(디스크, main.py 가 /static 서빙) | firebase(Firebase Storage)
     storage_backend: str = "local"

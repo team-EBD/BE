@@ -19,9 +19,10 @@ from app.core.config import settings
 from app.core.database import Base, get_db
 from app.main import app
 
-# 테스트에서는 이미지 보존 기간 백그라운드 정리를 끈다
+# 테스트에서는 백그라운드 태스크(이미지 정리·주간 리포트 푸시)를 끈다
 # (TestClient lifespan 이 실제 SessionLocal/스토리지를 건드리지 않도록).
 settings.image_retention_purge_enabled = False
+settings.weekly_report_push_enabled = False
 from app.models import NutritionItem  # noqa: F401 — 모델 로딩 보장
 from app.social_client import SocialIdentity
 from app.storage import get_storage
