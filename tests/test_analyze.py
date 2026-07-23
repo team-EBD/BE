@@ -56,6 +56,56 @@ def test_analyze_groups_by_food_index(client, auth_headers):
     assert max(Counter(groups).values()) <= 3
 
 
+def test_analyze_soup_sauce_flags_passthrough(client, auth_headers):
+    """AI 가 판별한 국물/소스 유무를 응답에 그대로 전달한다."""
+    image_id = upload_image_id(client, auth_headers)
+    res = client.post(
+        "/v1/meals/analyze", headers=auth_headers, json={"meal_image_id": image_id}
+    )
+    body = res.json()
+    by_name = {c["normalized_name"]: c for c in body["candidates"]}
+    assert by_name["김치찌개"]["has_soup"] is True
+    assert by_name["김치찌개"]["has_sauce"] is False
+    assert by_name["공기밥"]["has_soup"] is False
+    assert by_name["공기밥"]["has_sauce"] is False
+
+
+def test_analyze_habit_soup_skipped_for_soupless_food(client, auth_headers):
+    """국물 제외 습관이 있어도 국물 없는 음식(공기밥)엔 no_soup 을 적용하지 않는다."""
+    client.patch(
+        "/v1/users/eating-habits", headers=auth_headers, json={"soup_preference": "leave"}
+    )
+    image_id = upload_image_id(client, auth_headers)
+    res = client.post(
+        "/v1/meals/analyze", headers=auth_headers, json={"meal_image_id": image_id}
+    )
+    by_name = {c["normalized_name"]: c for c in res.json()["candidates"]}
+    # 국물 있는 김치찌개에는 여전히 적용
+    assert by_name["김치찌개"]["habit_adjusted"]["applied_corrections"] == ["no_soup"]
+    # 국물 없는 공기밥에는 적용할 보정이 없어 habit_adjusted 자체가 생략
+    assert by_name["공기밥"]["habit_adjusted"] is None
+
+
+def test_analyze_habit_partial_filter_recomputes_factor(client, auth_headers):
+    """소식(half)+국물 제외 습관 → 국물 없는 음식엔 half 만 남고 계수를 재계산한다."""
+    client.patch(
+        "/v1/users/eating-habits",
+        headers=auth_headers,
+        json={"default_portion": "small", "soup_preference": "leave"},
+    )
+    image_id = upload_image_id(client, auth_headers)
+    res = client.post(
+        "/v1/meals/analyze", headers=auth_headers, json={"meal_image_id": image_id}
+    )
+    by_name = {c["normalized_name"]: c for c in res.json()["candidates"]}
+    stew = by_name["김치찌개"]["habit_adjusted"]
+    assert stew["applied_corrections"] == ["half", "no_soup"]
+    assert stew["applied_factor"] == 0.35  # 0.5 × 0.7
+    rice = by_name["공기밥"]["habit_adjusted"]
+    assert rice["applied_corrections"] == ["half"]
+    assert rice["applied_factor"] == 0.5
+
+
 def test_analyze_habit_adjusted(client, auth_headers):
     client.patch(
         "/v1/users/eating-habits", headers=auth_headers, json={"soup_preference": "leave"}

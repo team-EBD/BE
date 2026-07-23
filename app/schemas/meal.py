@@ -50,6 +50,10 @@ class AnalyzeCandidate(BaseModel):
     normalized_name: str
     confidence_score: float
     estimated_serving: float
+    # 국물/소스가 실제로 있는 음식인지 (AI 판별). False 면 FE 가
+    # '국물 제외/소스 제외' 보정 버튼을 감춘다. 미판별 시 True.
+    has_soup: bool = True
+    has_sauce: bool = True
     nutrition: CandidateNutrition | None = None
     habit_adjusted: HabitAdjusted | None = None
 
