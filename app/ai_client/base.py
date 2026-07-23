@@ -37,6 +37,10 @@ class AICandidate(BaseModel):
     food_name: str
     confidence: float
     estimated_serving: float = 1.0
+    # 국물/소스가 실제로 있는 음식인지 — FE 보정 버튼 노출 판단용.
+    # 구버전 AI 서버 응답에는 없으므로 True(버튼 노출 유지) 기본값.
+    has_soup: bool = True
+    has_sauce: bool = True
     nutrition: AINutritionEstimate | None = None
 
 

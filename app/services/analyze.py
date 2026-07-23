@@ -19,7 +19,7 @@ from app.schemas.meal import (
     CandidateNutrition,
     HabitAdjusted,
 )
-from app.services.correction import habit_factor
+from app.services.correction import FACTORS, habit_factor
 from app.services.matching import base_serving_text, match_food_name, normalize_name
 
 
@@ -138,11 +138,25 @@ def analyze_meal_image(
                 protein=float(cand.nutrition.protein),
                 fat=float(cand.nutrition.fat),
             )
-        if nutrition is not None and applied:  # 식습관 설정 없으면 생략 (명세서 6.1)
+        # 식습관 보정 중 국물/소스 관련 항목은 그 음식에 국물/소스가 있을 때만
+        # 적용한다 (예: soup_preference=leave 여도 공기밥엔 no_soup 미적용).
+        cand_applied = [
+            c for c in applied
+            if not (c == "no_soup" and not cand.has_soup)
+            and not (c == "no_sauce" and not cand.has_sauce)
+        ]
+        if cand_applied == applied:
+            cand_factor = factor
+        else:
+            cand_factor = 1.0
+            for c in cand_applied:
+                cand_factor *= FACTORS[c]
+            cand_factor = round(cand_factor, 4)
+        if nutrition is not None and cand_applied:  # 식습관 설정 없으면 생략 (명세서 6.1)
             habit_adjusted = HabitAdjusted(
-                applied_factor=factor,
-                applied_corrections=applied,
-                calories=round(nutrition.calories * factor, 1),
+                applied_factor=cand_factor,
+                applied_corrections=cand_applied,
+                calories=round(nutrition.calories * cand_factor, 1),
             )
         candidates.append(
             AnalyzeCandidate(
@@ -152,6 +166,8 @@ def analyze_meal_image(
                 normalized_name=row.normalized_name,
                 confidence_score=float(cand.confidence),
                 estimated_serving=float(cand.estimated_serving),
+                has_soup=cand.has_soup,
+                has_sauce=cand.has_sauce,
                 nutrition=nutrition,
                 habit_adjusted=habit_adjusted,
             )
