@@ -135,9 +135,10 @@ def get_calendar(
     user: CurrentUser,
     db: DB,
     month: str = Query(pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
+    day_start_hour: int = Query(default=0, ge=0, le=12),
 ) -> CalendarResponse:
     year, mon = int(month[:4]), int(month[5:7])
-    start, end = kst_month_bounds(year, mon)
+    start, end = kst_month_bounds(year, mon, day_start_hour)
     rows = db.execute(
         select(MealRecord.eaten_at, MealRecord.total_calories).where(
             MealRecord.user_id == user.id,
@@ -149,7 +150,7 @@ def get_calendar(
 
     by_day: dict[str, dict] = {}
     for eaten_at, calories in rows:
-        day = kst_date_of(eaten_at).isoformat()
+        day = kst_date_of(eaten_at, day_start_hour).isoformat()
         bucket = by_day.setdefault(day, {"meal_count": 0, "total_calories": 0.0})
         bucket["meal_count"] += 1
         bucket["total_calories"] += float(calories)
@@ -172,8 +173,9 @@ def list_meals(
     user: CurrentUser,
     db: DB,
     date_: date = Query(alias="date"),
+    day_start_hour: int = Query(default=0, ge=0, le=12),
 ) -> MealListResponse:
-    start, end = kst_day_bounds(date_)
+    start, end = kst_day_bounds(date_, day_start_hour)
     meals = list(
         db.scalars(
             select(MealRecord)

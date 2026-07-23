@@ -153,6 +153,62 @@ def test_calendar(client, auth_headers):
     assert days["2026-06-26"]["total_calories"] == 524.0
 
 
+def test_list_by_date_day_start_hour(client, auth_headers):
+    """day_start_hour=6 이면 하루가 06:00~다음날 06:00 — 새벽 기록은 전날로 묶인다."""
+    create_meal(client, auth_headers)  # 6/27 12:40
+    create_meal(
+        client, auth_headers, {**MEAL_PAYLOAD, "eaten_at": "2026-06-28T01:30:00+09:00"}
+    )
+    create_meal(
+        client, auth_headers, {**MEAL_PAYLOAD, "eaten_at": "2026-06-28T07:00:00+09:00"}
+    )
+
+    res = client.get(
+        "/v1/meals",
+        headers=auth_headers,
+        params={"date": "2026-06-27", "day_start_hour": 6},
+    )
+    body = res.json()
+    # 6/27 12:40 + 6/28 01:30 (다음날 새벽) 이 한 '하루'
+    assert [m["eaten_at"] for m in body["meals"]] == [
+        "2026-06-27T12:40:00+09:00",
+        "2026-06-28T01:30:00+09:00",
+    ]
+
+    # 기본값(자정 경계)에서는 기존 동작 유지
+    res_default = client.get(
+        "/v1/meals", headers=auth_headers, params={"date": "2026-06-27"}
+    )
+    assert len(res_default.json()["meals"]) == 1
+
+
+def test_calendar_day_start_hour(client, auth_headers):
+    """캘린더 집계도 6시 경계로 묶이고, 월 경계(다음달 1일 새벽)도 포함한다."""
+    create_meal(client, auth_headers)  # 6/27 12:40
+    create_meal(
+        client, auth_headers, {**MEAL_PAYLOAD, "eaten_at": "2026-06-28T01:30:00+09:00"}
+    )
+    # 7/1 새벽 3시 → 6/30 로 묶여 6월 캘린더에 포함되어야 한다
+    create_meal(
+        client, auth_headers, {**MEAL_PAYLOAD, "eaten_at": "2026-07-01T03:00:00+09:00"}
+    )
+    res = client.get(
+        "/v1/meals/calendar",
+        headers=auth_headers,
+        params={"month": "2026-06", "day_start_hour": 6},
+    )
+    days = {d["date"]: d for d in res.json()["days"]}
+    assert days["2026-06-27"]["meal_count"] == 2
+    assert days["2026-06-30"]["meal_count"] == 1
+    # 7월 캘린더에서는 빠진다
+    res_july = client.get(
+        "/v1/meals/calendar",
+        headers=auth_headers,
+        params={"month": "2026-07", "day_start_hour": 6},
+    )
+    assert res_july.json()["days"] == []
+
+
 def test_calendar_bad_month_400(client, auth_headers):
     res = client.get("/v1/meals/calendar", headers=auth_headers, params={"month": "2026-13"})
     assert res.status_code == 400
