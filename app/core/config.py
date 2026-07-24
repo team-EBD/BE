@@ -64,6 +64,21 @@ class Settings(BaseSettings):
     weekly_report_push_day: str = "sun"
     weekly_report_push_time: str = "09:00"  # HH:mm
 
+    # --- 메일 발송 (비밀번호 재설정 인증코드) ---
+    # email_backend: mock(로그만, dev/테스트) | smtp(Gmail 등 SMTP, 운영)
+    # Gmail 사용 시 smtp_password 에는 계정 비밀번호가 아닌 "앱 비밀번호"를 넣는다.
+    email_backend: str = "mock"
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    # 발신 주소 표시용 (비우면 smtp_user 사용)
+    mail_from: str = ""
+
+    # --- 비밀번호 재설정 인증코드 정책 ---
+    password_reset_code_expire_minutes: int = 10
+    password_reset_code_max_attempts: int = 5
+
     # --- 이미지 스토리지 (Phase 4) ---
     # storage_backend: local(디스크, main.py 가 /static 서빙) | firebase(Firebase Storage)
     storage_backend: str = "local"
