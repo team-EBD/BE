@@ -98,6 +98,10 @@ def update_me(body: UpdateMeRequest, user: CurrentUser, db: DB) -> MeDetailRespo
                 goal_carbs=goals["carbs"],
                 goal_protein=goals["protein"],
                 goal_fat=goals["fat"],
+                # 컬럼 default 는 INSERT(flush) 시점에야 적용되므로 여기서 명시해야
+                # 아래 goal_source == "auto" 분기(BMR 자동 산정)가 첫 저장에서 동작한다
+                # (소셜 가입자의 온보딩 PATCH 가 정확히 이 경로)
+                goal_source="auto",
             )
             db.add(profile)
         if body.household_type is not None:

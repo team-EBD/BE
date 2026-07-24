@@ -10,6 +10,7 @@ from app.services.goals import (
     calculate_goal_calories,
     personalized_goals,
 )
+from tests.conftest import login as social_login
 from tests.test_auth_email import signup
 
 
@@ -71,6 +72,26 @@ def _auth_header(client, email="goal@example.com"):
     res = signup(client, email=email)
     assert res.status_code == 201
     return {"Authorization": f"Bearer {res.json()['access_token']}"}
+
+
+def test_social_user_first_patch_computes_bmr_goal(client):
+    """소셜 가입자(프로필 없음)의 첫 온보딩 PATCH 에서 바로 BMR 목표가 산정돼야 한다.
+
+    회귀 방지: 프로필이 같은 요청에서 생성될 때 goal_source 컬럼 default 가
+    flush 전이라 None 이어서 자동 산정 분기를 타지 못하던 버그.
+    """
+    tokens = social_login(client, social_id="social-bmr-user")
+    headers = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+    res = client.patch(
+        "/v1/users/me",
+        json={"gender": "male", "height": 175, "weight": 70},
+        headers=headers,
+    )
+    assert res.status_code == 200
+    # 남 70kg/175cm/기본나이 30: BMR 1648.75 × 1.375 ≈ 2270 (기본 2000 이 아니어야 함)
+    assert res.json()["daily_goal_calories"] == 2270
+    assert res.json()["goal_source"] == "auto"
 
 
 def test_weight_change_recomputes_auto_goal(client):
