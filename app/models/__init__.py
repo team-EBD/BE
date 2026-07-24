@@ -13,6 +13,7 @@ from app.models.user import (
     EatingHabit,
     LocationConsent,
     NotificationSetting,
+    PasswordResetCode,
     PushToken,
     RefreshToken,
     TermsAgreement,
@@ -25,6 +26,7 @@ __all__ = [
     # user domain
     "User",
     "RefreshToken",
+    "PasswordResetCode",
     "UserProfile",
     "EatingHabit",
     "NotificationSetting",

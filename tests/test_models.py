@@ -12,6 +12,7 @@ from scripts.seed_nutrition_items import seed
 EXPECTED_TABLES = {
     "users",
     "refresh_tokens",
+    "password_reset_codes",
     "user_profiles",
     "eating_habits",
     "notification_settings",
@@ -30,9 +31,9 @@ EXPECTED_TABLES = {
 }
 
 
-def test_all_17_tables_registered():
+def test_all_18_tables_registered():
     assert set(Base.metadata.tables.keys()) == EXPECTED_TABLES
-    assert len(EXPECTED_TABLES) == 17
+    assert len(EXPECTED_TABLES) == 18
 
 
 def _sqlite_factory():

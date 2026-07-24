@@ -61,6 +61,28 @@ class RefreshToken(Base):
     created_at: Mapped[datetime] = created_at_column()
 
 
+class PasswordResetCode(Base):
+    """비밀번호 재설정 인증코드 (이메일 가입 계정 전용).
+
+    코드 원문은 저장하지 않고 SHA-256 해시만 남긴다 (refresh_tokens 와 동일 원칙).
+    """
+
+    __tablename__ = "password_reset_codes"
+
+    id: Mapped[int] = pk_column()
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    code_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(TZDateTime, nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    # 코드 불일치 시도 횟수 — 상한 초과 시 코드 폐기(무차별 대입 방지)
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    created_at: Mapped[datetime] = created_at_column()
+
+
 class UserProfile(Base):
     __tablename__ = "user_profiles"
 

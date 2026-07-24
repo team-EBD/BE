@@ -5,6 +5,8 @@
 - POST /auth/signup / POST /auth/login: 이메일 가입/로그인.
   users 에는 social_provider="email", social_id=<소문자 이메일> 로 저장한다.
 - POST /auth/refresh: refresh 회전(기존 철회 → 새 쌍 발급).
+- POST /auth/password/forgot / POST /auth/password/reset: 비밀번호 재설정
+  (이메일로 6자리 인증코드 발송 → 코드 검증 후 새 비밀번호 저장).
 """
 from __future__ import annotations
 
@@ -12,8 +14,9 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from fastapi import APIRouter, Depends, Response
-from sqlalchemy import select
+from sqlalchemy import func, select
 
+from app.core.config import settings
 from app.core.deps import DB
 from app.core.errors import APIError
 from app.core.security import (
@@ -26,11 +29,15 @@ from app.core.security import (
     verify_password,
 )
 from app.core.timeutil import from_db, now_utc
+from app.mail_client import MailClient, MailSendError, get_mail_client
 from app.models import RefreshToken, User, UserProfile
 from app.schemas.auth import (
     EmailAuthResponse,
     EmailLoginRequest,
     EmailSignupRequest,
+    PasswordForgotRequest,
+    PasswordMessageResponse,
+    PasswordResetRequest,
     RefreshRequest,
     RefreshResponse,
     SocialLoginRequest,
@@ -38,6 +45,7 @@ from app.schemas.auth import (
 )
 from app.services.goals import personalized_goals
 from app.services.nickname import allocate_nickname_tag
+from app.services.password_reset import consume_code, issue_code
 from app.services.summary import DEFAULT_GOALS, derive_macro_goals
 from app.social_client import SocialIdentity, verify_social_token
 
@@ -49,6 +57,11 @@ EMAIL_PROVIDER = "email"
 def get_social_verifier() -> Callable[[str, str], SocialIdentity]:
     """테스트에서 dependency_overrides 로 교체하는 검증기 의존성."""
     return verify_social_token
+
+
+def get_mailer() -> MailClient:
+    """테스트에서 dependency_overrides 로 교체하는 메일 클라이언트 의존성."""
+    return get_mail_client()
 
 
 def _issue_token_pair(db, user_id: int) -> tuple[str, str]:
@@ -166,6 +179,97 @@ def email_login(body: EmailLoginRequest, db: DB) -> EmailAuthResponse:
     access, refresh = _issue_token_pair(db, user.id)
     db.commit()
     return EmailAuthResponse(access_token=access, refresh_token=refresh, user=user)
+
+
+@router.post("/password/forgot", response_model=PasswordMessageResponse)
+def password_forgot(
+    body: PasswordForgotRequest,
+    db: DB,
+    mailer: MailClient = Depends(get_mailer),
+) -> PasswordMessageResponse:
+    email_lower = body.email.strip().lower()
+    user = db.scalar(
+        select(User).where(
+            User.social_provider == EMAIL_PROVIDER,
+            User.social_id == email_lower,
+        )
+    )
+    if user is None:
+        # 소셜 가입자가 비밀번호를 찾으려는 흔한 실수 — 가입 경로를 안내한다
+        social = db.scalar(
+            select(User).where(
+                func.lower(User.email) == email_lower,
+                User.social_provider != EMAIL_PROVIDER,
+            )
+        )
+        if social is not None:
+            raise APIError(
+                409,
+                "CONFLICT",
+                "소셜 계정으로 가입된 이메일입니다. 소셜 로그인을 이용해주세요.",
+            )
+        raise APIError(404, "NOT_FOUND", "가입되지 않은 이메일입니다.")
+
+    code = issue_code(db, user)
+    expire_minutes = settings.password_reset_code_expire_minutes
+    try:
+        mailer.send(
+            to=email_lower,
+            subject="[eatlog] 비밀번호 재설정 인증코드",
+            body=(
+                f"비밀번호 재설정 인증코드: {code}\n\n"
+                f"{expire_minutes}분 안에 앱에 입력해주세요.\n"
+                "본인이 요청하지 않았다면 이 메일을 무시하셔도 됩니다."
+            ),
+        )
+    except MailSendError:
+        db.rollback()
+        raise APIError(
+            500, "INTERNAL_ERROR", "인증코드 메일 발송에 실패했습니다. 잠시 후 다시 시도해주세요."
+        )
+    db.commit()
+    return PasswordMessageResponse(
+        message=f"인증코드를 이메일로 보냈습니다. {expire_minutes}분 안에 입력해주세요."
+    )
+
+
+@router.post("/password/reset", response_model=PasswordMessageResponse)
+def password_reset(body: PasswordResetRequest, db: DB) -> PasswordMessageResponse:
+    email_lower = body.email.strip().lower()
+    user = db.scalar(
+        select(User).where(
+            User.social_provider == EMAIL_PROVIDER,
+            User.social_id == email_lower,
+        )
+    )
+    invalid = APIError(400, "VALIDATION_ERROR", "인증코드가 올바르지 않습니다.")
+    if user is None:
+        raise invalid
+
+    result = consume_code(db, user, body.code)
+    if result != "ok":
+        db.commit()  # 불일치 시도 횟수(attempt_count) 저장
+        if result == "expired":
+            raise APIError(
+                400, "VALIDATION_ERROR", "인증코드가 만료되었습니다. 다시 요청해주세요."
+            )
+        raise invalid
+
+    user.password_hash = hash_password(body.new_password)
+    # 보안: 비밀번호 변경 시 기존 로그인 세션(refresh)을 전부 철회한다
+    now = now_utc()
+    active_tokens = db.scalars(
+        select(RefreshToken).where(
+            RefreshToken.user_id == user.id,
+            RefreshToken.revoked_at.is_(None),
+        )
+    )
+    for token in active_tokens:
+        token.revoked_at = now
+    db.commit()
+    return PasswordMessageResponse(
+        message="비밀번호가 변경되었습니다. 새 비밀번호로 로그인해주세요."
+    )
 
 
 @router.post("/refresh", response_model=RefreshResponse)

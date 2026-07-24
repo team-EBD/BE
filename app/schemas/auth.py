@@ -35,6 +35,19 @@ class SocialLoginResponse(BaseModel):
     user: UserOut
 
 
+def validate_password_rules(value: str) -> str:
+    """가입/재설정 공통 비밀번호 규칙 — 영문+숫자 포함 8~128자."""
+    if len(value) > 128:
+        raise ValueError("비밀번호는 128자 이하여야 합니다.")
+    if (
+        len(value) < 8
+        or not re.search(r"[A-Za-z]", value)
+        or not re.search(r"\d", value)
+    ):
+        raise ValueError("비밀번호는 영문자와 숫자를 포함해 8자 이상이어야 합니다.")
+    return value
+
+
 class EmailSignupRequest(BaseModel):
     email: str = Field(max_length=255)
     # 길이 검사도 custom validator 에서 수행 — 어떤 위반이든 한국어 안내 한 문장으로 응답되게 한다.
@@ -55,15 +68,7 @@ class EmailSignupRequest(BaseModel):
     @field_validator("password")
     @classmethod
     def _validate_password(cls, value: str) -> str:
-        if len(value) > 128:
-            raise ValueError("비밀번호는 128자 이하여야 합니다.")
-        if (
-            len(value) < 8
-            or not re.search(r"[A-Za-z]", value)
-            or not re.search(r"\d", value)
-        ):
-            raise ValueError("비밀번호는 영문자와 숫자를 포함해 8자 이상이어야 합니다.")
-        return value
+        return validate_password_rules(value)
 
 
 class EmailLoginRequest(BaseModel):
@@ -84,6 +89,25 @@ class EmailAuthResponse(BaseModel):
     access_token: str
     refresh_token: str
     user: EmailAuthUserOut
+
+
+class PasswordForgotRequest(BaseModel):
+    email: str = Field(max_length=255)
+
+
+class PasswordResetRequest(BaseModel):
+    email: str = Field(max_length=255)
+    code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def _validate_new_password(cls, value: str) -> str:
+        return validate_password_rules(value)
+
+
+class PasswordMessageResponse(BaseModel):
+    message: str
 
 
 class RefreshRequest(BaseModel):
