@@ -18,16 +18,46 @@ from app.services.image_retention import retention_cutoff_utc
 # 목표 미설정 사용자 기본값 (명세서 9.1 예시 준용)
 DEFAULT_GOALS = {"calories": 2000, "carbs": 250, "protein": 120, "fat": 65}
 
-# 탄:단:지 칼로리 비율 50:30:20, 탄수화물·단백질 4kcal/g, 지방 9kcal/g
+# 신체정보 부족 시 폴백 비율 50:30:20 (탄수화물·단백질 4kcal/g, 지방 9kcal/g)
 MACRO_SPLIT = {"carbs": (0.5, 4), "protein": (0.3, 4), "fat": (0.2, 9)}
 
+# 목표 유형별 단백질 계수(체중 kg당 g). 근거: ref/설계/영양_목표_산정_근거_v1.md
+# - diet(감량): 근손실 방지 위해 상향 / maintain(유지): Morton 2018 플래토 ~1.6
+# - bulk(증량): 잉여열량에서 근합성 지원
+PROTEIN_G_PER_KG = {"diet": 2.0, "maintain": 1.6, "bulk": 1.8}
+# 지방은 목표 칼로리의 25%(기본), 하한 20% — 20% 미만은 호르몬·필수지방산 저하 (AND/DC/ACSM 2016)
+FAT_ENERGY_RATIO = 0.25
+FAT_ENERGY_RATIO_MIN = 0.20
 
-def derive_macro_goals(goal_calories: int) -> dict[str, int]:
-    """목표 칼로리에서 탄단지 목표(g)를 유도한다 (50:30:20)."""
-    return {
-        key: round(goal_calories * ratio / kcal_per_g)
-        for key, (ratio, kcal_per_g) in MACRO_SPLIT.items()
-    }
+
+def derive_macro_goals(
+    goal_calories: int, weight: float | None = None, meal_goal: str | None = None
+) -> dict[str, int]:
+    """목표 칼로리에서 탄단지 목표(g)를 유도한다.
+
+    체중이 있으면 '단백질(체중당 g) 먼저 → 지방(칼로리 %, 하한 20%) → 탄수 나머지' 순으로
+    목표 유형(감량/유지/증량)에 맞춰 산정한다. 체중이 없으면(신체정보 부족) 기존 비율(50:30:20)로
+    폴백한다. (스포츠영양 근거: ref/설계/영양_목표_산정_근거_v1.md)
+    """
+    if weight is None:
+        return {
+            key: round(goal_calories * ratio / kcal_per_g)
+            for key, (ratio, kcal_per_g) in MACRO_SPLIT.items()
+        }
+
+    coef = PROTEIN_G_PER_KG.get(meal_goal or "maintain", PROTEIN_G_PER_KG["maintain"])
+    protein_g = round(float(weight) * coef)
+    protein_kcal = protein_g * 4
+
+    fat_kcal = goal_calories * FAT_ENERGY_RATIO
+    # 마른 체형 + 큰 적자에서 단백질+지방이 목표를 넘으면 지방을 하한(20%)까지 낮춘다
+    if protein_kcal + fat_kcal > goal_calories:
+        fat_kcal = goal_calories * FAT_ENERGY_RATIO_MIN
+    fat_g = round(fat_kcal / 9)
+
+    carbs_kcal = max(goal_calories - protein_kcal - fat_g * 9, 0)
+    carbs_g = round(carbs_kcal / 4)
+    return {"carbs": carbs_g, "protein": protein_g, "fat": fat_g}
 
 
 def get_goals(db: Session, user_id: int) -> dict[str, int]:

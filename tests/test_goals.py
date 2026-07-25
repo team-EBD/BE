@@ -10,6 +10,7 @@ from app.services.goals import (
     calculate_goal_calories,
     personalized_goals,
 )
+from app.services.summary import derive_macro_goals
 from tests.conftest import login as social_login
 from tests.test_auth_email import signup
 
@@ -57,13 +58,49 @@ def test_unknown_gender_between_male_and_female():
     assert female < unknown < male
 
 
-def test_personalized_goals_macros_derived():
-    goals = personalized_goals("female", None, 165.5, 55)
+def test_personalized_goals_macros_body_weight_based():
+    # 여 55kg 유지 1750: 단백질 1.6×55=88g, 지방 25%≈49g, 탄수 나머지≈239g
+    goals = personalized_goals("female", None, 165.5, 55, "maintain")
     assert goals["calories"] == 1750
-    # 50:30:20 유도 (탄단 4kcal/g, 지 9kcal/g)
-    assert goals["carbs"] == round(1750 * 0.5 / 4)
-    assert goals["protein"] == round(1750 * 0.3 / 4)
-    assert goals["fat"] == round(1750 * 0.2 / 9)
+    assert goals["protein"] == round(55 * 1.6)  # 88
+    assert goals["fat"] == round(1750 * 0.25 / 9)  # 49
+    # 탄수는 단백질·지방을 뺀 나머지 칼로리에서 유도
+    assert goals["carbs"] == round((1750 - goals["protein"] * 4 - goals["fat"] * 9) / 4)
+
+
+def test_macro_protein_scales_by_goal_type():
+    # 같은 체중이면 감량기 단백질(2.0)이 증량(1.8)·유지(1.6)보다 높다 (근손실 방지)
+    w = 70
+    diet = derive_macro_goals(2000, w, "diet")
+    maintain = derive_macro_goals(2000, w, "maintain")
+    bulk = derive_macro_goals(2000, w, "bulk")
+    assert diet["protein"] == round(w * 2.0)  # 140
+    assert maintain["protein"] == round(w * 1.6)  # 112
+    assert bulk["protein"] == round(w * 1.8)  # 126
+    assert diet["protein"] > bulk["protein"] > maintain["protein"]
+
+
+def test_macro_fat_default_25pct_and_carbs_remainder():
+    m = derive_macro_goals(2000, 70, "maintain")
+    assert m["fat"] == round(2000 * 0.25 / 9)  # 56
+    # 탄수 = 전체 - 단백질kcal - 지방kcal (나머지 배분)
+    assert m["carbs"] == round((2000 - m["protein"] * 4 - m["fat"] * 9) / 4)
+
+
+def test_macro_fat_floor_prevents_negative_carbs():
+    # 극단(큰 체중 + 낮은 칼로리): 단백질+지방25%가 목표를 넘으면 지방을 20%로 낮추고
+    # 탄수는 0 밑으로 내려가지 않는다
+    m = derive_macro_goals(900, 100, "diet")  # 단백질 200g=800kcal, 25%지방이면 초과
+    assert m["fat"] == round(900 * 0.20 / 9)  # 하한 20% 적용
+    assert m["carbs"] >= 0
+
+
+def test_macro_fallback_ratio_without_weight():
+    # 체중 미상(신체정보 부족)이면 기존 50:30:20 비율로 폴백
+    m = derive_macro_goals(2000)
+    assert m["protein"] == round(2000 * 0.3 / 4)
+    assert m["fat"] == round(2000 * 0.2 / 9)
+    assert m["carbs"] == round(2000 * 0.5 / 4)
 
 
 # --- API: 자동 재계산 vs 수동 설정 보존 ---

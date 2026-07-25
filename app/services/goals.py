@@ -59,4 +59,4 @@ def personalized_goals(
     calories = calculate_goal_calories(gender, birth_year, height, weight, meal_goal)
     if calories is None:
         return None
-    return {"calories": calories, **derive_macro_goals(calories)}
+    return {"calories": calories, **derive_macro_goals(calories, weight, meal_goal)}
