@@ -115,11 +115,14 @@ def update_me(body: UpdateMeRequest, user: CurrentUser, db: DB) -> MeDetailRespo
         if body.birth_year is not None:
             profile.birth_year = body.birth_year
 
+        # 탄단지는 목표 유형(감량/유지/증량)에 따라 단백질 계수가 달라지므로 함께 읽는다
+        habit = db.scalar(select(EatingHabit).where(EatingHabit.user_id == user.id))
+        meal_goal = habit.meal_goal if habit else None
         if body.daily_goal_calories is not None:
             # 사용자가 직접 설정한 목표 — 이후 신체정보가 바뀌어도 자동 재계산으로
-            # 덮어쓰지 않는다
+            # 덮어쓰지 않는다 (칼로리는 수동, 탄단지는 체중·목표유형 기준 유지)
             profile.goal_source = "manual"
-            _apply_goal_calories(profile, body.daily_goal_calories)
+            _apply_goal_calories(profile, body.daily_goal_calories, meal_goal)
         elif body.goal_source == "auto" or (
             profile.goal_source == "auto"
             and any(
@@ -130,25 +133,29 @@ def update_me(body: UpdateMeRequest, user: CurrentUser, db: DB) -> MeDetailRespo
             # 자동 산정 사용자의 신체정보 변경, 또는 직접 설정 목표의 자동 되돌리기
             # — BMR/TDEE 목표를 재계산한다
             profile.goal_source = "auto"
-            habit = db.scalar(select(EatingHabit).where(EatingHabit.user_id == user.id))
             goals = personalized_goals(
                 profile.gender,
                 profile.birth_year,
                 profile.height,
                 profile.weight,
-                habit.meal_goal if habit else None,
+                meal_goal,
             )
             if goals is not None:
-                _apply_goal_calories(profile, goals["calories"])
+                _apply_goal_calories(profile, goals["calories"], meal_goal)
 
     db.commit()
     return _me_response(db, user)
 
 
-def _apply_goal_calories(profile: UserProfile, calories: int) -> None:
-    """목표 칼로리 변경 시 탄단지 목표(50:30:20)도 함께 갱신한다."""
+def _apply_goal_calories(
+    profile: UserProfile, calories: int, meal_goal: str | None = None
+) -> None:
+    """목표 칼로리 변경 시 탄단지 목표도 함께 갱신한다.
+
+    체중·목표유형이 있으면 단백질(체중당 g) 우선 산정, 없으면 비율 폴백.
+    """
     profile.goal_calories = calories
-    macros = derive_macro_goals(calories)
+    macros = derive_macro_goals(calories, profile.weight, meal_goal)
     profile.goal_carbs = macros["carbs"]
     profile.goal_protein = macros["protein"]
     profile.goal_fat = macros["fat"]
@@ -197,7 +204,7 @@ def update_eating_habits(
                 body.meal_goal,
             )
             if goals is not None:
-                _apply_goal_calories(profile, goals["calories"])
+                _apply_goal_calories(profile, goals["calories"], body.meal_goal)
 
     db.commit()
     return _habits_response(habit)

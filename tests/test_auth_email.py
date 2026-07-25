@@ -54,8 +54,9 @@ def test_signup_201_tokens_and_profile(client, db_factory):
         assert float(profile.height) == 165.5
         assert float(profile.weight) == 55.0
         assert profile.goal_source == "auto"
-        # 탄단지 목표는 자동 산정 칼로리(1750)의 50:30:20 유도값
-        assert (profile.goal_carbs, profile.goal_protein, profile.goal_fat) == (219, 131, 39)
+        # 탄단지는 체중 기반 산정 — 가입 시 목표유형 없음(유지): 단백질 1.6×55=88g,
+        # 지방 25%≈49g, 탄수 나머지≈239g (자동 산정 칼로리 1750 기준)
+        assert (profile.goal_carbs, profile.goal_protein, profile.goal_fat) == (239, 88, 49)
 
 
 def test_signup_duplicate_email_409(client):
