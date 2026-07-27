@@ -274,3 +274,46 @@ def test_monthly_summary_invalid_month_422(client, auth_headers):
             "/v1/nutrition/monthly-summary", headers=auth_headers, params={"month": bad}
         )
         assert res.status_code == 422, bad
+
+
+def test_daily_summary_day_start_hour_moves_late_night_meal(client, auth_headers):
+    """day_start_hour=6 이면 새벽 야식(6/28 01:30)이 전날(6/27) 섭취로 잡힌다."""
+    create_meal(client, auth_headers, {**MEAL_PAYLOAD, "eaten_at": "2026-06-28T01:30:00+09:00"})
+
+    def total(day: str, **params):
+        res = client.get(
+            "/v1/nutrition/daily-summary",
+            headers=auth_headers,
+            params={"date": day, **params},
+        )
+        assert res.status_code == 200, res.text
+        return res.json()["total"]["calories"]
+
+    # 기본(자정 경계) — 먹은 날짜 그대로 6/28
+    assert total("2026-06-27") == 0
+    assert total("2026-06-28") == 524.0
+    # 6시 경계 — 전날 기록으로 이동
+    assert total("2026-06-27", day_start_hour=6) == 524.0
+    assert total("2026-06-28", day_start_hour=6) == 0
+
+
+def test_daily_summary_day_start_hour_streak(client, auth_headers):
+    """연속 기록(streak)도 같은 하루 경계 규칙을 따른다."""
+    create_meal(client, auth_headers, meal_on("2026-06-26"))
+    create_meal(client, auth_headers, {**MEAL_PAYLOAD, "eaten_at": "2026-06-28T02:00:00+09:00"})
+    res = client.get(
+        "/v1/nutrition/daily-summary",
+        headers=auth_headers,
+        params={"date": "2026-06-27", "day_start_hour": 6},
+    )
+    # 6시 경계에서 6/28 새벽 기록은 6/27 → 6/26~6/27 연속 2일
+    assert res.json()["streak_days"] == 2
+
+
+def test_daily_summary_rejects_out_of_range_day_start_hour(client, auth_headers):
+    res = client.get(
+        "/v1/nutrition/daily-summary",
+        headers=auth_headers,
+        params={"date": "2026-06-27", "day_start_hour": 20},
+    )
+    assert res.status_code in (400, 422)

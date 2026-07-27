@@ -20,9 +20,13 @@ _MONTH_PATTERN = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
 @router.get("/daily-summary")
 def daily_summary(
-    user: CurrentUser, db: DB, date_: date = Query(alias="date")
+    user: CurrentUser,
+    db: DB,
+    date_: date = Query(alias="date"),
+    # 하루 경계 시각 (0=자정, 6=06시~다음날 06시를 한 날로). 홈 화면이 6 을 쓴다.
+    day_start_hour: int = Query(default=0, ge=0, le=12),
 ) -> dict:
-    return daily_summary_response(db, user.id, date_)
+    return daily_summary_response(db, user.id, date_, day_start_hour)
 
 
 @router.get("/weekly-summary")
