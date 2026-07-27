@@ -35,6 +35,19 @@ class CandidateNutrition(BaseModel):
     fat: float
 
 
+class BoundingBox(BaseModel):
+    """사진 속 음식 위치 — 이미지 좌상단 기준 정규화 좌표(0.0~1.0).
+
+    AI 분석이 준 좌표를 그대로 전달하고, 식단 저장 시 meal_items 에 스냅샷으로
+    남긴다 (FE 사진 확대 보기의 음식 이름 오버레이용).
+    """
+
+    x: float = Field(ge=0, le=1)
+    y: float = Field(ge=0, le=1)
+    width: float = Field(gt=0, le=1)
+    height: float = Field(gt=0, le=1)
+
+
 class HabitAdjusted(BaseModel):
     applied_factor: float
     applied_corrections: list[str]
@@ -54,6 +67,8 @@ class AnalyzeCandidate(BaseModel):
     # '국물 제외/소스 제외' 보정 버튼을 감춘다. 미판별 시 True.
     has_soup: bool = True
     has_sauce: bool = True
+    # 사진 속 위치 (AI 판별). 좌표를 못 얻으면 None — FE 는 오버레이만 생략한다.
+    bbox: BoundingBox | None = None
     nutrition: CandidateNutrition | None = None
     habit_adjusted: HabitAdjusted | None = None
 
@@ -89,6 +104,8 @@ class MealItemInput(BaseModel):
     carbs: float = Field(ge=0)
     protein: float = Field(ge=0)
     fat: float = Field(ge=0)
+    # AI 분석이 준 사진 속 위치 스냅샷 (직접 검색으로 담은 음식은 None)
+    bbox: BoundingBox | None = None
     before_data: NutritionSnapshot | None = None
 
 
@@ -153,6 +170,7 @@ class MealItemDetail(BaseModel):
     carbs: float
     protein: float
     fat: float
+    bbox: BoundingBox | None = None
 
 
 class MealDetailResponse(BaseModel):

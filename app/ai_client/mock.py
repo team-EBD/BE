@@ -6,6 +6,7 @@ AI 서버 없이도 분석/추천 경로 전체(E2E)가 돌게 한다. 응답 �
 from __future__ import annotations
 
 from app.ai_client.base import (
+    AIBoundingBox,
     AICallLogPayload,
     AICandidate,
     AIRecommendation,
@@ -15,6 +16,10 @@ from app.ai_client.base import (
 
 MOCK_MODEL = "mock-model"
 
+# 음식별 위치 (같은 음식의 대체 예측끼리는 같은 좌표)
+_STEW_BOX = AIBoundingBox(x=0.04, y=0.12, width=0.44, height=0.5)
+_RICE_BOX = AIBoundingBox(x=0.52, y=0.43, width=0.38, height=0.35)
+
 
 class MockAIClient:
     def analyze(self, image_url: str, eating_habits: dict | None = None) -> AnalyzeResult:
@@ -23,10 +28,10 @@ class MockAIClient:
             draft_notice="AI가 분석한 기록 초안입니다.",
             candidates=[
                 # 음식 0: 찌개류 대체 예측 3개, 음식 1: 공기밥 (여러 음식 그룹핑 검증용)
-                AICandidate(food_index=0, food_name="김치찌개", confidence=0.87, estimated_serving=1.0, has_soup=True, has_sauce=False),
-                AICandidate(food_index=0, food_name="된장찌개", confidence=0.08, estimated_serving=1.0, has_soup=True, has_sauce=False),
-                AICandidate(food_index=0, food_name="순두부찌개", confidence=0.05, estimated_serving=1.0, has_soup=True, has_sauce=False),
-                AICandidate(food_index=1, food_name="공기밥", confidence=0.95, estimated_serving=1.0, has_soup=False, has_sauce=False),
+                AICandidate(food_index=0, food_name="김치찌개", confidence=0.87, estimated_serving=1.0, has_soup=True, has_sauce=False, bbox=_STEW_BOX),
+                AICandidate(food_index=0, food_name="된장찌개", confidence=0.08, estimated_serving=1.0, has_soup=True, has_sauce=False, bbox=_STEW_BOX),
+                AICandidate(food_index=0, food_name="순두부찌개", confidence=0.05, estimated_serving=1.0, has_soup=True, has_sauce=False, bbox=_STEW_BOX),
+                AICandidate(food_index=1, food_name="공기밥", confidence=0.95, estimated_serving=1.0, has_soup=False, has_sauce=False, bbox=_RICE_BOX),
             ],
             ai_call_log=AICallLogPayload(
                 provider="google",

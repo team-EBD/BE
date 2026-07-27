@@ -61,6 +61,7 @@ def _insert_items(
             carbs=item.carbs,
             protein=item.protein,
             fat=item.fat,
+            bbox=item.bbox.model_dump() if item.bbox else None,
         )
         db.add(row)
         db.flush()

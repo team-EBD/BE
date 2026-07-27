@@ -219,3 +219,38 @@ def test_analyze_unmatched_food_uses_ai_nutrition_estimate(client, auth_headers)
     # 추정치조차 없으면 기존과 동일하게 nutrition null
     assert second["nutrition_item_id"] is None
     assert second["nutrition"] is None
+
+
+def test_analyze_bbox_passthrough(client, auth_headers):
+    """AI 가 준 음식 위치(bbox)를 응답에 그대로 전달한다 (같은 음식은 같은 좌표)."""
+    image_id = upload_image_id(client, auth_headers)
+    res = client.post(
+        "/v1/meals/analyze", headers=auth_headers, json={"meal_image_id": image_id}
+    )
+    by_name = {c["normalized_name"]: c for c in res.json()["candidates"]}
+    assert by_name["김치찌개"]["bbox"] == {
+        "x": 0.04, "y": 0.12, "width": 0.44, "height": 0.5,
+    }
+    assert by_name["된장찌개"]["bbox"] == by_name["김치찌개"]["bbox"]
+    assert by_name["공기밥"]["bbox"]["x"] == 0.52
+
+
+def test_analyze_bbox_none_for_legacy_ai_server(client, auth_headers, monkeypatch):
+    """bbox 를 주지 않는(구버전) AI 서버 응답도 분석은 정상 동작한다."""
+    from app.ai_client.mock import MockAIClient
+
+    original = MockAIClient.analyze
+
+    def without_bbox(self, image_url, eating_habits=None):
+        result = original(self, image_url, eating_habits)
+        for cand in result.candidates:
+            cand.bbox = None
+        return result
+
+    monkeypatch.setattr(MockAIClient, "analyze", without_bbox)
+    image_id = upload_image_id(client, auth_headers)
+    res = client.post(
+        "/v1/meals/analyze", headers=auth_headers, json={"meal_image_id": image_id}
+    )
+    assert res.status_code == 200
+    assert all(c["bbox"] is None for c in res.json()["candidates"])

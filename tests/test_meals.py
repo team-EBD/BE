@@ -212,3 +212,66 @@ def test_calendar_day_start_hour(client, auth_headers):
 def test_calendar_bad_month_400(client, auth_headers):
     res = client.get("/v1/meals/calendar", headers=auth_headers, params={"month": "2026-13"})
     assert res.status_code == 400
+
+
+def test_bbox_saved_and_returned_in_detail(client, auth_headers):
+    """AI 가 준 음식 위치를 저장 시 스냅샷으로 남기고 상세 조회에 그대로 돌려준다."""
+    payload = {
+        **MEAL_PAYLOAD,
+        "items": [
+            {
+                **MEAL_PAYLOAD["items"][0],
+                "bbox": {"x": 0.04, "y": 0.12, "width": 0.44, "height": 0.5},
+            },
+            MEAL_PAYLOAD["items"][1],  # 직접 검색 등 좌표 없는 항목
+        ],
+    }
+    meal_id = create_meal(client, auth_headers, payload)["meal_id"]
+    body = client.get(f"/v1/meals/{meal_id}", headers=auth_headers).json()
+    by_name = {i["food_name"]: i for i in body["items"]}
+    assert by_name["김치찌개"]["bbox"] == {
+        "x": 0.04, "y": 0.12, "width": 0.44, "height": 0.5,
+    }
+    assert by_name["공기밥"]["bbox"] is None
+
+
+def test_bbox_out_of_range_is_422(client, auth_headers):
+    """정규화 좌표(0~1)를 벗어난 bbox 는 저장하지 않는다."""
+    payload = {
+        **MEAL_PAYLOAD,
+        "items": [
+            {
+                **MEAL_PAYLOAD["items"][0],
+                "bbox": {"x": 0.1, "y": 0.1, "width": 1.5, "height": 0.4},
+            }
+        ],
+    }
+    res = client.post("/v1/meals", headers=auth_headers, json=payload)
+    assert res.status_code in (400, 422)
+
+
+def test_update_meal_items_keeps_bbox(client, auth_headers):
+    """항목 교체(PATCH)에서도 bbox 를 다시 저장한다."""
+    meal_id = create_meal(client, auth_headers)["meal_id"]
+    res = client.patch(
+        f"/v1/meals/{meal_id}",
+        headers=auth_headers,
+        json={
+            "items": [
+                {
+                    "nutrition_item_id": 1,
+                    "food_name": "김치찌개",
+                    "serving_amount": 0.5,
+                    "calories": 160,
+                    "carbs": 9.3,
+                    "protein": 11.0,
+                    "fat": 8.0,
+                    "bbox": {"x": 0.0, "y": 0.0, "width": 1.0, "height": 1.0},
+                }
+            ]
+        },
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["items"][0]["bbox"] == {
+        "x": 0.0, "y": 0.0, "width": 1.0, "height": 1.0,
+    }

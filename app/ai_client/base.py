@@ -30,6 +30,18 @@ class AINutritionEstimate(BaseModel):
     fat: float
 
 
+class AIBoundingBox(BaseModel):
+    """사진 속 음식 위치 (이미지 좌상단 기준 정규화 좌표 0.0~1.0).
+
+    FE 가 사진 확대 보기에서 음식 이름을 그 위치에 오버레이하는 데 쓴다.
+    """
+
+    x: float
+    y: float
+    width: float
+    height: float
+
+
 class AICandidate(BaseModel):
     # 사진 속 몇 번째 음식에 대한 예측인지 (0부터). 같은 food_index 후보들은
     # "같은 음식에 대한 대체 예측"이다. 구버전 AI 서버 응답에는 없으므로 기본 0.
@@ -41,6 +53,8 @@ class AICandidate(BaseModel):
     # 구버전 AI 서버 응답에는 없으므로 True(버튼 노출 유지) 기본값.
     has_soup: bool = True
     has_sauce: bool = True
+    # 사진 속 위치. 구버전 AI 서버·좌표 판별 실패 시 None.
+    bbox: AIBoundingBox | None = None
     nutrition: AINutritionEstimate | None = None
 
 
