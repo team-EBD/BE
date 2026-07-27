@@ -265,6 +265,7 @@ def _detail_response(db, meal: MealRecord) -> MealDetailResponse:
                 carbs=float(item.carbs),
                 protein=float(item.protein),
                 fat=float(item.fat),
+                bbox=item.bbox,
             )
             for item, correction in pairs
         ],

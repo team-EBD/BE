@@ -79,6 +79,9 @@ class MealItem(Base):
     carbs: Mapped[float] = mapped_column(Numeric(8, 2), nullable=False)
     protein: Mapped[float] = mapped_column(Numeric(8, 2), nullable=False)
     fat: Mapped[float] = mapped_column(Numeric(8, 2), nullable=False)
+    # AI 가 준 사진 속 위치 스냅샷 {x, y, width, height} (0.0~1.0). 직접 검색으로
+    # 담은 음식이나 구버전 기록은 NULL — 확대 보기에서 오버레이만 생략된다.
+    bbox: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = created_at_column()
 
 

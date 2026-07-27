@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -16,6 +17,7 @@ from app.schemas.meal import (
     AnalyzeCandidate,
     AnalyzeFailedResponse,
     AnalyzeSuccessResponse,
+    BoundingBox,
     CandidateNutrition,
     HabitAdjusted,
 )
@@ -49,6 +51,21 @@ def _grouped_candidates(raw: list) -> list[tuple[int, object]]:
         counts[original] = counts.get(original, 0) + 1
         grouped.append((reindex[original], cand))
     return grouped
+
+
+def _bbox_of(cand) -> BoundingBox | None:
+    """AI 후보의 위치 좌표를 응답 스키마로 옮긴다.
+
+    범위를 벗어난 좌표(구/오작동 AI 서버)는 분석 전체를 500 으로 만들지 않고
+    좌표만 버린다 — 오버레이가 없을 뿐 기록은 정상 진행된다.
+    """
+    raw = getattr(cand, "bbox", None)
+    if raw is None:
+        return None
+    try:
+        return BoundingBox(**raw.model_dump())
+    except ValidationError:
+        return None
 
 
 def _save_call_log(
@@ -168,6 +185,7 @@ def analyze_meal_image(
                 estimated_serving=float(cand.estimated_serving),
                 has_soup=cand.has_soup,
                 has_sauce=cand.has_sauce,
+                bbox=_bbox_of(cand),
                 nutrition=nutrition,
                 habit_adjusted=habit_adjusted,
             )
