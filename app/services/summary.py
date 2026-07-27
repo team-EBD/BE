@@ -72,13 +72,16 @@ def get_goals(db: Session, user_id: int) -> dict[str, int]:
     }
 
 
-def aggregate_day(db: Session, user_id: int, day: date) -> dict:
+def aggregate_day(db: Session, user_id: int, day: date, day_start_hour: int = 0) -> dict:
     """해당 KST 날짜의 합계·끼니 수 (soft delete 제외).
 
     끼니 수(meal_count)는 실제로 먹은 기록만 센다 — 생략(is_skipped) 기록은
     영양 합계(0)에는 무해하지만 '몇 끼 먹었는지'에는 포함하면 안 된다.
+
+    day_start_hour 가 0 이 아니면 하루 경계를 그 시각으로 옮긴다
+    (예: 6 이면 06:00~다음날 06:00 — 새벽 야식이 전날 섭취로 잡힌다).
     """
-    start, end = kst_day_bounds(day)
+    start, end = kst_day_bounds(day, day_start_hour)
     row = db.execute(
         select(
             func.coalesce(func.sum(MealRecord.total_calories), 0),
@@ -169,15 +172,16 @@ def macro_ratio(carbs: float, protein: float, fat: float) -> dict[str, int]:
 STREAK_LOOKBACK_DAYS = 365  # streak 계산 시 최대 조회 기간
 
 
-def streak_days(db: Session, user_id: int, day: date) -> int:
+def streak_days(db: Session, user_id: int, day: date, day_start_hour: int = 0) -> int:
     """해당 date 기준 연속 기록 일수.
 
     date 에 기록이 있으면 date 부터, 없으면 date-1 부터 거꾸로 센다.
     최대 365일까지만 조회한다. '기록'은 aggregate_day 와 동일하게
     is_skipped=False 인 살아있는(soft delete 제외) 식사가 있는 날.
+    day_start_hour 는 aggregate_day 와 같은 하루 경계 규칙을 따른다.
     """
-    start, _ = kst_day_bounds(day - timedelta(days=STREAK_LOOKBACK_DAYS))
-    _, end = kst_day_bounds(day)
+    start, _ = kst_day_bounds(day - timedelta(days=STREAK_LOOKBACK_DAYS), day_start_hour)
+    _, end = kst_day_bounds(day, day_start_hour)
     eaten_ats = db.scalars(
         select(MealRecord.eaten_at).where(
             MealRecord.user_id == user_id,
@@ -187,7 +191,7 @@ def streak_days(db: Session, user_id: int, day: date) -> int:
             MealRecord.eaten_at < end,
         )
     ).all()
-    recorded = {kst_date_of(dt) for dt in eaten_ats}
+    recorded = {kst_date_of(dt, day_start_hour) for dt in eaten_ats}
     cursor = day if day in recorded else day - timedelta(days=1)
     streak = 0
     while cursor in recorded and streak < STREAK_LOOKBACK_DAYS:
@@ -290,9 +294,15 @@ def recompute_daily_summary(db: Session, user_id: int, day: date) -> DailyNutrit
     return summary
 
 
-def daily_summary_response(db: Session, user_id: int, day: date) -> dict:
-    """GET /nutrition/daily-summary 응답 (명세서 9.1). 조회 시점 재계산으로 정확성 보장."""
-    total = aggregate_day(db, user_id, day)
+def daily_summary_response(
+    db: Session, user_id: int, day: date, day_start_hour: int = 0
+) -> dict:
+    """GET /nutrition/daily-summary 응답 (명세서 9.1). 조회 시점 재계산으로 정확성 보장.
+
+    day_start_hour 는 조회에만 적용된다 — daily_nutrition_summaries 캐시는
+    자정 경계로 유지하고(recompute_daily_summary), 응답은 매번 재집계한다.
+    """
+    total = aggregate_day(db, user_id, day, day_start_hour)
     goals = get_goals(db, user_id)
     progress = {
         k: round(total[k] / goals[k], 2) if goals[k] else 0.0
@@ -305,7 +315,7 @@ def daily_summary_response(db: Session, user_id: int, day: date) -> dict:
         "progress": progress,
         "remaining_calories": max(round(goals["calories"] - total["calories"]), 0),
         "summary_text": build_summary_text(total, goals, total["meal_count"]),
-        "streak_days": streak_days(db, user_id, day),
+        "streak_days": streak_days(db, user_id, day, day_start_hour),
         "macro_ratio": macro_ratio(total["carbs"], total["protein"], total["fat"]),
     }
 
