@@ -50,6 +50,13 @@ class Settings(BaseSettings):
     analyze_daily_limit: int = 10
     recommend_daily_limit: int = 10
 
+    # --- 시작 시 마이그레이션 ---
+    # 서버 기동 시 alembic upgrade head 를 자동 적용한다. cloudtype 처럼 배포
+    # 플랫폼이 Dockerfile CMD(scripts/start.sh)를 자체 시작 명령으로 덮어써
+    # 마이그레이션이 실행되지 않는 환경을 위한 안전망 (app/core/migrations.py).
+    # Postgres 가 아니거나 pytest 중이면 이 값과 무관하게 건너뛴다.
+    run_migrations_on_startup: bool = True
+
     # --- 이미지 보존 기간 정리 ---
     # 저번달 1일(KST) 이전 업로드 이미지를 매일 스토리지·DB 에서 정리한다.
     # 테스트 등에서 백그라운드 태스크를 끄고 싶으면 false.

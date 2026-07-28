@@ -18,6 +18,7 @@ from app.api.v1 import api_router
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.errors import register_exception_handlers
+from app.core.migrations import run_migrations_if_enabled
 from app.core.timeutil import kst_date_of, now_utc
 from app.push_client import get_push_client
 from app.services.image_retention import purge_expired_images
@@ -76,6 +77,10 @@ async def _weekly_report_push_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 시작 명령이 scripts/start.sh 가 아니어도(cloudtype 대시보드 override)
+    # 코드와 DB 스키마가 어긋나지 않도록 여기서 한 번 더 보장한다.
+    await asyncio.to_thread(run_migrations_if_enabled)
+
     tasks = []
     if settings.image_retention_purge_enabled:
         tasks.append(asyncio.create_task(_image_purge_loop()))

@@ -1,0 +1,51 @@
+name: Deploy to cloudtype
+
+# dev 에 푸시(=PR 머지 포함)되면 테스트 후 cloudtype 에 배포한다.
+#
+# 스키마 변경은 기동 시 app/core/migrations.py 가 alembic upgrade head 를 적용하므로
+# 이 워크플로에서 따로 마이그레이션을 돌리지 않는다.
+#
+# ⚠️ deploy 잡은 저장소 변수 CLOUDTYPE_PROJECT 가 설정돼야만 실행된다.
+#    cloudtype 대시보드의 GitHub 자동배포를 이미 쓰고 있다면 이 잡은 중복이므로
+#    변수를 비워 둔 채로 두면 된다 (test 잡만 돌아간다).
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch: # 수동 재배포용
+
+jobs:
+  test:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run tests
+        # 테스트는 SQLite in-memory 로 돌아 운영 DB 를 건드리지 않는다 (tests/conftest.py)
+        run: python -m pytest -q
+
+  deploy:
+    name: cloudtype deploy
+    needs: test
+    runs-on: ubuntu-latest
+    # 변수 미설정 = 아직 연동 안 함 → 배포를 건너뛴다 (기존 앱 설정 보호)
+    if: vars.CLOUDTYPE_PROJECT != ''
+    steps:
+      - uses: actions/checkout@v4
+      - name: Connect repository to cloudtype
+        uses: cloudtype-github-actions/connect@v1
+        with:
+          token: ${{ secrets.CLOUDTYPE_TOKEN }}
+          ghtoken: ${{ secrets.GITHUB_TOKEN }}
+      - name: Deploy
+        uses: cloudtype-github-actions/deploy@v1
+        with:
+          token: ${{ secrets.CLOUDTYPE_TOKEN }}
+          project: ${{ vars.CLOUDTYPE_PROJECT }}
+          stage: ${{ vars.CLOUDTYPE_STAGE }}
+          file: ./cloudtype.yaml
