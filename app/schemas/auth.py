@@ -14,8 +14,11 @@ EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$")
 
 
 class SocialLoginRequest(BaseModel):
-    provider: str  # google (확장: kakao/apple)
+    provider: str  # google / apple (확장: kakao)
     token: str
+    # Apple 은 이름이 identityToken 에 없고 최초 인증 응답에만 포함된다 —
+    # FE 가 그때 전달하면 신규 가입 닉네임으로 사용한다 (이후 로그인은 무시).
+    name: str | None = None
 
 
 class UserOut(BaseModel):

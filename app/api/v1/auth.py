@@ -93,12 +93,15 @@ def social_login(
     )
     created = user is None
     if created:
+        # Apple 은 이름을 최초 인증 응답에만 주므로 body.name 이 있으면 우선한다
+        # (구글은 토큰에 이름이 있어 body.name 을 보내지 않는다)
+        nickname = (body.name or identity.nickname).strip() or "사용자"
         user = User(
             social_provider=identity.provider,
             social_id=identity.social_id,
             email=identity.email,
-            nickname=identity.nickname,
-            nickname_tag=allocate_nickname_tag(db, identity.nickname),
+            nickname=nickname,
+            nickname_tag=allocate_nickname_tag(db, nickname),
             profile_image_url=identity.profile_image_url,
         )
         db.add(user)
