@@ -142,20 +142,29 @@ BE/
 | --- | --- | --- |
 | Secret | `CLOUDTYPE_TOKEN` | cloudtype API 키 (스페이스 설정 → 인증 → 새 API 키) |
 | Secret | `GHP_TOKEN` | GitHub PAT(classic), 스코프 `repo`·`workflow`·`admin:public_key` |
-| Variable | `CLOUDTYPE_PROJECT` | **`<스페이스>/<프로젝트>`** 형식 |
-| Variable | `CLOUDTYPE_STAGE` | 스테이지 이름 (기본 스테이지면 생략 가능) |
+| Secret | `POSTGRES_PASSWORD` | 운영 DB 비밀번호 |
+| Secret | `JWT_SECRET` | 토큰 서명키 |
+| Secret | `FIREBASE_CREDENTIALS_JSON` | Firebase 서비스계정 JSON (한 줄) |
+| Secret | `SMTP_PASSWORD` | Gmail 앱 비밀번호 |
+| Variable | `CLOUDTYPE_PROJECT` | `741u741/ebd-back` (`<스페이스>/<프로젝트>`) |
+| Variable | `CLOUDTYPE_STAGE` | `main` |
 
 `GHP_TOKEN` 은 `connect` 액션이 배포키를 등록하는 데 쓴다. 기본 `GITHUB_TOKEN` 은
 `admin:public_key` 권한이 없어 대체할 수 없다. **PAT 만료일이 지나면 배포가 멈추므로**
 만료 기간을 길게 잡거나 갱신 일정을 잡아둘 것.
 
-`CLOUDTYPE_PROJECT` 를 비워 두면 배포 잡은 건너뛰고 테스트만 돈다. cloudtype 대시보드의
-GitHub 자동배포를 이미 쓰고 있다면 그대로 두는 편이 낫다(중복 배포 방지).
+`CLOUDTYPE_PROJECT` 를 비워 두면 배포 잡은 건너뛰고 테스트만 돈다.
 
-**배포 스펙은 `cloudtype.yaml` 이며, 배포 시 앱 설정을 덮어쓴다.** 리포에 들어 있는 파일은
-손으로 쓴 골격일 뿐이므로 그대로 쓰면 안 된다. **cloudtype 대시보드에서 해당 서비스를 열고
-`CLI` 탭에 생성돼 있는 스펙을 복사해 교체할 것** — 현재 앱 설정이 그대로 반영된 값이라
-환경변수 유실 없이 안전하다.
+### 배포 스펙 (중요)
+
+배포 스펙은 `.github/workflows/deploy.yml` 의 `yaml:` 블록에 인라인으로 들어 있다.
+cloudtype 대시보드 서비스의 **CLI 탭** 내용을 옮긴 것이며, **배포 시 앱 설정을 통째로
+덮어쓴다.** 따라서:
+
+- 대시보드에서 환경변수를 추가·변경하면 **이 블록에도 반영**해야 다음 배포에서 되돌아가지 않는다.
+- 시크릿(DB 비밀번호·JWT 서명키·Firebase 개인키·SMTP 비밀번호)은 스펙에 평문으로 적지 않고
+  GitHub Secrets 에서 주입한다. 값이 비면 해당 환경변수가 빈 값으로 덮어써지므로,
+  **위 표의 Secret 을 모두 등록한 뒤에** `CLOUDTYPE_PROJECT` 변수를 설정할 것.
 
 ### 더 단순한 대안
 cloudtype 대시보드에서 GitHub 저장소를 연결하고 배포 브랜치를 `dev` 로 지정하면
