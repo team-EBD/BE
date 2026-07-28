@@ -140,12 +140,25 @@ BE/
 
 | 종류 | 이름 | 값 |
 | --- | --- | --- |
-| Secret | `CLOUDTYPE_TOKEN` | cloudtype API 키 |
-| Variable | `CLOUDTYPE_PROJECT` | cloudtype 프로젝트 이름 |
+| Secret | `CLOUDTYPE_TOKEN` | cloudtype API 키 (스페이스 설정 → 인증 → 새 API 키) |
+| Secret | `GHP_TOKEN` | GitHub PAT(classic), 스코프 `repo`·`workflow`·`admin:public_key` |
+| Variable | `CLOUDTYPE_PROJECT` | **`<스페이스>/<프로젝트>`** 형식 |
 | Variable | `CLOUDTYPE_STAGE` | 스테이지 이름 (기본 스테이지면 생략 가능) |
+
+`GHP_TOKEN` 은 `connect` 액션이 배포키를 등록하는 데 쓴다. 기본 `GITHUB_TOKEN` 은
+`admin:public_key` 권한이 없어 대체할 수 없다. **PAT 만료일이 지나면 배포가 멈추므로**
+만료 기간을 길게 잡거나 갱신 일정을 잡아둘 것.
 
 `CLOUDTYPE_PROJECT` 를 비워 두면 배포 잡은 건너뛰고 테스트만 돈다. cloudtype 대시보드의
 GitHub 자동배포를 이미 쓰고 있다면 그대로 두는 편이 낫다(중복 배포 방지).
 
-**배포 스펙은 `cloudtype.yaml` 이며, 배포 시 앱 설정을 덮어쓴다.** 자동배포를 켜기 전에
-대시보드의 현재 설정(포트·시작 명령·환경변수)과 대조해 파일을 맞출 것.
+**배포 스펙은 `cloudtype.yaml` 이며, 배포 시 앱 설정을 덮어쓴다.** 리포에 들어 있는 파일은
+손으로 쓴 골격일 뿐이므로 그대로 쓰면 안 된다. **cloudtype 대시보드에서 해당 서비스를 열고
+`CLI` 탭에 생성돼 있는 스펙을 복사해 교체할 것** — 현재 앱 설정이 그대로 반영된 값이라
+환경변수 유실 없이 안전하다.
+
+### 더 단순한 대안
+cloudtype 대시보드에서 GitHub 저장소를 연결하고 배포 브랜치를 `dev` 로 지정하면
+GitHub Actions 없이도 푸시할 때마다 자동 배포된다. 토큰·스펙 관리가 없어 더 간단하다.
+GitHub Actions 를 쓰는 이유는 **배포 전에 pytest 를 게이트로 걸 수 있다**는 점 하나이며,
+둘을 동시에 켜면 한 번의 푸시에 두 번 배포되니 하나만 쓸 것.
