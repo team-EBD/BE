@@ -9,6 +9,7 @@ from app.core.database import Base
 from app.models.ai import AiCallLog, FoodCandidate, RecommendationLog
 from app.models.meal import CorrectionLog, MealImage, MealItem, MealRecord
 from app.models.nutrition import DailyNutritionSummary, NutritionItem
+from app.models.telemetry import ClientEvent, RequestLog
 from app.models.user import (
     EatingHabit,
     LocationConsent,
@@ -43,6 +44,8 @@ __all__ = [
     "CorrectionLog",
     # ai domain
     "AiCallLog",
+    "ClientEvent",
+    "RequestLog",
     "FoodCandidate",
     "RecommendationLog",
 ]

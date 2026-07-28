@@ -104,6 +104,48 @@ app = FastAPI(
 register_exception_handlers(app)
 app.include_router(api_router, prefix=settings.api_v1_prefix)
 
+# ── 요청 타이밍 계측 ──────────────────────────────────────
+# 모든 API 요청의 처리 시간을 request_logs 에 저장한다 (헬스체크/정적 파일 제외).
+# 기록 실패가 응답을 막지 않도록 저장은 best-effort 로 처리한다.
+_TIMING_SKIP_PREFIXES = ("/health", "/static", "/docs", "/openapi")
+
+
+def _save_request_log(method: str, path: str, status_code: int, duration_ms: int) -> None:
+    from app.models import RequestLog
+
+    db = SessionLocal()
+    try:
+        db.add(
+            RequestLog(
+                method=method, path=path, status_code=status_code, duration_ms=duration_ms
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+@app.middleware("http")
+async def request_timing_middleware(request, call_next):
+    import time
+
+    started = time.perf_counter()
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith(_TIMING_SKIP_PREFIXES):
+        return response
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    # 집계가 가능하도록 실제 경로 대신 라우트 템플릿(/v1/meals/{meal_id})을 저장
+    route = request.scope.get("route")
+    path_template = getattr(route, "path", None) or path
+    try:
+        await asyncio.to_thread(
+            _save_request_log, request.method, path_template, response.status_code, duration_ms
+        )
+    except Exception:  # noqa: BLE001 — 계측 실패가 서비스에 영향을 주면 안 된다
+        logger.exception("request_logs 기록 실패")
+    return response
+
 Path(settings.storage_dir).mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=settings.storage_dir), name="static")
 

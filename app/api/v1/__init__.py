@@ -4,6 +4,7 @@ from fastapi import APIRouter
 from app.api.v1 import (
     ai_call_logs,
     auth,
+    client_events,
     foods,
     health,
     meals,
@@ -25,3 +26,4 @@ api_router.include_router(nutrition.router)
 api_router.include_router(recommendations.router)
 api_router.include_router(ai_call_logs.router)
 api_router.include_router(usage.router)
+api_router.include_router(client_events.router)

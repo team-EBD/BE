@@ -38,6 +38,9 @@ class AiCallLog(Base):
     model_name: Mapped[str] = mapped_column(String(50), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False)  # success/timeout/error
     latency_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    # BE 요청 처리 전체 시간 (AI 호출 + 매칭·저장 포함). latency_ms 와의 차이가
+    # BE 오버헤드 — FE client_events 와 조인하면 구간별 분해가 가능하다.
+    total_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     token_input: Mapped[int | None] = mapped_column(Integer, nullable=True)
     token_output: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cost_estimate: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
