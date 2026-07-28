@@ -108,7 +108,8 @@ def aggregate_day(db: Session, user_id: int, day: date, day_start_hour: int = 0)
 
 
 def aggregate_range(
-    db: Session, user_id: int, start_day: date, end_day: date
+    db: Session, user_id: int, start_day: date, end_day: date,
+    day_start_hour: int = 0,
 ) -> dict[date, dict]:
     """[start_day, end_day] 구간을 한 번의 쿼리로 KST 날짜별 집계한다.
 
@@ -117,8 +118,8 @@ def aggregate_range(
     필터 조건은 aggregate_day 와 동일: soft delete 제외, meal_count 는
     is_skipped=False 인 기록만 센다.
     """
-    start, _ = kst_day_bounds(start_day)
-    _, end = kst_day_bounds(end_day)
+    start, _ = kst_day_bounds(start_day, day_start_hour)
+    _, end = kst_day_bounds(end_day, day_start_hour)
     days: dict[date, dict] = {
         start_day + timedelta(days=i): {
             "calories": 0.0, "carbs": 0.0, "protein": 0.0, "fat": 0.0, "meal_count": 0
@@ -141,7 +142,7 @@ def aggregate_range(
         )
     ).all()
     for eaten_at, cal, carbs, protein, fat, is_skipped in rows:
-        total = days.get(kst_date_of(eaten_at))
+        total = days.get(kst_date_of(eaten_at, day_start_hour))
         if total is None:  # 경계 오차 방어 (범위 밖 KST 날짜)
             continue
         total["calories"] += float(cal)
@@ -226,14 +227,15 @@ def _food_image_url(
 
 
 def top_foods_in_range(
-    db: Session, user_id: int, start_day: date, end_day: date, limit: int
+    db: Session, user_id: int, start_day: date, end_day: date, limit: int,
+    day_start_hour: int = 0,
 ) -> list[dict]:
     """기간 내 MealItem.food_name 최빈 상위 N — aggregate_day 와 동일한 meal 상태 조건.
 
     각 음식에는 대표 사진(image_url — 그 음식이 담긴 최근 기록의 사진)을 함께 담는다.
     """
-    start, _ = kst_day_bounds(start_day)
-    _, end = kst_day_bounds(end_day)
+    start, _ = kst_day_bounds(start_day, day_start_hour)
+    _, end = kst_day_bounds(end_day, day_start_hour)
     count = func.count(MealItem.id)
     rows = db.execute(
         select(MealItem.food_name, count)
@@ -376,7 +378,9 @@ def build_weekly_summary_text(
     return "균형 잡힌 한 주였어요. 다음 주도 꾸준히 기록해보세요!"
 
 
-def weekly_summary_response(db: Session, user_id: int, week_start: date) -> dict:
+def weekly_summary_response(
+    db: Session, user_id: int, week_start: date, day_start_hour: int = 0
+) -> dict:
     """GET /nutrition/weekly-summary 응답 (명세서 9.2 확장). 평균은 기록 있는 날 기준.
 
     prev_week 비교를 위해 직전 주까지 총 14일을 한 번의 쿼리로 집계한다.
@@ -384,7 +388,7 @@ def weekly_summary_response(db: Session, user_id: int, week_start: date) -> dict
     goals = get_goals(db, user_id)
     week_end = week_start + timedelta(days=6)
     prev_start = week_start - timedelta(days=7)
-    day_totals = aggregate_range(db, user_id, prev_start, week_end)
+    day_totals = aggregate_range(db, user_id, prev_start, week_end, day_start_hour)
 
     cur = _week_stats(day_totals, week_start, goals["calories"])
     prev = _week_stats(day_totals, prev_start, goals["calories"])
@@ -393,7 +397,8 @@ def weekly_summary_response(db: Session, user_id: int, week_start: date) -> dict
     avg_calories = cur["avg_calories"]
     avg_protein = round(cur["sum_protein"] / recorded_days) if recorded_days else 0
     ratio = macro_ratio(cur["sum_carbs"], cur["sum_protein"], cur["sum_fat"])
-    top = top_foods_in_range(db, user_id, week_start, week_end, limit=1)
+    top = top_foods_in_range(db, user_id, week_start, week_end, limit=1,
+                             day_start_hour=day_start_hour)
     return {
         "week_start": week_start.isoformat(),
         "week_end": week_end.isoformat(),
@@ -540,19 +545,21 @@ def build_monthly_summary_text(stats: dict, prev_stats: dict) -> str:
     return "기록이 쌓일수록 식습관이 보여요. 다음 달도 꾸준히 기록해보세요."
 
 
-def monthly_summary_response(db: Session, user_id: int, year: int, month: int) -> dict:
+def monthly_summary_response(
+    db: Session, user_id: int, year: int, month: int, day_start_hour: int = 0
+) -> dict:
     """GET /nutrition/monthly-summary 응답. 당월/전월 각 1회 range 집계 쿼리."""
     goals = get_goals(db, user_id)
     first = date(year, month, 1)
     last = date(year, month, calendar.monthrange(year, month)[1])
-    day_totals = aggregate_range(db, user_id, first, last)
+    day_totals = aggregate_range(db, user_id, first, last, day_start_hour)
     stats = _month_stats(day_totals, first, last, goals["calories"])
     weeks = _month_weeks(day_totals, first, last, goals["calories"])
 
     prev_year, prev_month = (year - 1, 12) if month == 1 else (year, month - 1)
     prev_first = date(prev_year, prev_month, 1)
     prev_last = date(prev_year, prev_month, calendar.monthrange(prev_year, prev_month)[1])
-    prev_totals = aggregate_range(db, user_id, prev_first, prev_last)
+    prev_totals = aggregate_range(db, user_id, prev_first, prev_last, day_start_hour)
     prev_stats = _month_stats(prev_totals, prev_first, prev_last, goals["calories"])
 
     return {
@@ -565,7 +572,8 @@ def monthly_summary_response(db: Session, user_id: int, year: int, month: int) -
         "average_calories": stats["average_calories"],
         "longest_streak": stats["longest_streak"],
         "weeks": weeks,
-        "top_foods": top_foods_in_range(db, user_id, first, last, limit=3),
+        "top_foods": top_foods_in_range(db, user_id, first, last, limit=3,
+                                        day_start_hour=day_start_hour),
         "prev_month": {
             "longest_streak": prev_stats["longest_streak"],
             "average_calories": prev_stats["average_calories"],
