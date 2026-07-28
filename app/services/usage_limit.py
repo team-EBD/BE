@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.errors import APIError
-from app.core.timeutil import KST, kst_day_bounds, now_utc
+from app.core.timeutil import kst_date_of, kst_day_bounds, now_utc
 from app.models import AiCallLog
 
 # task_type 은 AI 서버 ai_call_log 계약값 (analyze/recommend)
@@ -32,9 +32,14 @@ def _daily_limit(task_type: str) -> int:
 
 
 def count_today_success(db: Session, user_id: int, task_type: str) -> int:
-    """오늘(KST) 성공한 AI 호출 수."""
-    today = now_utc().astimezone(KST).date()
-    start, end = kst_day_bounds(today)
+    """오늘(KST, day_start_hour 경계) 성공한 AI 호출 수.
+
+    캘린더/요약과 동일하게 06시 경계를 쓴다 (settings.day_start_hour) —
+    이전엔 자정 리셋이라 새벽 사용이 '오늘'과 '캘린더의 오늘'이 어긋났다.
+    """
+    dsh = settings.day_start_hour
+    today = kst_date_of(now_utc(), dsh)
+    start, end = kst_day_bounds(today, dsh)
     return int(
         db.scalar(
             select(func.count(AiCallLog.id)).where(
