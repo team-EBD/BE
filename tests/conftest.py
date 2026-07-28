@@ -23,6 +23,9 @@ from app.main import app
 # (TestClient lifespan 이 실제 SessionLocal/스토리지를 건드리지 않도록).
 settings.image_retention_purge_enabled = False
 settings.weekly_report_push_enabled = False
+# 테스트는 SQLite(create_all)로 스키마를 만든다 — .env 의 운영 DB 에
+# alembic 을 돌리지 않도록 시작 시 마이그레이션도 끈다.
+settings.run_migrations_on_startup = False
 from app.models import NutritionItem  # noqa: F401 — 모델 로딩 보장
 from app.social_client import SocialIdentity
 from app.storage import get_storage

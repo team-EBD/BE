@@ -112,3 +112,40 @@ BE/
 - 모든 API 는 `/v1` 프리픽스.
 - 성공: 데이터 직접 반환 / 에러: `{ "error": { code, message, details } }`
 - 날짜 `YYYY-MM-DD`, 일시 ISO8601(+09:00), ID `bigint`, 페이지네이션 `?page=&size=`.
+
+## 배포 / 마이그레이션
+
+### 시작 시 마이그레이션 자동 적용
+
+서버는 기동할 때 `alembic upgrade head` 를 스스로 적용한다 (`app/core/migrations.py`).
+`scripts/start.sh` 를 시작 명령으로 쓰지 못하는 환경(cloudtype 대시보드가 자체 시작
+명령으로 Dockerfile CMD 를 덮어쓰는 경우)에서도 코드와 DB 스키마가 어긋나지 않게 하기
+위한 안전망이다.
+
+- 여러 인스턴스가 동시에 떠도 Postgres advisory lock 으로 한 번만 실행된다.
+- 이미 head 면 아무 일도 하지 않으므로 매 기동마다 돌아도 무해하다.
+- **Postgres 가 아니거나 pytest 실행 중이면 건너뛴다** — 테스트(SQLite)는 `create_all`
+  로 스키마를 만들고, `.env` 의 운영 DB 에 alembic 이 돌지 않도록 막는다.
+- 끄려면 `RUN_MIGRATIONS_ON_STARTUP=false`.
+- 마이그레이션이 실패해도 서버 기동은 계속한다(로그에 스택트레이스). 기동 자체가
+  막히면 원인 파악이 더 어렵기 때문 — 배포 후 로그에서 `[startup] alembic upgrade head`
+  와 완료 로그를 확인할 것.
+
+### GitHub Actions → cloudtype
+
+`.github/workflows/deploy.yml` 이 `dev` 푸시마다 pytest 를 돌리고, 저장소 변수
+`CLOUDTYPE_PROJECT` 가 설정돼 있으면 cloudtype 에 배포한다.
+
+필요한 설정 (Settings → Secrets and variables → Actions):
+
+| 종류 | 이름 | 값 |
+| --- | --- | --- |
+| Secret | `CLOUDTYPE_TOKEN` | cloudtype API 키 |
+| Variable | `CLOUDTYPE_PROJECT` | cloudtype 프로젝트 이름 |
+| Variable | `CLOUDTYPE_STAGE` | 스테이지 이름 (기본 스테이지면 생략 가능) |
+
+`CLOUDTYPE_PROJECT` 를 비워 두면 배포 잡은 건너뛰고 테스트만 돈다. cloudtype 대시보드의
+GitHub 자동배포를 이미 쓰고 있다면 그대로 두는 편이 낫다(중복 배포 방지).
+
+**배포 스펙은 `cloudtype.yaml` 이며, 배포 시 앱 설정을 덮어쓴다.** 자동배포를 켜기 전에
+대시보드의 현재 설정(포트·시작 명령·환경변수)과 대조해 파일을 맞출 것.
