@@ -41,11 +41,77 @@ jobs:
         uses: cloudtype-github-actions/connect@v1
         with:
           token: ${{ secrets.CLOUDTYPE_TOKEN }}
-          ghtoken: ${{ secrets.GITHUB_TOKEN }}
+          # 기본 GITHUB_TOKEN 은 배포키(admin:public_key) 권한이 없어 connect 가 실패한다.
+          # repo·workflow·admin:public_key 스코프의 PAT(classic)를 GHP_TOKEN 시크릿으로 넣는다.
+          ghtoken: ${{ secrets.GHP_TOKEN }}
       - name: Deploy
         uses: cloudtype-github-actions/deploy@v1
         with:
           token: ${{ secrets.CLOUDTYPE_TOKEN }}
+          # 형식: <스페이스>/<프로젝트> (예: 741u741/ebd-back)
           project: ${{ vars.CLOUDTYPE_PROJECT }}
           stage: ${{ vars.CLOUDTYPE_STAGE }}
-          file: ./cloudtype.yaml
+          # 배포 스펙은 cloudtype 대시보드 서비스의 'CLI' 탭 내용을 옮긴 것이다.
+          # 이 스펙이 앱 설정을 통째로 덮어쓰므로, 대시보드에서 환경변수를 바꾸면
+          # 여기에도 반영해야 다음 배포에서 되돌아가지 않는다.
+          #
+          # 시크릿(DB 비밀번호·JWT 서명키·Firebase 개인키·SMTP 비밀번호)은 스펙에 적지 않고
+          # GitHub Secrets 에서 주입한다 — 리포에 평문으로 남기지 않기 위해서다.
+          yaml: |
+            name: ebd-back
+            app: python@3.12
+            options:
+              ports: "8000"
+              start: uvicorn app.main:app --host 0.0.0.0
+              env:
+                - name: APP_ENV
+                  value: local
+                - name: API_V1_PREFIX
+                  value: /v1
+                - name: POSTGRES_HOST
+                  value: svc.sel3.cloudtype.app
+                - name: POSTGRES_PORT
+                  value: "31750"
+                - name: POSTGRES_USER
+                  value: root
+                - name: POSTGRES_PASSWORD
+                  value: ${{ secrets.POSTGRES_PASSWORD }}
+                - name: POSTGRES_DB
+                  value: postgres
+                - name: JWT_SECRET
+                  value: ${{ secrets.JWT_SECRET }}
+                - name: JWT_ALGORITHM
+                  value: HS256
+                - name: ACCESS_TOKEN_EXPIRE_MINUTES
+                  value: "30"
+                - name: REFRESH_TOKEN_EXPIRE_DAYS
+                  value: "14"
+                - name: GOOGLE_CLIENT_ID
+                  value: 360715778329-sv6pvfll0ga9ruhc542tbb3l4dd38fuv.apps.googleusercontent.com
+                - name: AI_SERVER_BASE_URL
+                  value: https://port-0-ebd-ai-mrfrqw875d990c1a.sel3.cloudtype.app
+                - name: AI_REQUEST_TIMEOUT_SECONDS
+                  value: "60"
+                - name: AI_CLIENT_MODE
+                  value: real
+                - name: STORAGE_DIR
+                  value: ./uploads
+                - name: STORAGE_BASE_URL
+                  value: http://localhost:8000/static
+                - name: STORAGE_BACKEND
+                  value: firebase
+                - name: FIREBASE_STORAGE_BUCKET
+                  value: soma-temp-storage.firebasestorage.app
+                - name: FIREBASE_CREDENTIALS_JSON
+                  value: '${{ secrets.FIREBASE_CREDENTIALS_JSON }}'
+                - name: EMAIL_BACKEND
+                  value: smtp
+                - name: SMTP_USER
+                  value: eatlog.service@gmail.com
+                - name: SMTP_PASSWORD
+                  value: ${{ secrets.SMTP_PASSWORD }}
+              buildenv: []
+            context:
+              git:
+                url: git@github.com:${{ github.repository }}.git
+                ref: ${{ github.ref }}

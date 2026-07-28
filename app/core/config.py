@@ -49,9 +49,16 @@ class Settings(BaseSettings):
     # mock: AI 서버 없이 고정 응답(개발/테스트) / real: 실제 AI 서버 호출
     ai_client_mode: str = "real"
 
-    # --- 일일 AI 사용량 제한 (사용자당, KST 자정 리셋. 0 이하 = 무제한) ---
+    # --- 일일 AI 사용량 제한 (사용자당. 0 이하 = 무제한) ---
     analyze_daily_limit: int = 10
     recommend_daily_limit: int = 10
+    # 하루 경계 시각 (KST). 6이면 06:00~다음날 06:00 를 '하루'로 취급 —
+    # 캘린더/요약(FE day_start_hour=6)과 사용량 리셋 기준을 일치시킨다.
+    day_start_hour: int = 6
+
+    # 요청 타이밍 로그(request_logs) 기록 여부 — 테스트에서는 끈다
+    # (미들웨어는 dependency override 를 못 쓰므로 실제 SessionLocal 로 붙는다)
+    request_log_enabled: bool = True
 
     # --- 시작 시 마이그레이션 ---
     # 서버 기동 시 alembic upgrade head 를 자동 적용한다. cloudtype 처럼 배포

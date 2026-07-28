@@ -5,7 +5,9 @@
 """
 from __future__ import annotations
 
-from fastapi import APIRouter
+import logging
+
+from fastapi import APIRouter, Response
 from sqlalchemy import select
 
 from app.core.deps import DB, CurrentUser
@@ -34,6 +36,8 @@ from app.schemas.user import (
 from app.services.goals import personalized_goals
 from app.services.nickname import allocate_nickname_tag
 from app.services.summary import DEFAULT_GOALS, derive_macro_goals
+
+logger = logging.getLogger("eatlog.users")
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -68,6 +72,31 @@ def _me_response(db: DB, user) -> MeDetailResponse:
 @router.get("/me", response_model=MeDetailResponse)
 def get_me(user: CurrentUser, db: DB) -> MeDetailResponse:
     return _me_response(db, user)
+
+
+@router.delete("/me", status_code=204, response_class=Response)
+def delete_me(user: CurrentUser, db: DB) -> Response:
+    """회원 탈퇴 — 계정과 모든 데이터를 즉시 영구 삭제한다 (하드 삭제).
+
+    - 사용자 행 삭제 시 FK CASCADE 로 프로필/식단/식습관/토큰 등이 함께 삭제된다
+      (ai_call_logs 는 user_id SET NULL — 통계용 익명 기록만 남음).
+    - 업로드된 식사 사진은 스토리지에서 best-effort 로 삭제한다
+      (스토리지 오류가 탈퇴 자체를 막으면 안 되므로 실패는 로깅만).
+    """
+    from app.models import MealImage
+    from app.storage import get_storage
+
+    storage = get_storage()
+    images = db.scalars(select(MealImage).where(MealImage.user_id == user.id)).all()
+    for image in images:
+        try:
+            storage.delete(image.storage_key)
+        except Exception:  # noqa: BLE001
+            logger.warning("탈퇴 스토리지 삭제 실패 (고아 파일): %s", image.storage_key)
+
+    db.delete(user)
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.patch("/me", response_model=MeDetailResponse)

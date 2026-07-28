@@ -26,6 +26,8 @@ settings.weekly_report_push_enabled = False
 # 테스트는 SQLite(create_all)로 스키마를 만든다 — .env 의 운영 DB 에
 # alembic 을 돌리지 않도록 시작 시 마이그레이션도 끈다.
 settings.run_migrations_on_startup = False
+# 요청 타이밍 미들웨어는 실제 SessionLocal(.env DB)에 기록하므로 테스트에서 끈다
+settings.request_log_enabled = False
 from app.models import NutritionItem  # noqa: F401 — 모델 로딩 보장
 from app.social_client import SocialIdentity
 from app.storage import get_storage
@@ -40,6 +42,17 @@ def db_factory():
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
+
+    # SQLite 는 기본으로 FK 를 강제하지 않는다 — 운영 Postgres 와 동일하게
+    # ondelete CASCADE/SET NULL 이 동작하도록 켠다 (회원 탈퇴 등 검증에 필요)
+    from sqlalchemy import event
+
+    @event.listens_for(engine, "connect")
+    def _enable_sqlite_fk(dbapi_conn, _record):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     seed(session_factory=factory)  # 음식 40종

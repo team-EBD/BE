@@ -31,18 +31,24 @@ def daily_summary(
 
 @router.get("/weekly-summary")
 def weekly_summary(
-    user: CurrentUser, db: DB, week_start: date = Query()
+    user: CurrentUser,
+    db: DB,
+    week_start: date = Query(),
+    day_start_hour: int = Query(default=0, ge=0, le=12),
 ) -> dict:
-    return weekly_summary_response(db, user.id, week_start)
+    return weekly_summary_response(db, user.id, week_start, day_start_hour)
 
 
 @router.get("/monthly-summary")
 def monthly_summary(
-    user: CurrentUser, db: DB, month: str = Query(description="YYYY-MM")
+    user: CurrentUser,
+    db: DB,
+    month: str = Query(description="YYYY-MM"),
+    day_start_hour: int = Query(default=0, ge=0, le=12),
 ) -> dict:
     # 전역 핸들러가 요청 검증 오류를 400 으로 매핑하므로,
     # 계약(422)을 지키기 위해 형식 검증을 라우터에서 직접 수행한다.
     if not _MONTH_PATTERN.fullmatch(month):
         raise HTTPException(status_code=422, detail="month 는 YYYY-MM 형식이어야 합니다.")
     year, month_num = (int(part) for part in month.split("-"))
-    return monthly_summary_response(db, user.id, year, month_num)
+    return monthly_summary_response(db, user.id, year, month_num, day_start_hour)
