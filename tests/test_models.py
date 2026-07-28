@@ -28,12 +28,15 @@ EXPECTED_TABLES = {
     "ai_call_logs",
     "food_candidates",
     "recommendation_logs",
+    # 계측(텔레메트리)
+    "request_logs",
+    "client_events",
 }
 
 
-def test_all_18_tables_registered():
+def test_all_tables_registered():
     assert set(Base.metadata.tables.keys()) == EXPECTED_TABLES
-    assert len(EXPECTED_TABLES) == 18
+    assert len(EXPECTED_TABLES) == 20
 
 
 def _sqlite_factory():

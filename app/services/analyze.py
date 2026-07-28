@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+import time
+
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -90,6 +92,7 @@ def _save_call_log(
 def analyze_meal_image(
     db: Session, user: User, meal_image_id: int, ai: AIClient
 ) -> AnalyzeSuccessResponse | AnalyzeFailedResponse:
+    started = time.perf_counter()
     image = db.get(MealImage, meal_image_id)
     if image is None:
         raise APIError(404, "NOT_FOUND", "업로드된 이미지를 찾을 수 없습니다.")
@@ -111,6 +114,7 @@ def analyze_meal_image(
     )
 
     if result.status == "failed":
+        call_log.total_ms = int((time.perf_counter() - started) * 1000)
         db.commit()
         return AnalyzeFailedResponse(
             reason=result.reason or "provider_error",
@@ -191,6 +195,8 @@ def analyze_meal_image(
             )
         )
 
+    # BE 전체 처리 시간 — AI 내부(latency_ms)와의 차이가 매칭·저장 오버헤드
+    call_log.total_ms = int((time.perf_counter() - started) * 1000)
     db.commit()
     return AnalyzeSuccessResponse(
         draft_notice=result.draft_notice or "AI가 분석한 기록 초안입니다.",

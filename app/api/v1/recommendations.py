@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date
 
 from fastapi import APIRouter, Depends
@@ -123,6 +124,7 @@ def _call_and_log(
     meal_timing: str,
 ) -> tuple[RecommendResult, AiCallLog]:
     """AI 추천 호출 + ai_call_logs 기록(성공/실패 예외 없이). 실패 시 5xx 변환."""
+    started = time.perf_counter()
     enforce_daily_limit(db, user.id, "recommend")  # 일일 한도 초과 시 429
     summary_payload = _daily_summary_payload(db, user.id, day)
     history_payload = _history_context_payload(db, user.id, day)
@@ -144,6 +146,8 @@ def _call_and_log(
     )
     db.add(call_log)
     db.flush()
+    # BE 처리 시간 (요약·이력 조회 + AI 호출 포함) — AI 내부 latency_ms 와 분해용
+    call_log.total_ms = int((time.perf_counter() - started) * 1000)
 
     if result.status == "failed":
         db.commit()  # 실패도 로그는 남긴다 (횡단 관심사: AI 로깅)
