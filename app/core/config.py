@@ -37,6 +37,9 @@ class Settings(BaseSettings):
 
     # --- 소셜 로그인 (Phase 2) ---
     google_client_id: str = ""
+    # Sign in with Apple — identityToken 의 aud 검증에 사용 (iOS 앱 번들 ID).
+    # 비어 있으면 aud 검증을 생략한다 (운영에서는 반드시 설정할 것).
+    apple_bundle_id: str = ""
 
     # --- AI 서버 연동 (Phase 8) ---
     # 구조: BE → AI 서버(/internal/analyze·/internal/recommend) → Gemini.

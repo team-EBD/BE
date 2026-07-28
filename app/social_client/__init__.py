@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.core.errors import APIError
-from app.social_client import google
+from app.social_client import apple, google
 
 
 @dataclass
@@ -23,7 +23,7 @@ class SocialIdentity:
 def verify_social_token(provider: str, token: str) -> SocialIdentity:
     """제공자 토큰을 검증하고 식별정보를 반환한다. 실패 시 APIError.
 
-    지원: google. (확장 예정: kakao / apple)
+    지원: google, apple. (확장 예정: kakao)
     """
     if provider == "google":
         info = google.verify_id_token(token)
@@ -33,6 +33,18 @@ def verify_social_token(provider: str, token: str) -> SocialIdentity:
             email=info.get("email"),
             nickname=info.get("name") or (info.get("email") or "사용자").split("@")[0],
             profile_image_url=info.get("picture"),
+        )
+    if provider == "apple":
+        claims = apple.verify_identity_token(token)
+        email = claims.get("email")
+        # identityToken 에는 이름이 없다 — 최초 인증 시 FE 가 body.name 으로
+        # 전달하며(auth 라우터에서 우선 적용), 없으면 이메일 앞부분으로 폴백.
+        return SocialIdentity(
+            provider="apple",
+            social_id=claims["sub"],
+            email=email,
+            nickname=(email or "사과유저").split("@")[0],
+            profile_image_url=None,
         )
     raise APIError(
         400,
