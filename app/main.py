@@ -132,7 +132,7 @@ async def request_timing_middleware(request, call_next):
     started = time.perf_counter()
     response = await call_next(request)
     path = request.url.path
-    if path.startswith(_TIMING_SKIP_PREFIXES):
+    if not settings.request_log_enabled or path.startswith(_TIMING_SKIP_PREFIXES):
         return response
     duration_ms = int((time.perf_counter() - started) * 1000)
     # 집계가 가능하도록 실제 경로 대신 라우트 템플릿(/v1/meals/{meal_id})을 저장
