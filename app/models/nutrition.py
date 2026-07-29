@@ -17,7 +17,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
-from app.models._common import pk_column, updated_at_column
+from app.models._common import created_at_column, pk_column, updated_at_column
 
 
 class NutritionItem(Base):
@@ -34,6 +34,31 @@ class NutritionItem(Base):
     fat: Mapped[float] = mapped_column(Numeric(8, 2), nullable=False)
     category: Mapped[str | None] = mapped_column(String(30), nullable=True)
     source: Mapped[str] = mapped_column(String(20), nullable=False, default="seed")  # seed/public
+
+
+class FavoriteFood(Base):
+    """즐겨찾기 음식 — 영양값 스냅샷 포함 (영양 DB 미매칭 음식도 등록 가능)."""
+
+    __tablename__ = "favorite_foods"
+
+    id: Mapped[int] = pk_column()
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    nutrition_item_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("nutrition_items.id", ondelete="SET NULL"), nullable=True
+    )
+    food_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    base_serving: Mapped[str] = mapped_column(String(50), nullable=False)
+    calories: Mapped[float] = mapped_column(Numeric(8, 2), nullable=False)
+    carbs: Mapped[float] = mapped_column(Numeric(8, 2), nullable=False)
+    protein: Mapped[float] = mapped_column(Numeric(8, 2), nullable=False)
+    fat: Mapped[float] = mapped_column(Numeric(8, 2), nullable=False)
+    created_at: Mapped[datetime] = created_at_column()
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "food_name", name="uq_favorite_foods_user_food"),
+    )
 
 
 class DailyNutritionSummary(Base):
