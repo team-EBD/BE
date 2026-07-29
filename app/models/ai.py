@@ -52,8 +52,9 @@ class FoodCandidate(Base):
     __tablename__ = "food_candidates"
 
     id: Mapped[int] = pk_column()
-    meal_image_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("meal_images.id", ondelete="CASCADE"), nullable=False, index=True
+    # 자연어 파싱(/meals/parse-text) 후보는 이미지가 없으므로 NULL 허용
+    meal_image_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("meal_images.id", ondelete="CASCADE"), nullable=True, index=True
     )
     ai_call_log_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("ai_call_logs.id", ondelete="SET NULL"), nullable=True

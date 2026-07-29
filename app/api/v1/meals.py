@@ -40,8 +40,9 @@ from app.schemas.meal import (
     MealListEntry,
     MealListResponse,
     MealUpdateRequest,
+    ParseTextRequest,
 )
-from app.services.analyze import analyze_meal_image
+from app.services.analyze import analyze_meal_image, analyze_meal_text
 from app.services.image_retention import retention_cutoff_utc
 from app.services.usage_limit import enforce_daily_limit
 from app.services.meals import (
@@ -126,6 +127,21 @@ def analyze(
 ) -> AnalyzeSuccessResponse | AnalyzeFailedResponse:
     enforce_daily_limit(db, user.id, "analyze")  # 일일 한도 초과 시 429
     return analyze_meal_image(db, user, body.meal_image_id, ai)
+
+
+@router.post("/parse-text", response_model=AnalyzeSuccessResponse | AnalyzeFailedResponse)
+def parse_text(
+    body: ParseTextRequest,
+    user: CurrentUser,
+    db: DB,
+    ai: AIClient = Depends(get_ai_client),
+) -> AnalyzeSuccessResponse | AnalyzeFailedResponse:
+    """자연어 식사 서술 → 기록 초안 (응답 계약은 /meals/analyze 와 동일).
+
+    사용량은 이미지 분석과 같은 analyze 일일 한도를 공유한다.
+    """
+    enforce_daily_limit(db, user.id, "analyze")
+    return analyze_meal_text(db, user, body.text, ai)
 
 
 # --- 8.6 월별 캘린더 (정적 경로 — {meal_id} 보다 먼저) ---

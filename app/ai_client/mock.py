@@ -9,6 +9,7 @@ from app.ai_client.base import (
     AIBoundingBox,
     AICallLogPayload,
     AICandidate,
+    AINutritionEstimate,
     AIRecommendation,
     AnalyzeResult,
     RecommendResult,
@@ -32,6 +33,32 @@ class MockAIClient:
                 AICandidate(food_index=0, food_name="된장찌개", confidence=0.08, estimated_serving=1.0, has_soup=True, has_sauce=False, bbox=_STEW_BOX),
                 AICandidate(food_index=0, food_name="순두부찌개", confidence=0.05, estimated_serving=1.0, has_soup=True, has_sauce=False, bbox=_STEW_BOX),
                 AICandidate(food_index=1, food_name="공기밥", confidence=0.95, estimated_serving=1.0, has_soup=False, has_sauce=False, bbox=_RICE_BOX),
+            ],
+            ai_call_log=AICallLogPayload(
+                provider="google",
+                model_name=MOCK_MODEL,
+                task_type="analyze",
+                status="success",
+                latency_ms=42,
+            ),
+        )
+
+    def parse_text(self, text: str) -> AnalyzeResult:
+        # 문장 파싱은 음식당 예측 1개, bbox 없음 (실 AI 서버 계약과 동일 형태)
+        return AnalyzeResult(
+            status="success",
+            draft_notice="문장에서 추출한 기록 초안입니다.",
+            candidates=[
+                AICandidate(
+                    food_index=0, food_name="김밥", confidence=0.95,
+                    estimated_serving=1.0, has_soup=False, has_sauce=False,
+                    nutrition=AINutritionEstimate(base_serving="1줄(230g)", calories=320, carbs=55, protein=9, fat=7),
+                ),
+                AICandidate(
+                    food_index=1, food_name="라면", confidence=0.95,
+                    estimated_serving=0.5, has_soup=True, has_sauce=False,
+                    nutrition=AINutritionEstimate(base_serving="1개(120g, 조리)", calories=500, carbs=78, protein=10, fat=16),
+                ),
             ],
             ai_call_log=AICallLogPayload(
                 provider="google",

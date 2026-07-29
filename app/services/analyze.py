@@ -109,6 +109,32 @@ def analyze_meal_image(
         }
 
     result = ai.analyze(image.image_url, habits_payload)
+    return _postprocess(db, user, habit, result, meal_image_id, started)
+
+
+def analyze_meal_text(
+    db: Session, user: User, text: str, ai: AIClient
+) -> AnalyzeSuccessResponse | AnalyzeFailedResponse:
+    """자연어 식사 서술 → 기록 초안 (이미지 분석과 동일한 후처리·응답 계약).
+
+    이미지가 없으므로 food_candidates.meal_image_id 는 NULL 로 저장된다.
+    사용량은 이미지 분석과 같은 analyze 쿼터를 공유한다 (라우터에서 enforce).
+    """
+    started = time.perf_counter()
+    habit = db.scalar(select(EatingHabit).where(EatingHabit.user_id == user.id))
+    result = ai.parse_text(text.strip())
+    return _postprocess(db, user, habit, result, None, started)
+
+
+def _postprocess(
+    db: Session,
+    user: User,
+    habit: EatingHabit | None,
+    result,
+    meal_image_id: int | None,
+    started: float,
+) -> AnalyzeSuccessResponse | AnalyzeFailedResponse:
+    """AI 결과 공통 후처리 — 로그 기록, 영양 매칭, 식습관 보정, 후보 저장."""
     call_log = _save_call_log(
         db, user.id, meal_image_id, result.ai_call_log, error_message=result.reason
     )
