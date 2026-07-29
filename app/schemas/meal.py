@@ -27,6 +27,12 @@ class AnalyzeRequest(BaseModel):
     meal_image_id: int
 
 
+class ParseTextRequest(BaseModel):
+    """자연어 식사 서술 ("김밥 한 줄이랑 라면 반 개")."""
+
+    text: str = Field(min_length=1, max_length=200)
+
+
 class CandidateNutrition(BaseModel):
     base_serving: str
     calories: float

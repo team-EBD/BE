@@ -86,6 +86,10 @@ class AIClient(Protocol):
     def analyze(self, image_url: str, eating_habits: dict | None = None) -> AnalyzeResult:
         ...
 
+    def parse_text(self, text: str) -> AnalyzeResult:
+        """자연어 식사 서술("김밥 한 줄이랑 라면 반 개") → 후보. 계약은 analyze 와 동일."""
+        ...
+
     def recommend(
         self,
         daily_summary: dict,

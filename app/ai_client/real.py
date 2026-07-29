@@ -48,6 +48,12 @@ class RealAIClient:
             return failed_analyze(error, latency)
         return parse_analyze(data or {})
 
+    def parse_text(self, text: str) -> AnalyzeResult:
+        data, error, latency = self._post("/internal/parse-meal", {"text": text})
+        if error:
+            return failed_analyze(error, latency)
+        return parse_analyze(data or {})
+
     def recommend(
         self,
         daily_summary: dict,
