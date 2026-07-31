@@ -34,6 +34,20 @@ class NutritionItem(Base):
     fat: Mapped[float] = mapped_column(Numeric(8, 2), nullable=False)
     category: Mapped[str | None] = mapped_column(String(30), nullable=True)
     source: Mapped[str] = mapped_column(String(20), nullable=False, default="seed")  # seed/public
+    # 공공 영양DB(전국통합식품영양성분정보) 확장 컬럼 — 시드 40건은 미보유라 전부 nullable
+    sugar: Mapped[float | None] = mapped_column(Numeric(8, 2), nullable=True)  # 당류 g
+    fiber: Mapped[float | None] = mapped_column(Numeric(8, 2), nullable=True)  # 식이섬유 g
+    sodium: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)  # 나트륨 mg
+    cholesterol: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)  # mg
+    saturated_fat: Mapped[float | None] = mapped_column(Numeric(8, 2), nullable=True)  # g
+    trans_fat: Mapped[float | None] = mapped_column(Numeric(8, 2), nullable=True)  # g
+    brand: Mapped[str | None] = mapped_column(String(100), nullable=True)  # 제조사/프랜차이즈명
+    external_id: Mapped[str | None] = mapped_column(
+        String(40), nullable=True, unique=True
+    )  # 공공DB 식품코드 (적재 멱등키)
+    total_weight: Mapped[float | None] = mapped_column(
+        Numeric(10, 2), nullable=True
+    )  # 총 내용량(base_unit 기준, 예: 피자 1판 1640g)
 
 
 class FavoriteFood(Base):
