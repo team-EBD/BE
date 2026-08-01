@@ -6,6 +6,7 @@ from datetime import date, datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     Date,
     ForeignKey,
     Integer,
@@ -14,6 +15,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
+from sqlalchemy import false as sa_false
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -48,6 +50,9 @@ class NutritionItem(Base):
     total_weight: Mapped[float | None] = mapped_column(
         Numeric(10, 2), nullable=True
     )  # 총 내용량(base_unit 기준, 예: 피자 1판 1640g)
+    is_representative: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=sa_false()
+    )  # 대표 음식(1인분 기준) — 검색 최상위 노출·AI 매칭 대상. 시드 + 큐레이션 선정분
 
 
 class FavoriteFood(Base):
