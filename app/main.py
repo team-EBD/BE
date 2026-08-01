@@ -18,12 +18,15 @@ from app.api.v1 import api_router
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.errors import register_exception_handlers
+from app.core.logging import setup_logging
 from app.core.migrations import run_migrations_if_enabled
 from app.core.timeutil import kst_date_of, now_utc
 from app.push_client import get_push_client
 from app.services.image_retention import purge_expired_images
 from app.services.weekly_report_push import send_weekly_report_push, weekly_push_due
 from app.storage import get_storage
+
+setup_logging()  # uvicorn 은 root 로거를 설정하지 않는다 — 앱 로그를 직접 보장
 
 logger = logging.getLogger("eatlog.main")
 

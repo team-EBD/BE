@@ -6,7 +6,6 @@ DB URL 과 target metadata 를 app 설정/모델에서 주입한다.
 - metadata: app.models 를 import 해 17개 테이블을 모두 등록한 Base.metadata.
 """
 import os
-from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config, pool
 
@@ -14,12 +13,15 @@ from alembic import context
 
 # 모든 모델을 등록하기 위해 반드시 app.models 를 import 한다.
 from app.core.config import settings
+from app.core.logging import apply_alembic_ini_logging
 from app.models import Base
 
 config = context.config
 
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+# 로깅 설정은 alembic 을 CLI 로 단독 실행할 때만 적용한다. 앱 기동 중
+# 인-프로세스 실행에서 fileConfig 를 그대로 부르면 uvicorn/앱 로거가 전부
+# 꺼져 서버 로그가 통째로 사라진다 (app/core/logging.py 주석 참고).
+apply_alembic_ini_logging(config)
 
 target_metadata = Base.metadata
 
