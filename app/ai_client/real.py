@@ -1,11 +1,13 @@
 """실제 AI 서버 연동 (httpx).
 
-- timeout → ai_timeout, 통신 오류 → provider_error, JSON/스키마 오류 → invalid_response.
+- timeout → ai_timeout, 통신 오류/HTTP 에러 응답 → provider_error,
+  JSON/스키마 오류 → invalid_response.
 - 어떤 경우에도 예외를 밖으로 던지지 않고 실패 계약(AnalyzeResult/RecommendResult)으로
   변환한다. 분기 판단은 상위(서비스/라우터)가 status 로 한다.
 """
 from __future__ import annotations
 
+import logging
 import time
 
 import httpx
@@ -18,6 +20,8 @@ from app.ai_client.base import (
     parse_analyze,
     parse_recommend,
 )
+
+logger = logging.getLogger("eatlog.ai_client")
 
 
 class RealAIClient:
@@ -39,6 +43,16 @@ class RealAIClient:
                 timeout=self.timeout,
             )
             latency = int((time.monotonic() - started) * 1000)
+            if res.status_code >= 400:
+                # AI 서버가 에러 응답을 줘도 본문은 JSON({"detail": ...})이라
+                # 상태 코드를 안 보면 스키마 검증에서 invalid_response 로 뭉개진다.
+                # 원인을 바로 알 수 있게 상태 코드와 본문 앞부분을 남긴다
+                # (2026-08-01: INTERNAL_TOKEN 불일치 401 이 invalid_response 로 보였다).
+                logger.warning(
+                    "AI 서버 HTTP %d %s — %s",
+                    res.status_code, path, res.text[:200],
+                )
+                return None, "provider_error", latency
             return res.json(), None, latency
         except httpx.TimeoutException:
             return None, "ai_timeout", int((time.monotonic() - started) * 1000)
@@ -59,13 +73,13 @@ class RealAIClient:
         data, error, latency = self._post("/internal/analyze", payload)
         if error:
             return failed_analyze(error, latency)
-        return parse_analyze(data or {})
+        return parse_analyze(data or {}, latency)
 
     def parse_text(self, text: str) -> AnalyzeResult:
         data, error, latency = self._post("/internal/parse-meal", {"text": text})
         if error:
             return failed_analyze(error, latency)
-        return parse_analyze(data or {})
+        return parse_analyze(data or {}, latency)
 
     def recommend(
         self,
@@ -87,4 +101,4 @@ class RealAIClient:
         data, error, latency = self._post("/internal/recommend", payload)
         if error:
             return failed_recommend(error, latency)
-        return parse_recommend(data or {})
+        return parse_recommend(data or {}, latency)

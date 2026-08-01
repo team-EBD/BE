@@ -94,6 +94,11 @@ jobs:
                   value: "60"
                 - name: AI_CLIENT_MODE
                   value: real
+                # AI 서버 /internal/* 인증. AI 쪽 INTERNAL_TOKEN 과 **같은 값**이어야
+                # 하며, 다르거나 비면 AI 가 401 을 준다 (2026-08-01 추천 502 사고).
+                # 두 레포의 GitHub Secrets 에 같은 값을 넣어 둔다.
+                - name: INTERNAL_TOKEN
+                  value: ${{ secrets.INTERNAL_TOKEN }}
                 - name: STORAGE_DIR
                   value: ./uploads
                 - name: STORAGE_BASE_URL

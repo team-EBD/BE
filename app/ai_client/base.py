@@ -128,16 +128,20 @@ def failed_recommend(reason: str, latency_ms: int = 0) -> RecommendResult:
     )
 
 
-def parse_analyze(data: dict) -> AnalyzeResult:
-    """AI 서버 응답 JSON 스키마 검증. 실패 시 invalid_response 계약으로 변환."""
+def parse_analyze(data: dict, latency_ms: int = 0) -> AnalyzeResult:
+    """AI 서버 응답 JSON 스키마 검증. 실패 시 invalid_response 계약으로 변환.
+
+    latency_ms 는 검증 실패 시에만 쓴다 (성공 응답은 AI 서버가 준 값을 그대로 둔다).
+    실패에도 실제 소요 시간을 남겨야 '응답이 왔는데 계약 불일치'인지 구분된다.
+    """
     try:
         return AnalyzeResult.model_validate(data)
     except ValidationError:
-        return failed_analyze("invalid_response")
+        return failed_analyze("invalid_response", latency_ms)
 
 
-def parse_recommend(data: dict) -> RecommendResult:
+def parse_recommend(data: dict, latency_ms: int = 0) -> RecommendResult:
     try:
         return RecommendResult.model_validate(data)
     except ValidationError:
-        return failed_recommend("invalid_response")
+        return failed_recommend("invalid_response", latency_ms)
