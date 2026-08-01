@@ -49,6 +49,9 @@ def _alembic_config() -> Config:
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     config = Config(os.path.join(root, "alembic.ini"))
     config.set_main_option("script_location", os.path.join(root, "alembic"))
+    # 인-프로세스 실행이므로 env.py 가 ini 의 로깅 설정을 적용하면 안 된다.
+    # (fileConfig 가 uvicorn/앱 로거를 전부 비활성화한다 — app/core/logging.py)
+    config.attributes["configure_logger"] = False
     return config
 
 
