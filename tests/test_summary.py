@@ -130,7 +130,8 @@ def test_weekly_summary_extended_fields(client, auth_headers):
     assert len(body["days"]) == 7
     by_date = {d["date"]: d for d in body["days"]}
     assert by_date["2026-06-27"] == {
-        "date": "2026-06-27", "calories": 524, "meal_count": 1, "achieved": True
+        "date": "2026-06-27", "calories": 524, "meal_count": 1, "achieved": True,
+        "in_progress": False,  # 과거 주라 집계 중인 날 없음
     }
     assert by_date["2026-06-23"]["meal_count"] == 0
     assert by_date["2026-06-23"]["achieved"] is False
@@ -317,3 +318,85 @@ def test_daily_summary_rejects_out_of_range_day_start_hour(client, auth_headers)
         params={"date": "2026-06-27", "day_start_hour": 20},
     )
     assert res.status_code in (400, 422)
+
+
+# ------------------------------------------- 진행 중인 오늘 제외 (리포트 왜곡 방지)
+
+
+def _kst_today() -> "date":
+    from datetime import date as _date
+
+    from app.core.timeutil import kst_date_of, now_utc
+
+    return kst_date_of(now_utc(), 0)
+
+
+def test_weekly_average_excludes_in_progress_today(client, auth_headers):
+    """점심에 열어도 '아침만 먹은 오늘'이 평균을 끌어내리지 않는다."""
+    from datetime import timedelta
+
+    today = _kst_today()
+    yesterday = today - timedelta(days=1)
+    create_meal(client, auth_headers, meal_on(yesterday.isoformat()))
+    create_meal(client, auth_headers, meal_on(today.isoformat()))
+
+    week_start = today - timedelta(days=6)
+    res = client.get(
+        "/v1/nutrition/weekly-summary",
+        headers=auth_headers,
+        params={"week_start": week_start.isoformat()},
+    )
+    body = res.json()
+    # 완결된 어제만 집계 — 오늘은 recorded/achieved 에서 빠진다
+    assert body["recorded_days"] == 1
+    assert body["achieved_days"] == 1
+    assert body["average"]["calories"] == 524
+    by_date = {d["date"]: d for d in body["days"]}
+    assert by_date[today.isoformat()]["in_progress"] is True
+    assert by_date[today.isoformat()]["calories"] == 524  # 표시용 데이터는 유지
+    assert by_date[today.isoformat()]["achieved"] is False
+    assert by_date[yesterday.isoformat()]["in_progress"] is False
+
+
+def test_weekly_summary_text_when_only_today_recorded(client, auth_headers):
+    today = _kst_today()
+    create_meal(client, auth_headers, meal_on(today.isoformat()))
+    res = client.get(
+        "/v1/nutrition/weekly-summary",
+        headers=auth_headers,
+        params={"week_start": (today - __import__("datetime").timedelta(days=3)).isoformat()},
+    )
+    body = res.json()
+    assert body["recorded_days"] == 0
+    assert "오늘" in body["summary_text"]  # '기록 없음' 대신 집계 예정 안내
+
+
+def test_monthly_achievement_rate_uses_elapsed_days(client, auth_headers):
+    """진행 중인 달의 달성률 분모는 전체 일수가 아니라 어제까지 경과 일수다."""
+    from datetime import timedelta
+
+    today = _kst_today()
+    if today.day < 3:
+        import pytest
+
+        pytest.skip("월초(1~2일)에는 경과 일수가 부족해 시나리오가 성립하지 않음")
+    d1 = today - timedelta(days=1)
+    d2 = today - timedelta(days=2)
+    if d1.month != today.month or d2.month != today.month:
+        import pytest
+
+        pytest.skip("어제/그제가 이번 달이 아니면 시나리오가 성립하지 않음")
+    create_meal(client, auth_headers, meal_on(d1.isoformat()))
+    create_meal(client, auth_headers, meal_on(d2.isoformat()))
+    create_meal(client, auth_headers, meal_on(today.isoformat()))  # 집계 제외 대상
+
+    res = client.get(
+        "/v1/nutrition/monthly-summary",
+        headers=auth_headers,
+        params={"month": today.strftime("%Y-%m")},
+    )
+    body = res.json()
+    elapsed = today.day - 1  # 1일부터 어제까지
+    assert body["days_counted"] == elapsed
+    assert body["recorded_days"] == 2  # 오늘 기록은 제외
+    assert body["achievement_rate"] == round(2 / elapsed, 2)
