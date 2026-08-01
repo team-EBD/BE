@@ -104,6 +104,12 @@ jobs:
                   value: soma-temp-storage.firebasestorage.app
                 - name: FIREBASE_CREDENTIALS_JSON
                   value: '${{ secrets.FIREBASE_CREDENTIALS_JSON }}'
+                # 푸시 발송 백엔드. 기본값이 mock(로그만 찍고 실제 발송 안 함)이라
+                # 명시하지 않으면 주간 리포트 푸시가 조용히 나가지 않는다.
+                # 자격증명은 위 FIREBASE_CREDENTIALS_JSON 을 재사용한다
+                # (스토리지와 같은 서비스 계정 — push_client/__init__.py).
+                - name: PUSH_BACKEND
+                  value: fcm
                 - name: EMAIL_BACKEND
                   value: smtp
                 - name: SMTP_USER
