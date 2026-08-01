@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     ai_request_timeout_seconds: float = 20.0
     # mock: AI 서버 없이 고정 응답(개발/테스트) / real: 실제 AI 서버 호출
     ai_client_mode: str = "real"
+    # AI 서버 내부 인증 토큰 (opt-in). BE·AI 양쪽에 같은 값을 설정하면
+    # X-Internal-Token 헤더 검증이 활성화된다. 빈 값이면 미사용(기존 동작).
+    # ⚠️ 활성화 순서: BE 배포(헤더 지원) → 양쪽 env 동시 설정. 한쪽만 설정하면 401 장애.
+    internal_token: str = ""
 
     # --- 일일 AI 사용량 제한 (사용자당. 0 이하 = 무제한) ---
     analyze_daily_limit: int = 10
