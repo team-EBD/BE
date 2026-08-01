@@ -25,6 +25,8 @@ class MealImageResponse(BaseModel):
 
 class AnalyzeRequest(BaseModel):
     meal_image_id: int
+    # 사진과 함께 적은 식사 설명 (선택) — AI 식별·수량 힌트
+    text: str | None = Field(default=None, max_length=200)
 
 
 class ParseTextRequest(BaseModel):

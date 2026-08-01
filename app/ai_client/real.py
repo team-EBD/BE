@@ -39,10 +39,17 @@ class RealAIClient:
         except (httpx.HTTPError, ValueError):
             return None, "provider_error", int((time.monotonic() - started) * 1000)
 
-    def analyze(self, image_url: str, eating_habits: dict | None = None) -> AnalyzeResult:
+    def analyze(
+        self,
+        image_url: str,
+        eating_habits: dict | None = None,
+        user_text: str | None = None,
+    ) -> AnalyzeResult:
         payload: dict = {"image_url": image_url}
         if eating_habits:
             payload["user_eating_habits"] = eating_habits
+        if user_text:
+            payload["user_text"] = user_text
         data, error, latency = self._post("/internal/analyze", payload)
         if error:
             return failed_analyze(error, latency)

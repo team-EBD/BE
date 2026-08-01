@@ -23,7 +23,12 @@ _RICE_BOX = AIBoundingBox(x=0.52, y=0.43, width=0.38, height=0.35)
 
 
 class MockAIClient:
-    def analyze(self, image_url: str, eating_habits: dict | None = None) -> AnalyzeResult:
+    def analyze(
+        self,
+        image_url: str,
+        eating_habits: dict | None = None,
+        user_text: str | None = None,
+    ) -> AnalyzeResult:
         return AnalyzeResult(
             status="success",
             draft_notice="AI가 분석한 기록 초안입니다.",

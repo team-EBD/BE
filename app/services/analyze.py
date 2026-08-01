@@ -90,7 +90,11 @@ def _save_call_log(
 
 
 def analyze_meal_image(
-    db: Session, user: User, meal_image_id: int, ai: AIClient
+    db: Session,
+    user: User,
+    meal_image_id: int,
+    ai: AIClient,
+    user_text: str | None = None,
 ) -> AnalyzeSuccessResponse | AnalyzeFailedResponse:
     started = time.perf_counter()
     image = db.get(MealImage, meal_image_id)
@@ -108,7 +112,13 @@ def analyze_meal_image(
             "sauce_preference": habit.sauce_preference,
         }
 
-    result = ai.analyze(image.image_url, habits_payload)
+    # 사용자가 사진과 함께 적은 설명 — AI 가 식별·수량 힌트로 쓴다.
+    # 설명이 있을 때만 키워드를 넘겨 구 시그니처 클라이언트와의 호환을 유지한다.
+    cleaned_text = (user_text or "").strip() or None
+    if cleaned_text:
+        result = ai.analyze(image.image_url, habits_payload, user_text=cleaned_text)
+    else:
+        result = ai.analyze(image.image_url, habits_payload)
     return _postprocess(db, user, habit, result, meal_image_id, started)
 
 

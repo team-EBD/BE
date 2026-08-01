@@ -83,7 +83,12 @@ class RecommendResult(BaseModel):
 
 
 class AIClient(Protocol):
-    def analyze(self, image_url: str, eating_habits: dict | None = None) -> AnalyzeResult:
+    def analyze(
+        self,
+        image_url: str,
+        eating_habits: dict | None = None,
+        user_text: str | None = None,
+    ) -> AnalyzeResult:
         ...
 
     def parse_text(self, text: str) -> AnalyzeResult:
