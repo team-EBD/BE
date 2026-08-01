@@ -11,7 +11,7 @@ from datetime import date, timedelta
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
-from app.core.timeutil import kst_date_of, kst_day_bounds
+from app.core.timeutil import kst_date_of, kst_day_bounds, now_utc
 from app.models import DailyNutritionSummary, MealImage, MealItem, MealRecord, UserProfile
 from app.services.image_retention import retention_cutoff_utc
 
@@ -322,8 +322,18 @@ def daily_summary_response(
     }
 
 
-def _week_stats(day_totals: dict[date, dict], start: date, goal_calories: int) -> dict:
-    """aggregate_range 결과에서 한 주(7일) 통계를 뽑는다."""
+def _week_stats(
+    day_totals: dict[date, dict],
+    start: date,
+    goal_calories: int,
+    today: date | None = None,
+) -> dict:
+    """aggregate_range 결과에서 한 주(7일) 통계를 뽑는다.
+
+    today(진행 중인 논리 날짜) 이후의 날은 평균·달성·탄단지 집계에서 제외한다 —
+    점심에 리포트를 열었을 때 '아침만 먹은 오늘'이 완결된 하루처럼 평균을
+    끌어내리는 왜곡 방지. days[] 에는 오늘도 포함하되 in_progress 로 표시한다.
+    """
     stats = {
         "recorded_days": 0,
         "achieved_days": 0,
@@ -336,21 +346,29 @@ def _week_stats(day_totals: dict[date, dict], start: date, goal_calories: int) -
     for offset in range(7):
         day = start + timedelta(days=offset)
         total = day_totals[day]
-        achieved = total["meal_count"] > 0 and total["calories"] <= goal_calories
-        if total["meal_count"] > 0:
-            stats["recorded_days"] += 1
-            stats["sum_calories"] += total["calories"]
-        if achieved:
-            stats["achieved_days"] += 1
-        stats["sum_protein"] += total["protein"]
-        stats["sum_carbs"] += total["carbs"]
-        stats["sum_fat"] += total["fat"]
+        in_progress = today is not None and day >= today
+        achieved = (
+            not in_progress
+            and total["meal_count"] > 0
+            and total["calories"] <= goal_calories
+        )
+        if not in_progress:
+            if total["meal_count"] > 0:
+                stats["recorded_days"] += 1
+                stats["sum_calories"] += total["calories"]
+            if achieved:
+                stats["achieved_days"] += 1
+            stats["sum_protein"] += total["protein"]
+            stats["sum_carbs"] += total["carbs"]
+            stats["sum_fat"] += total["fat"]
         stats["days"].append(
             {
                 "date": day.isoformat(),
                 "calories": round(total["calories"]),
                 "meal_count": total["meal_count"],
                 "achieved": achieved,
+                # 오늘(집계 중)만 True — 미래 날짜는 데이터가 없어 FE 가 구분 불필요
+                "in_progress": today is not None and day == today,
             }
         )
     recorded = stats["recorded_days"]
@@ -365,9 +383,13 @@ def build_weekly_summary_text(
     ratio: dict[str, int],
     avg_protein: float,
     goal_protein: int,
+    today_recorded: bool = False,
 ) -> str:
     """주간 규칙 기반 문구. 우선순위: 기록없음 > 달성일 증가 > 탄수 과다 > 단백질 부족 > 격려."""
     if recorded_days == 0:
+        if today_recorded:
+            # 완결된 날이 아직 없고 오늘만 기록 중 (예: 주 첫날 아침)
+            return "오늘 기록을 시작했어요! 오늘 하루가 끝나면 주간 집계에 반영돼요."
         return "이번 주 식사 기록이 없어요. 가볍게 한 끼부터 기록해보세요."
     if achieved_days > prev_achieved_days:
         return "지난주보다 목표 달성일이 늘었어요. 정말 잘하고 있어요!"
@@ -390,8 +412,10 @@ def weekly_summary_response(
     prev_start = week_start - timedelta(days=7)
     day_totals = aggregate_range(db, user_id, prev_start, week_end, day_start_hour)
 
-    cur = _week_stats(day_totals, week_start, goals["calories"])
-    prev = _week_stats(day_totals, prev_start, goals["calories"])
+    # 진행 중인 오늘(논리 날짜, 06시 경계)은 평균·달성 집계에서 제외한다
+    today = kst_date_of(now_utc(), day_start_hour)
+    cur = _week_stats(day_totals, week_start, goals["calories"], today=today)
+    prev = _week_stats(day_totals, prev_start, goals["calories"], today=today)
 
     recorded_days = cur["recorded_days"]
     avg_calories = cur["avg_calories"]
@@ -423,21 +447,39 @@ def weekly_summary_response(
             ratio,
             avg_protein,
             goals["protein"],
+            today_recorded=(
+                week_start <= today <= week_end
+                and day_totals[today]["meal_count"] > 0
+            ),
         ),
     }
 
 
 def _month_stats(
-    day_totals: dict[date, dict], first: date, last: date, goal_calories: int
+    day_totals: dict[date, dict],
+    first: date,
+    last: date,
+    goal_calories: int,
+    today: date | None = None,
 ) -> dict:
-    """월 구간 통계: 기록/달성 일수, 기록일 평균 칼로리, 최장 연속 기록."""
+    """월 구간 통계: 기록/달성 일수, 기록일 평균 칼로리, 최장 연속 기록.
+
+    진행 중인 달이면 오늘 이후는 집계에서 제외하고, 달성률 분모(days_counted)도
+    '완결된(어제까지) 경과 일수'로 계산한다 — 월초에 볼 때 달성률이 무조건
+    낮게 나오던 왜곡 방지.
+    """
+    # 집계 대상은 완결된 날까지만 (오늘·미래 제외)
+    counted_last = last
+    if today is not None and today <= last:
+        counted_last = today - timedelta(days=1)
+
     recorded_days = 0
     achieved_days = 0
     sum_calories = 0.0
     streak = 0
     longest_streak = 0
     day = first
-    while day <= last:
+    while day <= counted_last:
         total = day_totals[day]
         if total["meal_count"] > 0:
             recorded_days += 1
@@ -449,7 +491,7 @@ def _month_stats(
         else:
             streak = 0
         day += timedelta(days=1)
-    days_counted = (last - first).days + 1
+    days_counted = max((counted_last - first).days + 1, 0)
     return {
         "days_counted": days_counted,
         "recorded_days": recorded_days,
@@ -461,9 +503,13 @@ def _month_stats(
 
 
 def _month_weeks(
-    day_totals: dict[date, dict], first: date, last: date, goal_calories: int
+    day_totals: dict[date, dict],
+    first: date,
+    last: date,
+    goal_calories: int,
+    today: date | None = None,
 ) -> list[dict]:
-    """1일부터 7일 단위 청크(마지막은 잔여 일수) 주차 통계."""
+    """1일부터 7일 단위 청크(마지막은 잔여 일수) 주차 통계. 오늘 이후는 집계 제외."""
     weeks = []
     index = 1
     chunk_start = first
@@ -475,6 +521,8 @@ def _month_weeks(
         sum_carbs = sum_protein = sum_fat = 0.0
         day = chunk_start
         while day <= chunk_end:
+            if today is not None and day >= today:
+                break  # 오늘부터는 집계 중 — 완결된 날만 반영
             total = day_totals[day]
             if total["meal_count"] > 0:
                 recorded += 1
@@ -553,8 +601,10 @@ def monthly_summary_response(
     first = date(year, month, 1)
     last = date(year, month, calendar.monthrange(year, month)[1])
     day_totals = aggregate_range(db, user_id, first, last, day_start_hour)
-    stats = _month_stats(day_totals, first, last, goals["calories"])
-    weeks = _month_weeks(day_totals, first, last, goals["calories"])
+    # 진행 중인 오늘(논리 날짜)은 집계에서 제외 — 완결된 날 기준 통계
+    today = kst_date_of(now_utc(), day_start_hour)
+    stats = _month_stats(day_totals, first, last, goals["calories"], today=today)
+    weeks = _month_weeks(day_totals, first, last, goals["calories"], today=today)
 
     prev_year, prev_month = (year - 1, 12) if month == 1 else (year, month - 1)
     prev_first = date(prev_year, prev_month, 1)
