@@ -18,14 +18,15 @@ def normalize_name(name: str) -> str:
 
 
 def base_serving_text(item: NutritionItem) -> str:
-    """기준 제공량 표기 (예: '1인분(400g)', 공공DB 항목은 '100g당')."""
+    """기준 제공량 표기 (예: '1인분(400g)', 비대표 공공 항목은 '100g당')."""
     amount = float(item.base_amount)
     amount_text = f"{amount:g}"
-    if item.source == "public":
-        # 공공DB 는 100g/100ml 당 값 — '1인분' 으로 표기하면 오해라 기준량 그대로 노출
+    if item.source == "public" and not item.is_representative:
+        # 비대표 공공DB 는 100g/100ml 당 값 — '1인분' 으로 표기하면 오해라 기준량 그대로 노출
         return f"{amount_text}{item.base_unit}당"
-    if item.base_unit == "g":
-        return f"1인분({amount_text}g)"
+    if item.base_unit in ("g", "ml"):
+        # 시드·대표 항목은 1인분 기준으로 환산돼 있다 (curate_representative_foods)
+        return f"1인분({amount_text}{item.base_unit})"
     return f"{amount_text}{item.base_unit}"
 
 
@@ -34,8 +35,10 @@ def search_items(
 ) -> tuple[list[NutritionItem], int]:
     """부분일치 검색 + 페이지네이션. (items, total)
 
-    관련도 정렬: 정확일치 → 전방일치 → 이름 짧은 순 (공공DB 4.7만 건에서
-    id 순 정렬은 무의미하므로). 브랜드명(brand)도 검색 대상에 포함.
+    - 관련도 정렬: 정확일치 → 대표 음식 → 전방일치 → 이름 짧은 순.
+    - 동명 중복 접기: 같은 normalized_name 은 최상위 1건만 노출 (2026-08-01 PM 결정
+      — 포기김치 x30 브랜드 행 문제). total 도 접힌 기준으로 센다.
+    - 브랜드명(brand)도 검색 대상에 포함.
     """
     normalized = normalize_name(query)
     condition = or_(
@@ -45,17 +48,32 @@ def search_items(
     )
     exact_match = NutritionItem.normalized_name == normalized
     prefix_match = NutritionItem.normalized_name.startswith(normalized)
-    total = db.scalar(select(func.count()).select_from(NutritionItem).where(condition)) or 0
+    rank_order = (
+        exact_match.desc(),
+        NutritionItem.is_representative.desc(),
+        prefix_match.desc(),
+        func.length(NutritionItem.name),
+        NutritionItem.id,
+    )
+    # 동명 그룹 내 1위 행만 선별 (row_number — SQLite·Postgres 공통 지원)
+    row_rank = (
+        func.row_number()
+        .over(partition_by=NutritionItem.normalized_name, order_by=rank_order)
+        .label("row_rank")
+    )
+    ranked = select(NutritionItem.id.label("item_id"), row_rank).where(condition).subquery()
+    total = (
+        db.scalar(
+            select(func.count(func.distinct(NutritionItem.normalized_name))).where(condition)
+        )
+        or 0
+    )
     items = list(
         db.scalars(
             select(NutritionItem)
-            .where(condition)
-            .order_by(
-                exact_match.desc(),
-                prefix_match.desc(),
-                func.length(NutritionItem.name),
-                NutritionItem.id,
-            )
+            .join(ranked, ranked.c.item_id == NutritionItem.id)
+            .where(ranked.c.row_rank == 1)
+            .order_by(*rank_order)
             .offset(params.offset)
             .limit(params.limit)
         )
@@ -66,18 +84,18 @@ def search_items(
 def match_food_name(db: Session, food_name: str) -> NutritionItem | None:
     """AI 후보 음식명을 영양 DB 1건에 매칭. 없으면 None.
 
-    매칭 대상은 **시드(seed) 항목만**이다. 분석 흐름은 매칭값을 1인분 기준으로
-    간주해 AI 추정치를 대체하는데, 공공DB(public) 항목은 100g/100ml 당 기준이라
-    그대로 쓰면 "김치찌개 19kcal" 같은 오답이 된다. public 항목은 검색 화면
-    (기준량 명시 표기)에서만 노출한다. 100g당 → 1인분 환산은 후속 과제.
+    매칭 대상은 **대표(is_representative) 항목만**이다. 분석 흐름은 매칭값을
+    1인분 기준으로 간주해 AI 추정치를 대체하는데, 대표 항목(시드 + 큐레이션)만
+    1인분 기준으로 환산돼 있다. 비대표 공공 항목은 100g/100ml 당 값이라
+    그대로 쓰면 "김치찌개 19kcal" 같은 오답이 된다 — 검색 화면에서만 노출한다.
     """
     normalized = normalize_name(food_name)
     if not normalized:
         return None
-    seed_only = NutritionItem.source == "seed"
+    representative_only = NutritionItem.is_representative.is_(True)
     exact = db.scalar(
         select(NutritionItem)
-        .where(NutritionItem.normalized_name == normalized, seed_only)
+        .where(NutritionItem.normalized_name == normalized, representative_only)
         .order_by(NutritionItem.id)
         .limit(1)
     )
@@ -85,8 +103,8 @@ def match_food_name(db: Session, food_name: str) -> NutritionItem | None:
         return exact
     return db.scalar(
         select(NutritionItem)
-        .where(NutritionItem.normalized_name.contains(normalized), seed_only)
-        # 가장 짧은(일반적인) 이름 우선 — 동률이면 낮은 id
+        .where(NutritionItem.normalized_name.contains(normalized), representative_only)
+        # 가장 짧은(일반적인) 이름 우선 — 동률이면 낮은 id(시드 우선)
         .order_by(func.length(NutritionItem.normalized_name), NutritionItem.id)
         .limit(1)
     )

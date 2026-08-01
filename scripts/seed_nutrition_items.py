@@ -52,6 +52,8 @@ def seed(path: Path = SEED_PATH, session_factory=SessionLocal) -> dict[str, int]
         for raw in items:
             values = {k: raw.get(k) for k in _FIELDS}
             values.setdefault("source", "seed")
+            # 시드는 전부 1인분 기준 → 대표 음식 (검색 최상위·AI 매칭 대상)
+            values["is_representative"] = True
 
             existing = session.scalar(
                 select(NutritionItem).where(
