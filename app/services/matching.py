@@ -64,19 +64,29 @@ def search_items(
 
 
 def match_food_name(db: Session, food_name: str) -> NutritionItem | None:
-    """AI 후보 음식명을 영양 DB 1건에 매칭. 없으면 None."""
+    """AI 후보 음식명을 영양 DB 1건에 매칭. 없으면 None.
+
+    매칭 대상은 **시드(seed) 항목만**이다. 분석 흐름은 매칭값을 1인분 기준으로
+    간주해 AI 추정치를 대체하는데, 공공DB(public) 항목은 100g/100ml 당 기준이라
+    그대로 쓰면 "김치찌개 19kcal" 같은 오답이 된다. public 항목은 검색 화면
+    (기준량 명시 표기)에서만 노출한다. 100g당 → 1인분 환산은 후속 과제.
+    """
     normalized = normalize_name(food_name)
     if not normalized:
         return None
+    seed_only = NutritionItem.source == "seed"
     exact = db.scalar(
-        select(NutritionItem).where(NutritionItem.normalized_name == normalized).limit(1)
+        select(NutritionItem)
+        .where(NutritionItem.normalized_name == normalized, seed_only)
+        .order_by(NutritionItem.id)
+        .limit(1)
     )
     if exact is not None:
         return exact
     return db.scalar(
         select(NutritionItem)
-        .where(NutritionItem.normalized_name.contains(normalized))
-        # 가장 짧은(일반적인) 이름 우선 — 동률이면 낮은 id(시드 우선)
+        .where(NutritionItem.normalized_name.contains(normalized), seed_only)
+        # 가장 짧은(일반적인) 이름 우선 — 동률이면 낮은 id
         .order_by(func.length(NutritionItem.normalized_name), NutritionItem.id)
         .limit(1)
     )
