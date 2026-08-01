@@ -34,5 +34,6 @@ def get_ai_client() -> AIClient:
             _client = RealAIClient(
                 base_url=settings.ai_server_base_url,
                 timeout=settings.ai_request_timeout_seconds,
+                internal_token=settings.internal_token,
             )
     return _client

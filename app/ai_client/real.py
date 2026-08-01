@@ -21,16 +21,22 @@ from app.ai_client.base import (
 
 
 class RealAIClient:
-    def __init__(self, base_url: str, timeout: float) -> None:
+    def __init__(self, base_url: str, timeout: float, internal_token: str = "") -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        # AI 서버 내부 인증 (opt-in): 양쪽 서버에 같은 INTERNAL_TOKEN 을 설정하면
+        # X-Internal-Token 헤더로 검증된다. 미설정 시 헤더를 보내지 않는다(기존 동작).
+        self._headers = {"X-Internal-Token": internal_token} if internal_token else None
 
     def _post(self, path: str, payload: dict) -> tuple[dict | None, str | None, int]:
         """(json, error_reason, latency_ms)"""
         started = time.monotonic()
         try:
             res = httpx.post(
-                f"{self.base_url}{path}", json=payload, timeout=self.timeout
+                f"{self.base_url}{path}",
+                json=payload,
+                headers=self._headers,
+                timeout=self.timeout,
             )
             latency = int((time.monotonic() - started) * 1000)
             return res.json(), None, latency
