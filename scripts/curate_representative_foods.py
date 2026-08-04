@@ -131,21 +131,42 @@ def _pick_representative(group: list[dict]) -> dict:
     )
 
 
+def _is_franchise(row: dict) -> bool:
+    return "프랜차이즈" in (row.get("식품기원명") or "")
+
+
+def _kcal_density(row: dict) -> float | None:
+    """100g(기준량) 당 열량. 기준량이 다른 행은 그대로 쓰지 않는다."""
+    try:
+        return float(row["에너지(kcal)"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _hybrid_calories(franchise: list[dict]) -> float | None:
+    """프랜차이즈 그룹의 기준량당 열량 중앙값 (실측치)."""
+    values = [d for d in (_kcal_density(r) for r in franchise) if d is not None]
+    return statistics.median(values) if values else None
+
+
 def run(csv_path: Path, session_factory=SessionLocal) -> dict:
     rows = read_rows(csv_path)
-    general = [
+    usable = [
         r for r in rows
-        if r["데이터구분코드"] == "D"
-        and "프랜차이즈" not in (r.get("식품기원명") or "")
-        and (r.get("에너지(kcal)") or "").strip()
+        if r["데이터구분코드"] == "D" and (r.get("에너지(kcal)") or "").strip()
     ]
 
+    # 프랜차이즈를 버리지 않고 같은 그룹에 담는다. 대표 행은 비프랜차이즈에서 고르되
+    # (탄단지 100% 실측), 열량은 프랜차이즈 실측 중앙값으로 덮는다 — 비프랜차이즈는
+    # 재료량 기반 산출이라 튀김류에서 최대 50% 과소로 나온다(2026-08-04 실측:
+    # 호떡 147 vs 312, 새우튀김 145 vs 244). 식단 앱에서 과소 기록이 더 위험하다.
     groups: dict[str, list[dict]] = {}
-    for r in general:
+    for r in usable:
         groups.setdefault(normalize_name(_display_name(r["식품명"])), []).append(r)
 
     stats = {"seed_marked": 0, "curated": 0, "skipped_seed": 0,
-             "skipped_no_serving": 0, "already": 0, "not_in_db": 0}
+             "skipped_no_serving": 0, "already": 0, "not_in_db": 0,
+             "hybrid": 0, "franchise_only": 0}
 
     with session_factory() as session:
         # 1) 시드는 전부 대표 (이미 1인분 기준)
@@ -161,7 +182,13 @@ def run(csv_path: Path, session_factory=SessionLocal) -> dict:
             if norm_name in seed_names:
                 stats["skipped_seed"] += 1
                 continue
-            rep = _pick_representative(group)
+            franchise = [r for r in group if _is_franchise(r)]
+            general = [r for r in group if not _is_franchise(r)]
+            # 대표 행은 비프랜차이즈 우선 — 탄단지가 100% 실측이다.
+            # 프랜차이즈뿐인 음식(피자·버거·도넛 등 8,455건)은 그쪽에서 고른다.
+            rep = _pick_representative(general or franchise)
+            if not general:
+                stats["franchise_only"] += 1
             # 대표식품명 기준이 대분류 기준보다 우선 (피자·마카롱처럼 편차가 큰 것 보정)
             serving = SERVING_BY_REPR.get((rep.get("대표식품명") or "").strip())
             if serving is None:
@@ -182,11 +209,32 @@ def run(csv_path: Path, session_factory=SessionLocal) -> dict:
                 stats["already"] += 1
                 continue
 
-            factor = serving / float(item.base_amount)  # 통상 100 기준
+            base_amount = float(item.base_amount)
+            factor = serving / base_amount  # 통상 100 기준
             for field in _SCALED_FIELDS:
                 value = getattr(item, field)
                 if value is not None:
                     setattr(item, field, round(float(value) * factor, 2))
+
+            # 하이브리드: 열량은 프랜차이즈 실측, 탄단지는 비프랜차이즈 **비율** 유지.
+            # 양쪽이 다 있을 때만 적용한다 (PM 확정 2026-08-04).
+            if general and franchise:
+                density = _hybrid_calories(franchise)
+                if density is not None:
+                    new_calories = round(density * serving / base_amount, 2)
+                    carbs = float(item.carbs or 0)
+                    protein = float(item.protein or 0)
+                    fat = float(item.fat or 0)
+                    macro_kcal = 4 * carbs + 4 * protein + 9 * fat
+                    if macro_kcal > 0 and new_calories > 0:
+                        # 세 값에 같은 계수를 곱하면 비율은 그대로고 합은 새 열량이 된다
+                        k = new_calories / macro_kcal
+                        item.carbs = round(carbs * k, 2)
+                        item.protein = round(protein * k, 2)
+                        item.fat = round(fat * k, 2)
+                        item.calories = new_calories
+                        stats["hybrid"] += 1
+
             item.base_amount = serving
             item.is_representative = True
             stats["curated"] += 1
@@ -204,6 +252,8 @@ def main() -> None:
     stats = run(path)
     print(f"[curate] 시드 대표 지정: {stats['seed_marked']}건")
     print(f"[curate] 공공 대표 선정·1인분 환산: {stats['curated']}건")
+    print(f"[curate]   ├ 하이브리드(열량=프랜차이즈, 탄단지 비율=급식): {stats['hybrid']}건")
+    print(f"[curate]   └ 프랜차이즈만 있어 그쪽에서 선정: {stats['franchise_only']}건")
     print(f"[curate] 건너뜀 — 시드 우선: {stats['skipped_seed']} / 기준표 밖 분류: {stats['skipped_no_serving']}"
           f" / 이미 대표: {stats['already']} / DB에 없음(필터 제외분): {stats['not_in_db']}")
 
