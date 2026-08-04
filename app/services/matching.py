@@ -21,8 +21,11 @@ def base_serving_text(item: NutritionItem) -> str:
     """기준 제공량 표기 (예: '1인분(400g)', 비대표 공공 항목은 '100g당')."""
     amount = float(item.base_amount)
     amount_text = f"{amount:g}"
-    if item.source == "public" and not item.is_representative:
-        # 비대표 공공DB 는 100g/100ml 당 값 — '1인분' 으로 표기하면 오해라 기준량 그대로 노출
+    if item.source == "public" and not item.is_representative and amount == 100:
+        # 원본 기준량(100g/100ml) 그대로인 항목 — '1인분' 으로 표기하면 오해라 기준량 노출.
+        # 브랜드 제품 중 1회섭취참고량으로 1인분 환산된 것(base_amount != 100)은
+        # 아래 분기로 내려가 '1인분(30g)' 으로 표기된다 — 값이 이미 1인분이므로
+        # '30g당' 이라고 하면 사용자가 섭취량을 다시 계산해야 한다 (2026-08-04).
         return f"{amount_text}{item.base_unit}당"
     if item.base_unit in ("g", "ml"):
         # 시드·대표 항목은 1인분 기준으로 환산돼 있다 (curate_representative_foods)
