@@ -22,3 +22,6 @@ pgdata/
 # 임시 SQLite (autogenerate/테스트 검증용)
 *.db
 .pytest_tmp/
+
+# 사용자 업로드 (로컬 산출물 — 커밋 금지)
+uploads/
