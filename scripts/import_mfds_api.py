@@ -205,6 +205,7 @@ def build_representative(name: str, members: list[dict]) -> dict | None:
 def run(path: Path, min_group: int, session_factory=SessionLocal) -> dict:
     seen: set[str] = set()
     excluded: Counter = Counter()
+    converted: Counter = Counter()
     kept: list[dict] = []  # transform 통과분 전체 (대표값 재료)
     raw = 0
 
@@ -234,8 +235,23 @@ def run(path: Path, min_group: int, session_factory=SessionLocal) -> dict:
             values["_serv"] = serv[0] if serv and serv[1] == values["base_unit"] else None
             kept.append(values)
 
-    # 1층: 브랜드 제품
+    # 1층: 브랜드 제품 — 1회섭취참고량이 있으면 1인분 기준으로 환산한다.
+    # 원본은 100g 당 값이라 그대로 두면 "츄파춥스 100g 390kcal"(720g 봉지 기준) 같은
+    # 표기가 나온다. 원본에 servSize=10g 이 있는데 안 쓰던 것을 쓴다 (2026-08-04).
     brand_rows = [v for v in kept if v["_brand_hit"]]
+    for v in brand_rows:
+        serv = v.get("_serv")
+        if not serv or not (SERVING_MIN <= serv <= SERVING_MAX):
+            continue
+        base = float(v["base_amount"])
+        if base <= 0 or serv == base:
+            continue
+        factor = serv / base
+        for key in _REP_NUTRIENTS:
+            if v.get(key) is not None:
+                v[key] = round(float(v[key]) * factor, 2)
+        v["base_amount"] = round(serv, 2)
+        converted["brand_serving"] += 1
 
     # 2층: 동명 대표 (그룹은 무명 포함 전체로 구성 — 표본이 많을수록 대표값이 안정적)
     groups: dict[str, list[dict]] = defaultdict(list)
@@ -293,6 +309,7 @@ def run(path: Path, min_group: int, session_factory=SessionLocal) -> dict:
         "excluded": dict(excluded),
         "filtered": len(kept),
         "brand": len(brand_rows),
+        "brand_serving": converted["brand_serving"],
         "groups": sum(1 for m in groups.values() if len(m) >= min_group),
         "reps": len(reps),
         "inserted": inserted,
@@ -317,7 +334,7 @@ def main() -> None:
     for reason, cnt in sorted(r["excluded"].items(), key=lambda x: -x[1]):
         print(f"[mfds]   제외 - {reason}: {cnt:,}건")
     print(f"[mfds] 필터 통과 {r['filtered']:,}종")
-    print(f"[mfds]   ├ 브랜드 제품     {r['brand']:,}종")
+    print(f"[mfds]   ├ 브랜드 제품     {r['brand']:,}종 (1회섭취참고량으로 1인분 환산 {r['brand_serving']:,}종)")
     print(f"[mfds]   └ 동명 대표       {r['reps']:,}건 (동명 {args.min_group}개 이상 그룹 {r['groups']:,}개)")
     print(f"[mfds] 신규 {r['inserted']:,} / 갱신 {r['updated']:,} / 테이블 총 {r['total']:,}행")
 

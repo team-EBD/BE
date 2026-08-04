@@ -32,6 +32,56 @@ from app.core.database import SessionLocal
 from app.models import NutritionItem
 from scripts.import_public_nutrition import normalize_name, read_rows
 
+# 대표식품명별 1인분 기준(g) — 대분류보다 **먼저** 적용한다 (PM 확정 2026-08-04).
+#
+# 왜 필요한가: '빵 및 과자류' 8,600건(음식편의 44%)은 대분류 하나로 묶기엔 섭취량 편차가
+# 너무 크다 — 피자 1조각(120g)과 마카롱 1개(25g)를 같은 기준으로 둘 수 없다.
+# 그래서 사람이 실제로 세는 단위(1조각·1개·1쪽)를 기준으로 대표식품명마다 잡았다.
+# 피자는 두께 편차가 크지만 '조각'이 실제 섭취 단위라 100g 당보다 훨씬 낫다.
+SERVING_BY_REPR = {
+    # 빵 및 과자류 — 상위 항목이 전체의 80% 를 덮는다
+    "피자": 120,        # 레귤러 1조각
+    "케이크": 100,      # 1조각
+    "버거": 200,        # 1개
+    "햄버거": 200,
+    "샌드위치": 180,
+    "핫도그": 120,
+    "토스트": 100,
+    "허니브레드": 150,
+    "도넛": 60,
+    "와플": 80,
+    "크로플": 90,
+    "베이글": 90,
+    "머핀": 90,
+    "스콘": 70,
+    "페이스트리": 70,
+    "파이/만주": 70,
+    "크로켓(고로케)": 80,
+    "크림빵": 80,
+    "팥빵": 80,
+    "소보로빵": 80,
+    "치즈빵": 80,
+    "번": 80,
+    "기타빵": 80,
+    "크로와상": 60,
+    "츄러스": 60,
+    "프레즐": 60,
+    "바게트": 60,       # 2~3조각
+    "식빵": 35,         # 1쪽
+    "마카롱": 25,       # 1개
+    "비스킷/쿠키/크래커": 30,
+    # 유제품류 및 빙과류
+    "아이스크림": 100,  # 콘/바 1개
+    "빙수": 300,
+    "팥빙수": 300,
+    "샤베트": 100,
+    "밀크쉐이크": 300,
+    "요구르트(액상)": 150,
+    "요구르트(호상)": 100,
+    "우유": 200,
+    "치즈": 20,         # 슬라이스 1장
+}
+
 # 분류별 1인분 기준(g/ml) — PM 확정안 (ref/기록/0801.md)
 SERVING_BY_MAJOR = {
     "밥류": 300,
@@ -112,7 +162,10 @@ def run(csv_path: Path, session_factory=SessionLocal) -> dict:
                 stats["skipped_seed"] += 1
                 continue
             rep = _pick_representative(group)
-            serving = SERVING_BY_MAJOR.get(rep["식품대분류명"])
+            # 대표식품명 기준이 대분류 기준보다 우선 (피자·마카롱처럼 편차가 큰 것 보정)
+            serving = SERVING_BY_REPR.get((rep.get("대표식품명") or "").strip())
+            if serving is None:
+                serving = SERVING_BY_MAJOR.get(rep["식품대분류명"])
             if serving is None:
                 stats["skipped_no_serving"] += 1
                 continue

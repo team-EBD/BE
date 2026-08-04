@@ -92,6 +92,12 @@ D_REPR_CATEGORY = {
 
 _INVALID_BRAND = {"", "해당없음", "알수없음"}
 
+# 원본이 ml 로 기재해도 g 으로 고칠 대분류 — 음식편(D) 한정.
+# 급식 조사 데이터라 밥·볶음·구이·나물까지 ml 로 적힌 행이 3,155건 있다(2026-08-04 전수조사).
+# 액체가 아닌 음식에 ml 는 맞지 않고, 국·탕·찌개도 음식으로는 g 이 통상 표기다.
+# 밀도 1 가정으로 단위만 바꾼다 — 수치는 건드리지 않는다.
+_LIQUID_D_MAJOR = {"음료 및 차류"}
+
 _AMOUNT_RE = re.compile(r"^([\d.,]+)\s*(g|ml|kg|l)\b", re.IGNORECASE)
 
 
@@ -210,6 +216,16 @@ def transform(row: dict) -> dict | None:
 
     base = _parse_amount(row.get("영양성분함량기준량")) or (100.0, "g")
     total = _parse_amount(row.get("식품중량"))
+
+    # 음식편의 ml 오기재 교정 (음료·차류만 ml 유지)
+    if (
+        row["데이터구분코드"] == "D"
+        and base[1] == "ml"
+        and row.get("식품대분류명", "").strip() not in _LIQUID_D_MAJOR
+    ):
+        base = (base[0], "g")
+        if total and total[1] == "ml":
+            total = (total[0], "g")
 
     carbs, protein, fat, estimated = _fill_missing_macros(
         calories,
