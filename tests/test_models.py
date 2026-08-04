@@ -47,22 +47,22 @@ def _sqlite_factory():
     return sessionmaker(bind=engine, expire_on_commit=False)
 
 
-def test_seed_loads_40_and_is_idempotent():
+def test_seed_loads_43_and_is_idempotent():
     factory = _sqlite_factory()
 
     first = seed(session_factory=factory)
-    assert first["inserted"] == 40
+    assert first["inserted"] == 43
     assert first["updated"] == 0
-    assert first["total"] == 40
+    assert first["total"] == 43
 
-    # 재실행: 중복 생성 없이 40행 유지 (전부 update 경로)
+    # 재실행: 중복 생성 없이 43행 유지 (전부 update 경로)
     second = seed(session_factory=factory)
     assert second["inserted"] == 0
-    assert second["updated"] == 40
-    assert second["total"] == 40
+    assert second["updated"] == 43
+    assert second["total"] == 43
 
     with factory() as s:
-        assert s.query(NutritionItem).count() == 40
+        assert s.query(NutritionItem).count() == 43
         kimchi = s.query(NutritionItem).filter_by(normalized_name="김치찌개").one()
         assert kimchi.category == "한식"
         assert float(kimchi.calories) == 320

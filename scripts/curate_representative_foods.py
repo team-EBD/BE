@@ -88,7 +88,7 @@ SERVING_BY_MAJOR = {
     "죽 및 스프류": 300,
     "국 및 탕류": 400,
     "찌개 및 전골류": 400,
-    "면 및 만두류": 500,
+    "면 및 만두류": 350,  # 500→350 (2026-08-04 PM: 파스타 500g/947kcal 는 과함)
     "구이류": 150,
     "볶음류": 150,
     "튀김류": 150,
@@ -165,8 +165,8 @@ def run(csv_path: Path, session_factory=SessionLocal) -> dict:
         groups.setdefault(normalize_name(_display_name(r["식품명"])), []).append(r)
 
     stats = {"seed_marked": 0, "curated": 0, "skipped_seed": 0,
-             "skipped_no_serving": 0, "already": 0, "not_in_db": 0,
-             "hybrid": 0, "franchise_only": 0}
+             "skipped_no_serving": 0, "skipped_calorie_cap": 0, "already": 0,
+             "not_in_db": 0, "hybrid": 0, "franchise_only": 0}
 
     with session_factory() as session:
         # 1) 시드는 전부 대표 (이미 1인분 기준)
@@ -211,6 +211,15 @@ def run(csv_path: Path, session_factory=SessionLocal) -> dict:
 
             base_amount = float(item.base_amount)
             factor = serving / base_amount  # 통상 100 기준
+
+            # 1인분 열량 상식 상한 — 넘으면 승격하지 않는다 (원본은 검색용으로 남는다).
+            # 건면·그래놀라처럼 100g당 값은 건조 기준인데 1인분 기준표는 조리 기준이라
+            # "쌀국수 300g 1,060kcal" 가 됐다 (2026-08-04). 기준이 섞인 행은 판별 불가 → 상한 방어.
+            projected = float(item.calories) * factor
+            if projected > (500 if item.category == "음료" else 900):
+                stats["skipped_calorie_cap"] += 1
+                continue
+
             for field in _SCALED_FIELDS:
                 value = getattr(item, field)
                 if value is not None:
@@ -255,6 +264,7 @@ def main() -> None:
     print(f"[curate]   ├ 하이브리드(열량=프랜차이즈, 탄단지 비율=급식): {stats['hybrid']}건")
     print(f"[curate]   └ 프랜차이즈만 있어 그쪽에서 선정: {stats['franchise_only']}건")
     print(f"[curate] 건너뜀 — 시드 우선: {stats['skipped_seed']} / 기준표 밖 분류: {stats['skipped_no_serving']}"
+          f" / 열량 상한 초과: {stats['skipped_calorie_cap']}"
           f" / 이미 대표: {stats['already']} / DB에 없음(필터 제외분): {stats['not_in_db']}")
 
 

@@ -90,10 +90,11 @@ def _external_id(term: str) -> str:
 
 def build(term: str, members: list[NutritionItem]) -> dict | None:
     """총칭어 하나에 대한 대표 항목. 재료가 부족하거나 이상하면 None."""
+    # g/ml 은 수치로 동일 취급한다 (음식 밀도 ≈ 1g/ml). 단위별로 갈라 세면
+    # 커피처럼 g 4건/ml 3건으로 쪼개져 MIN_GROUP 미달로 스킵된다 (2026-08-04 실측).
+    # 표기 단위만 다수결로 고른다.
     unit = Counter(m.base_unit for m in members).most_common(1)[0][0]
-    same_unit = [m for m in members if m.base_unit == unit]
-    if len(same_unit) < MIN_GROUP:
-        return None
+    same_unit = members
 
     servings = [
         float(m.base_amount) for m in same_unit
@@ -149,9 +150,16 @@ def run(session_factory=SessionLocal) -> dict:
             )
         )
 
+        # 정확일치가 이미 되는 총칭어는 만들지 않는다 — 총칭 대표는 정확일치 실패를
+        # 막기 위한 것이고, 시드·음식 대표가 있으면 매칭이 항상 그쪽(낮은 id)을 이겨
+        # 총칭 행은 죽은 데이터가 된다 (예: 시드 라면이 있는데 gen:라면 917kcal 생성).
+        exact_names = {item.normalized_name for item in pool}
+
         buckets: dict[str, list[NutritionItem]] = defaultdict(list)
         for term in GENERIC_TERMS:
             norm = normalize_name(term)
+            if norm in exact_names:
+                continue
             for item in pool:
                 name = item.normalized_name or ""
                 # 핵심어가 뒤에 오는 한국어 특성 — '치킨'으로 끝나는 것만 치킨이다.
