@@ -200,6 +200,19 @@ def transform(row: dict) -> dict | None:
     calories = _num(row.get("에너지(kcal)"))
     if calories is None:
         return None
+    # 물리적으로 불가능한 밀도(순수 지방 9kcal/g 초과)는 원본 오기재 — 적재하지 않는다
+    # (2026-08-04 실측: 팔공티 마카롱 7건이 100g당 1,070~1,338kcal 로 기재돼 있었다)
+    if calories > 900:
+        return None
+    # 음료가 100ml당 200kcal 초과면 오기재 — 가장 진한 밀크셰이크도 150 수준이다.
+    # (2026-08-04 실측: 전체 음료·차류의 kcal 분포는 중앙값 57 · p99 146 인데
+    #  프랜차이즈 스무디 12건이 200~351 로 기재돼 1인분 환산 시 1,229kcal 가 됐다)
+    if (
+        row["데이터구분코드"] == "D"
+        and row.get("식품대분류명", "").strip() == "음료 및 차류"
+        and calories > 200
+    ):
+        return None
 
     raw_name = row["식품명"].strip()
     display_name = raw_name
@@ -239,7 +252,9 @@ def transform(row: dict) -> dict | None:
     return {
         "external_id": row["식품코드"].strip()[:40],
         "name": display_name[:100],
-        "normalized_name": normalize_name(raw_name)[:100],
+        # 표시명 기준으로 정규화 — 원본명("피자_불고기피자") 기준이면 밑줄이 남아
+        # "불고기피자" 정확일치가 영원히 실패한다 (2026-08-04, 대표의 93.4%가 해당)
+        "normalized_name": normalize_name(display_name)[:100],
         "base_amount": base[0],
         "base_unit": base[1],
         "calories": calories,

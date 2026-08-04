@@ -186,6 +186,13 @@ def build_representative(name: str, members: list[dict]) -> dict | None:
     if any(v >= 1_000_000 for v in values.values()):
         return None
 
+    category = Counter(m["category"] for m in same_unit).most_common(1)[0][0]
+    # 1인분 열량 상식 상한 — 넘으면 대표를 만들지 않는다 (원본은 검색용으로 남는다).
+    # 분말 제품(율무차 등)은 100g당 값이 가루 기준인데 1인분은 타 먹은 잔 기준이라
+    # "율무차 200ml 944kcal" 가 됐다 (2026-08-04). 기준이 섞인 건 판별 불가 → 상한으로 방어.
+    if float(values["calories"]) > (500 if category == "음료" else 900):
+        return None
+
     digest = hashlib.md5(normalize_name(name).encode()).hexdigest()  # noqa: S324 — 식별자용
     return {
         "external_id": f"rep:{digest}"[:40],
@@ -194,7 +201,7 @@ def build_representative(name: str, members: list[dict]) -> dict | None:
         "base_amount": round(serving, 2),
         "base_unit": unit,
         "brand": None,
-        "category": Counter(m["category"] for m in same_unit).most_common(1)[0][0],
+        "category": category,
         "total_weight": round(serving, 2),
         "source": "public",
         "is_representative": True,

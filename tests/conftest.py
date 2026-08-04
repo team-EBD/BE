@@ -55,7 +55,7 @@ def db_factory():
 
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
-    seed(session_factory=factory)  # 음식 40종
+    seed(session_factory=factory)  # 음식 43종
     yield factory
     engine.dispose()
 
