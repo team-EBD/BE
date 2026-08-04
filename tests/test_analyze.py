@@ -254,3 +254,46 @@ def test_analyze_bbox_none_for_legacy_ai_server(client, auth_headers, monkeypatc
     )
     assert res.status_code == 200
     assert all(c["bbox"] is None for c in res.json()["candidates"])
+
+
+# --------------------------------------------------------- 절대량(g) 기준 환산
+# AI 는 우리 DB 의 1인분이 몇 g 인지 모른다. 절대량이 오면 그것을 우리 기준량으로
+# 나눠 배수를 다시 계산해야 한다 (피자 1판 vs 1조각처럼 몇 배씩 어긋나는 것 방지).
+
+class _Cand:
+    def __init__(self, serving=1.0, grams=None):
+        self.estimated_serving = serving
+        self.estimated_serving_g = grams
+
+
+class _Item:
+    def __init__(self, base_amount):
+        self.base_amount = base_amount
+
+
+def test_reconcile_serving_uses_grams_over_multiplier():
+    from app.services.analyze import _reconcile_serving
+
+    # 사진에 240g, 우리 1인분은 120g → 2인분. AI 가 준 배수(0.27)는 무시된다.
+    assert _reconcile_serving(_Cand(0.27, 240), _Item(120)) == 2.0
+
+
+def test_reconcile_serving_falls_back_without_grams():
+    from app.services.analyze import _reconcile_serving
+
+    # 구버전 AI 서버·추정 실패 → 기존 배수 그대로
+    assert _reconcile_serving(_Cand(1.5, None), _Item(120)) == 1.5
+
+
+def test_reconcile_serving_falls_back_without_match():
+    from app.services.analyze import _reconcile_serving
+
+    # 영양DB 매칭 실패 시 나눌 기준이 없다
+    assert _reconcile_serving(_Cand(1.5, 240), None) == 1.5
+
+
+def test_reconcile_serving_rejects_absurd_ratio():
+    from app.services.analyze import _reconcile_serving
+
+    # 1인분 5g 짜리에 3000g → 600배. 상식 밖이라 기존 배수로 되돌린다
+    assert _reconcile_serving(_Cand(1.0, 3000), _Item(5)) == 1.0

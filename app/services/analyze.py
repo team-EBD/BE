@@ -70,6 +70,33 @@ def _bbox_of(cand) -> BoundingBox | None:
         return None
 
 
+# 환산 결과 상한 — food_candidates.estimated_serving 은 Numeric(8,2) 이고
+# 사용자가 보정 슬라이더로 다시 만지므로 상식 범위를 벗어나면 1인분으로 되돌린다.
+_SERVING_MIN, _SERVING_MAX = 0.1, 10.0
+
+
+def _reconcile_serving(cand, matched) -> float:
+    """AI 의 절대량(g)을 **우리 영양DB 기준량**으로 나눠 배수로 바꾼다.
+
+    AI 는 우리 DB 의 1인분이 몇 g 인지 모른다. 그래서 AI 가 준 배수
+    (estimated_serving)는 "AI 가 생각하는 1인분"에 대한 배수이고, 우리 기준과
+    다르면 그대로 곱했을 때 몇 배씩 어긋난다 — 피자를 AI 는 1판, DB 는 1조각으로
+    볼 수 있다. 절대량이 오면 그것을 기준으로 다시 계산한다.
+
+    절대량이 없거나(구버전 AI·추정 실패) 매칭된 항목이 없으면 기존 배수를 쓴다.
+    """
+    grams = getattr(cand, "estimated_serving_g", None)
+    if grams is None or matched is None:
+        return float(cand.estimated_serving)
+    base = float(matched.base_amount or 0)
+    if base <= 0:
+        return float(cand.estimated_serving)
+    serving = grams / base
+    if not (_SERVING_MIN <= serving <= _SERVING_MAX):
+        return float(cand.estimated_serving)
+    return round(serving, 2)
+
+
 def _save_call_log(
     db: Session, user_id: int, meal_image_id: int | None, payload: AICallLogPayload,
     error_message: str | None = None,
@@ -162,6 +189,7 @@ def _postprocess(
     candidates: list[AnalyzeCandidate] = []
     for rank, (food_index, cand) in enumerate(_grouped_candidates(result.candidates), start=1):
         matched = match_food_name(db, cand.food_name)
+        serving = _reconcile_serving(cand, matched)
         row = FoodCandidate(
             meal_image_id=meal_image_id,
             ai_call_log_id=call_log.id,
@@ -169,7 +197,7 @@ def _postprocess(
             food_name=cand.food_name,
             normalized_name=normalize_name(cand.food_name),
             confidence_score=cand.confidence,
-            estimated_serving=cand.estimated_serving,
+            estimated_serving=serving,
             rank=rank,
         )
         db.add(row)
@@ -222,7 +250,7 @@ def _postprocess(
                 food_index=food_index,
                 normalized_name=row.normalized_name,
                 confidence_score=float(cand.confidence),
-                estimated_serving=float(cand.estimated_serving),
+                estimated_serving=serving,
                 has_soup=cand.has_soup,
                 has_sauce=cand.has_sauce,
                 bbox=_bbox_of(cand),
