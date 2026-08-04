@@ -49,6 +49,10 @@ class AICandidate(BaseModel):
     food_name: str
     confidence: float
     estimated_serving: float = 1.0
+    # 사진에 담긴 **절대량**(g/ml). AI 가 생각하는 1인분과 영양DB 의 1인분이 다르면
+    # 배수(estimated_serving)만으로는 계산이 어긋나므로(피자 1판 vs 1조각) 절대량을
+    # 받아 우리 기준으로 다시 나눈다. 구버전 AI 서버·추정 실패 시 None.
+    estimated_serving_g: float | None = None
     # 국물/소스가 실제로 있는 음식인지 — FE 보정 버튼 노출 판단용.
     # 구버전 AI 서버 응답에는 없으므로 True(버튼 노출 유지) 기본값.
     has_soup: bool = True
