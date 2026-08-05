@@ -53,6 +53,9 @@ class NutritionItem(Base):
     is_representative: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=sa_false()
     )  # 대표 음식(1인분 기준) — 검색 최상위 노출·AI 매칭 대상. 시드 + 큐레이션 선정분
+    macros_estimated: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=sa_false()
+    )  # 탄단지가 원본 실측이 아니라 적재 시 추정으로 채워진 행 (실측/추정 추적, 2026-08-05)
 
 
 class FavoriteFood(Base):

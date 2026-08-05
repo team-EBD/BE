@@ -23,7 +23,9 @@
 from __future__ import annotations
 
 import csv
+import json
 import re
+import statistics
 import sys
 from collections import Counter
 from pathlib import Path
@@ -182,22 +184,156 @@ def _pick_brand(row: dict) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------- 탄단지 결측 추정
+#
+# 탄수+지방 동시 결측(프랜차이즈 12,653행)은 방정식(kcal=4C+4P+9F) 하나에 미지수가
+# 둘이라 자유도를 하나 정해야 한다. 초판의 "잔여열량의 35%가 지방" 상수는 근거 없는
+# 가정이었다 (실측 지방 몫: 밥류 15% ~ 구이류 78%, 2026-08-05 PM 재조사 지시).
+# → **실측 앵커식**으로 교체: 그 행의 포화지방 실측 × 같은 대표식품명 완전실측 행들의
+#   지방/포화 비율(절사 중앙값, 표본 10+)로 지방을 정하고, 탄수는 열량 항등식 역산에
+#   당류 실측을 하한으로 강제한다. 백테스트(완전실측 행에서 가리고 맞히기):
+#   탄수 MAE 2.6→1.2 g, 지방 1.2→0.5 g. 대분류 폴백은 두지 않는다(PM 결정) —
+#   표본 미달 99종은 사람 검증 참조표(data/manual_macro_shares.json)가 담당한다.
+
+_MANUAL_SHARES_PATH = Path(__file__).resolve().parent / "data" / "manual_macro_shares.json"
+MACRO_RATIOS_ARTIFACT = (
+    Path(__file__).resolve().parents[3] / "ref" / "source" / "macro_ratios_computed.json"
+)
+_MIN_SAMPLES = 10  # 그룹 실측 비율을 인정하는 최소 표본 (2026-08-05 PM 확정)
+
+
+def _trimmed_median(values: list[float]) -> float:
+    """상하위 10% 절사 후 중앙값 — 극단값(오기재)이 비율을 끌고 가지 못하게."""
+    if len(values) >= 10:
+        values = sorted(values)
+        k = len(values) // 10
+        values = values[k: len(values) - k or None]
+    return statistics.median(values)
+
+
+class MacroEstimator:
+    """대표식품명별 실측 통계로 결측 탄수·지방을 추정한다.
+
+    비율 풀은 **탄단지 완전실측 행만** 쓴다 — 추정치가 통계 재료로 되돌아오는 순환 없음.
+    위생 필터: 지방<포화(물리 모순), 탄단지 열량이 표기 열량과 30% 이상 어긋나는 행 제외.
+    """
+
+    def __init__(self, ratio: dict, share: dict):
+        self.ratio = ratio  # 대표식품명 → 지방/포화지방 비율 (절사 중앙값)
+        self.share = share  # 대표식품명 → 잔여열량 중 지방 몫 (포화 실측 없는 행용)
+        try:
+            manual = json.loads(_MANUAL_SHARES_PATH.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            manual = {}
+        self.manual = {
+            k: v["fat_share"] for k, v in manual.items() if not k.startswith("_")
+        }
+
+    @classmethod
+    def from_rows(cls, rows: list[dict]) -> "MacroEstimator":
+        ratio_by: dict[str, list[float]] = {}
+        share_by: dict[str, list[float]] = {}
+        for r in rows:
+            if r.get("데이터구분코드") != "D":
+                continue
+            kcal = _num(r.get("에너지(kcal)"))
+            c = _num(r.get("탄수화물(g)"))
+            p = _num(r.get("단백질(g)"))
+            f = _num(r.get("지방(g)"))
+            if None in (kcal, c, p, f):
+                continue
+            sat = _num(r.get("포화지방산(g)"))
+            macro_kcal = 4 * c + 4 * p + 9 * f
+            # 위생 필터 — 자기모순 행은 통계 풀에서 제외
+            if sat is not None and f < sat:
+                continue
+            if kcal >= 20 and abs(macro_kcal - kcal) > 0.3 * kcal:
+                continue
+            repr_name = (r.get("대표식품명") or "").strip()
+            remaining = kcal - 4 * p
+            if sat and sat > 0.2 and f >= sat:
+                ratio_by.setdefault(repr_name, []).append(f / sat)
+            if remaining > 10:
+                share_by.setdefault(repr_name, []).append(
+                    min(max(9 * f / remaining, 0.0), 1.0)
+                )
+        return cls(
+            {k: _trimmed_median(v) for k, v in ratio_by.items() if len(v) >= _MIN_SAMPLES},
+            {k: _trimmed_median(v) for k, v in share_by.items() if len(v) >= _MIN_SAMPLES},
+        )
+
+    def save(self, path: Path = MACRO_RATIOS_ARTIFACT) -> None:
+        """가공식품(import_mfds_api) 프로세스가 같은 통계를 쓰도록 아티팩트 저장."""
+        path.write_text(
+            json.dumps({"ratio": self.ratio, "share": self.share}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def from_artifact(cls, path: Path = MACRO_RATIOS_ARTIFACT) -> "MacroEstimator | None":
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        return cls(data["ratio"], data["share"])
+
+    def fill(
+        self, repr_name: str, calories: float, protein: float,
+        sugar: float | None, saturated_fat: float | None,
+    ) -> tuple[float, float] | None:
+        """(carbs, fat) 추정. 그룹 실측도 참조표도 없으면 None (커버리지 밖)."""
+        remaining = max(calories - 4 * protein, 0.0)
+        if saturated_fat and saturated_fat > 0 and repr_name in self.ratio:
+            fat = min(max(saturated_fat * self.ratio[repr_name], saturated_fat), remaining / 9)
+        else:
+            fat_share = self.share.get(repr_name, self.manual.get(repr_name))
+            if fat_share is None:
+                return None
+            fat = fat_share * remaining / 9
+        carbs = (remaining - 9 * fat) / 4
+        if sugar and carbs < sugar:
+            # 탄수는 당류보다 작을 수 없다 → 탄수를 당류로 고정하고 지방을 재역산
+            carbs = sugar
+            fat = max((remaining - 4 * carbs) / 9, saturated_fat or 0.0, 0.0)
+        return max(carbs, 0.0), fat
+
+
+# 적재 스크립트가 프로세스 시작 시 설정한다 (import_public: from_rows / import_mfds: from_artifact)
+_macro_estimator: MacroEstimator | None = None
+
+
+def set_macro_estimator(estimator: MacroEstimator | None) -> None:
+    global _macro_estimator
+    _macro_estimator = estimator
+
+
 def _fill_missing_macros(
     calories: float, carbs: float | None, protein: float | None,
     fat: float | None, sugar: float | None, saturated_fat: float | None,
+    repr_name: str = "",
 ) -> tuple[float, float, float, bool]:
-    """결측 탄수/지방/단백질을 열량 균형식으로 추정. (carbs, protein, fat, estimated) 반환."""
+    """결측 탄수/지방/단백질 보완. (carbs, protein, fat, estimated) 반환.
+
+    1개 결측은 열량 항등식으로 정확 역산(가정 불필요), 탄수+지방 동시 결측은
+    MacroEstimator(실측 앵커식). 커버리지 밖이면 최소가정 보수 채움(지방=포화 하한).
+    """
     estimated = False
     if protein is None:
         protein = 0.0
         estimated = True
     if fat is None and carbs is None:
-        remaining = max(calories - 4 * protein, 0.0)
-        if saturated_fat is not None:
-            fat = min(saturated_fat * 2, remaining / 9)  # 포화지방:전체지방 ≈ 1:2 가정
+        filled = (
+            _macro_estimator.fill(repr_name, calories, protein, sugar, saturated_fat)
+            if _macro_estimator
+            else None
+        )
+        if filled is not None:
+            carbs, fat = filled
         else:
-            fat = 0.35 * remaining / 9  # 잔여 열량의 35%를 지방으로 가정
-        carbs = max((remaining - 9 * fat) / 4, sugar or 0.0)
+            # 커버리지 밖 — 확실한 하한만 쓴다 (지방=포화 실측, 탄수=잔여·당류 하한)
+            remaining = max(calories - 4 * protein, 0.0)
+            fat = min(saturated_fat or 0.0, remaining / 9)
+            carbs = max((remaining - 9 * fat) / 4, sugar or 0.0)
         estimated = True
     elif fat is None:
         fat = max((calories - 4 * (carbs or 0) - 4 * protein) / 9, saturated_fat or 0.0, 0.0)
@@ -282,13 +418,34 @@ def transform(row: dict) -> dict | None:
         if total and total[1] == "g":
             total = (total[0], "ml")
 
+    # 보조 영양소 오기재 무력화 — 기준량보다 크거나 그 성분만으로 총열량을 초과하면
+    # 물리적으로 불가능한 값이라 결측 취급한다 (2026-08-05 실측: "당류 441g/100g",
+    # "노슈거 티 당류 71g" 등 30행이 당류 하한·포화 하한 앵커를 오염시켜 대표까지 승격됐다)
+    sugar = _num(row.get("당류(g)"))
+    if sugar is not None and (sugar > base[0] or 4 * sugar > calories * 1.2 + 5):
+        sugar = None
+    saturated = _num(row.get("포화지방산(g)"))
+    if saturated is not None and (saturated > base[0] or 9 * saturated > calories * 1.2 + 5):
+        saturated = None
+
+    # 성분 하한 열량 합이 총열량을 초과하면 자기모순 행 — 적재하지 않는다.
+    # 단백질은 전량, 당류는 탄수의 부분집합, 포화는 지방의 부분집합이라
+    # 4P + 4×당류 + 9×포화 ≤ 총열량이 물리적으로 항상 성립해야 한다
+    # (2026-08-05 실측: "링티 스무디 단백질 363g/100ml" · "팥빙수 단백질 52g+당류 40g" 등
+    #  43행, 그중 19행이 대표로 승격돼 있었다. 자기모순 행은 탄단지 추정도 오염시킨다)
+    protein_raw = _num(row.get("단백질(g)"))
+    implied_min_kcal = 4 * (protein_raw or 0) + 4 * (sugar or 0) + 9 * (saturated or 0)
+    if implied_min_kcal > calories * 1.2 + 5:
+        return None
+
     carbs, protein, fat, estimated = _fill_missing_macros(
         calories,
         _num(row.get("탄수화물(g)")),
         _num(row.get("단백질(g)")),
         _num(row.get("지방(g)")),
-        _num(row.get("당류(g)")),
-        _num(row.get("포화지방산(g)")),
+        sugar,
+        saturated,
+        repr_name=(row.get("대표식품명") or "").strip(),
     )
 
     return {
@@ -303,17 +460,17 @@ def transform(row: dict) -> dict | None:
         "carbs": carbs,
         "protein": protein,
         "fat": fat,
-        "sugar": _num(row.get("당류(g)")),
+        "sugar": sugar,
         "fiber": _num(row.get("식이섬유(g)")),
         "sodium": _num(row.get("나트륨(mg)")),
         "cholesterol": _num(row.get("콜레스테롤(mg)")),
-        "saturated_fat": _num(row.get("포화지방산(g)")),
+        "saturated_fat": saturated,
         "trans_fat": _num(row.get("트랜스지방산(g)")),
         "brand": _pick_brand(row),
         "category": category,
         "total_weight": total[0] if total and total[1] == base[1] else None,
         "source": "public",
-        "_estimated": estimated,  # 통계용 — DB 컬럼 아님
+        "macros_estimated": estimated,  # 탄단지가 실측이 아니라 추정으로 채워진 행 (2026-08-05)
     }
 
 
@@ -344,6 +501,11 @@ def run(paths: list[Path], session_factory=SessionLocal) -> dict:
     for path in paths:
         rows = read_rows(path)
         stats["read"] += len(rows)
+        # 결측 추정용 실측 통계를 이 파일의 완전실측 행에서 먼저 산출 (2026-08-05).
+        # 아티팩트로 저장해 가공식품 적재(import_mfds_api)도 같은 통계를 쓴다.
+        estimator = MacroEstimator.from_rows(rows)
+        estimator.save()
+        set_macro_estimator(estimator)
         for row in rows:
             reason = _exclude_reason(row)
             if reason:
@@ -364,7 +526,7 @@ def run(paths: list[Path], session_factory=SessionLocal) -> dict:
         inserted = updated = 0
         batch: list[NutritionItem] = []
         for external_id, values in pending.items():
-            if values.pop("_estimated", False):
+            if values["macros_estimated"]:
                 stats["macros_estimated"] += 1
             category_dist[values["category"]] += 1
             if external_id in existing_ids:

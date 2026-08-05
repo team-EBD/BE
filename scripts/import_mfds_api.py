@@ -41,9 +41,11 @@ from app.core.database import SessionLocal
 from app.models import NutritionItem
 from scripts.import_public_nutrition import (
     BATCH_SIZE,
+    MacroEstimator,
     _exclude_reason,
     _parse_amount,
     normalize_name,
+    set_macro_estimator,
     strip_variant_markers,
     transform,
 )
@@ -224,6 +226,10 @@ def build_representative(name: str, members: list[dict]) -> dict | None:
 
 
 def run(path: Path, min_group: int, session_factory=SessionLocal) -> dict:
+    # 결측 탄단지 추정 통계(음식편 완전실측 기반) 로드 — import_public_nutrition 이 저장한
+    # 아티팩트. 없으면(음식편을 먼저 안 돌린 경우) 커버리지 밖 보수 채움으로 동작한다.
+    set_macro_estimator(MacroEstimator.from_artifact())
+
     seen: set[str] = set()
     excluded: Counter = Counter()
     converted: Counter = Counter()
@@ -249,7 +255,6 @@ def run(path: Path, min_group: int, session_factory=SessionLocal) -> dict:
             if values is None:
                 excluded["열량 없음"] += 1
                 continue
-            values.pop("_estimated", None)
             values["_brand_hit"] = is_brand(row)
             serv = _parse_amount(row.get("1회섭취참고량"))
             # 기준량과 단위가 같을 때만 1인분 후보로 인정. 단 음료는 g/ml 동치 —
