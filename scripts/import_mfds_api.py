@@ -197,6 +197,10 @@ def build_representative(name: str, members: list[dict]) -> dict | None:
         return None
 
     category = Counter(m["category"] for m in same_unit).most_common(1)[0][0]
+    # 단위 불변식: 음료는 ml (2026-08-05). 단위와 카테고리가 각각 멤버 최빈값이라
+    # "복숭아: 음료 + g" 처럼 어긋난 짝이 나올 수 있다 — 카테고리 쪽에 맞춘다.
+    if category == "음료":
+        unit = "ml"
     # 1인분 열량 상식 상한 — 넘으면 대표를 만들지 않는다 (원본은 검색용으로 남는다).
     # 분말 제품(율무차 등)은 100g당 값이 가루 기준인데 1인분은 타 먹은 잔 기준이라
     # "율무차 200ml 944kcal" 가 됐다 (2026-08-04). 기준이 섞인 건 판별 불가 → 상한으로 방어.
@@ -248,8 +252,12 @@ def run(path: Path, min_group: int, session_factory=SessionLocal) -> dict:
             values.pop("_estimated", None)
             values["_brand_hit"] = is_brand(row)
             serv = _parse_amount(row.get("1회섭취참고량"))
-            # 기준량과 단위가 같을 때만 1인분 후보로 인정 (g 기준 항목에 ml 값 섞임 방지)
-            values["_serv"] = serv[0] if serv and serv[1] == values["base_unit"] else None
+            # 기준량과 단위가 같을 때만 1인분 후보로 인정. 단 음료는 g/ml 동치 —
+            # 기준 단위를 ml 로 강제(2026-08-05)했는데 servSize 가 g 로 적힌 제품이 있다.
+            unit_ok = serv and (
+                serv[1] == values["base_unit"] or values["category"] == "음료"
+            )
+            values["_serv"] = serv[0] if unit_ok else None
             kept.append(values)
 
     # 1층: 브랜드 제품 — 1회섭취참고량이 있으면 1인분 기준으로 환산한다.
