@@ -33,6 +33,10 @@ from sqlalchemy import select
 from app.core.database import SessionLocal
 from app.models import NutritionItem
 
+# 정규화 규칙의 정의처는 app.services.matching — 검색·매칭과 적재가 반드시 같은 규칙이어야
+# 정확일치가 성립한다. 여기서 re-export 해 다른 적재 스크립트들이 가져다 쓴다.
+from app.services.matching import normalize_name, strip_variant_markers  # noqa: F401
+
 BATCH_SIZE = 1000
 
 # ---------------------------------------------------------------- 필터 규칙
@@ -129,9 +133,6 @@ def _parse_amount(text: str | None) -> tuple[float, str] | None:
     return amount, unit
 
 
-def normalize_name(name: str) -> str:
-    # app.services.matching.normalize_name 과 동일 규칙 (공백 제거)
-    return name.replace(" ", "").strip()
 
 
 def _pick_brand(row: dict) -> str | None:
