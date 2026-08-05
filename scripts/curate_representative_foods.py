@@ -31,6 +31,7 @@ from sqlalchemy import select
 from app.core.database import SessionLocal
 from app.models import NutritionItem
 from scripts.import_public_nutrition import (
+    display_name_from_raw as _display_name,  # 표시명 규칙의 정의처는 import 쪽 하나다
     normalize_name,
     read_rows,
     strip_variant_markers,
@@ -112,18 +113,6 @@ _SCALED_FIELDS = (
     "calories", "carbs", "protein", "fat",
     "sugar", "fiber", "sodium", "cholesterol", "saturated_fat", "trans_fat",
 )
-
-
-def _display_name(raw_name: str) -> str:
-    # import_public_nutrition.transform 의 음식(D) 이름 규칙과 동일하게 유지할 것
-    name = raw_name.strip()
-    if "_" in name:
-        prefix, suffix = (part.strip() for part in name.split("_", 1))
-        if suffix:
-            if normalize_name(prefix) in normalize_name(suffix):
-                return suffix
-            return f"{prefix} {suffix}"
-    return name
 
 
 def _pick_representative(group: list[dict]) -> dict:
