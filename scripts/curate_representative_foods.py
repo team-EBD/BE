@@ -30,7 +30,11 @@ from sqlalchemy import select
 
 from app.core.database import SessionLocal
 from app.models import NutritionItem
-from scripts.import_public_nutrition import normalize_name, read_rows
+from scripts.import_public_nutrition import (
+    normalize_name,
+    read_rows,
+    strip_variant_markers,
+)
 
 # 대표식품명별 1인분 기준(g) — 대분류보다 **먼저** 적용한다 (PM 확정 2026-08-04).
 #
@@ -246,6 +250,12 @@ def run(csv_path: Path, session_factory=SessionLocal) -> dict:
 
             item.base_amount = serving
             item.is_representative = True
+            # 온도·사이즈 변형이 한 그룹으로 합쳐지므로(normalize_name 이 마커 제거)
+            # 대표의 표시명은 기본 이름으로 둔다 — "허브차 아이스(ICED) (L)" 이 대표명이면
+            # 사용자가 hot/ice 를 고르는 것처럼 오해한다. 비대표 행은 원본명 유지(브랜드 검색용).
+            clean_name = strip_variant_markers(_display_name(rep["식품명"]))[:100]
+            if clean_name and clean_name != item.name:
+                item.name = clean_name
             stats["curated"] += 1
 
         session.commit()

@@ -116,3 +116,34 @@ def test_search_pagination(client, auth_headers):
     body = res.json()
     assert len(body["items"]) <= 2
     assert body["pagination"]["size"] == 2
+
+
+def test_strip_variant_markers_removes_temp_and_size():
+    """hot/ice·사이즈 변형 표기는 벗겨져 한 음식으로 정규화된다 (2026-08-05)."""
+    from app.services.matching import normalize_name, strip_variant_markers
+
+    assert strip_variant_markers("허브차 아이스(ICED) (L)") == "허브차"
+    assert strip_variant_markers("민트모히또 라떼 핫(HOT) (Mini Venti)") == "민트모히또 라떼"
+    assert strip_variant_markers("뱅쇼 티 (ICED)") == "뱅쇼 티"
+    assert strip_variant_markers("핫치킨피자씬(L)") == "핫치킨피자씬"
+    assert strip_variant_markers("건포도빵 (대)") == "건포도빵"
+    assert strip_variant_markers("고구마피자 (1인)") == "고구마피자"
+    # 같은 음식의 온도·사이즈 변형은 normalized_name 이 같아져 검색 접기로 합쳐진다
+    assert normalize_name("커피 아메리카노 아이스(ICED) (R)") == normalize_name("커피 아메리카노 핫(HOT) (Tall)")
+
+
+def test_strip_variant_markers_keeps_real_names():
+    """온도·사이즈가 아닌 표기는 건드리지 않는다 — 상표 ®, 제품명, 얼린 음식, 개입 수."""
+    from app.services.matching import strip_variant_markers
+
+    keep = [
+        "양반 카무트(R)브랜드밀 함유 현미밥",  # 중간 괄호 = ® 상표
+        "핫도그",
+        "HOT6 더킹포스",
+        "오뚜기 THE HOT 열라면",
+        "아이스 딸기 탕후루",  # '아이스'가 얼린 음식이라는 뜻
+        "치즈피자 (8개입)",  # 사이즈가 아닌 수량
+        "게살죽(미국)",
+    ]
+    for name in keep:
+        assert strip_variant_markers(name) == name

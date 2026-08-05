@@ -2,9 +2,12 @@
 
 - 검색: nutrition_items.normalized_name / name 부분일치(MVP 는 단순 LIKE).
 - 매칭: AI 후보 food_name → nutrition_items 1건 매칭 (정확일치 우선 → 부분일치).
-- 정규화 규칙: 공백 제거. (시드의 normalized_name 과 동일 규칙)
+- 정규화 규칙: 온도·사이즈 변형 표기 제거 + 공백 제거. 적재 스크립트도 이 함수를
+  import 해 같은 규칙으로 normalized_name 을 저장한다 — 여기가 유일한 정의처.
 """
 from __future__ import annotations
+
+import re
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -12,9 +15,36 @@ from sqlalchemy.orm import Session
 from app.core.pagination import PageParams
 from app.models import NutritionItem
 
+# 온도 표기 — 항상 '아이스(ICED)'/'핫(HOT)' 결합형이라 위치 무관 제거해도 안전하다.
+# 무괄호 '핫'·'아이스'는 핫도그·아이스크림·HOT6(제품명)·아이스 딸기 탕후루(얼린 음식)처럼
+# 온도가 아닌 경우가 많아 건드리지 않는다 (2026-08-05 전수 조사).
+_TEMP_MARKER_RE = re.compile(r"아이스\(ICED?\)|핫\(HOT\)|\(ICED?\)|\(HOT\)", re.IGNORECASE)
+
+# 사이즈 괄호 — 이름 **끝**에 연달아 붙은 것만 벗긴다. 중간 괄호는 '카무트(R)브랜드밀'의
+# ®처럼 사이즈가 아닐 수 있다. 어휘는 로컬 DB 꼬리 괄호 토큰 전수 조사로 확정했고
+# 무작위 표본 오탐 0 을 확인했다 (프랜차이즈 음료 L/R/EX/J/V, 피자 F/P/G, 빵 소/대/홀 등).
+_TRAILING_SIZE_RE = re.compile(
+    r"(?:\s*\((?:Mini Venti|하프벤티|더벤티|Grande|Venti|Short|Tall|Solo|Half|Max"
+    r"|XL|ML|EX|싱글|더블|미니|[0-9]+인치|[0-9]+호|[0-9]+인|홀|소|대|중"
+    r"|[LRMSPFGHJV])\))+\s*$",
+    re.IGNORECASE,
+)
+
+
+def strip_variant_markers(name: str) -> str:
+    """같은 음식의 온도(hot/ice)·사이즈(S/M/L 등) 변형 표기를 벗긴 기본 이름.
+
+    '허브차 아이스(ICED) (L)' → '허브차'. 온도·사이즈별 행은 밀도 차이가 미미해
+    (동일 브랜드 병합 그룹 2,384개 실측: 100g당 편차 중앙값 5kcal) 한 음식으로 취급한다
+    (2026-08-05 PM 결정).
+    """
+    name = _TEMP_MARKER_RE.sub(" ", name)
+    name = _TRAILING_SIZE_RE.sub("", name)
+    return re.sub(r"\s+", " ", name).strip()
+
 
 def normalize_name(name: str) -> str:
-    return name.replace(" ", "").strip()
+    return strip_variant_markers(name).replace(" ", "").strip()
 
 
 def base_serving_text(item: NutritionItem) -> str:

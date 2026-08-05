@@ -44,6 +44,7 @@ from scripts.import_public_nutrition import (
     _exclude_reason,
     _parse_amount,
     normalize_name,
+    strip_variant_markers,
     transform,
 )
 
@@ -269,7 +270,11 @@ def run(path: Path, min_group: int, session_factory=SessionLocal) -> dict:
     for norm_name, members in groups.items():
         if len(members) < min_group:
             continue
-        display = Counter(m["name"] for m in members).most_common(1)[0][0]
+        # 그룹 키(normalized_name)가 온도·사이즈 마커를 벗긴 값이므로 최빈 원본명에
+        # "(대)" 같은 꼬리가 남을 수 있다 — 대표 표시명은 기본 이름으로 통일한다.
+        display = strip_variant_markers(
+            Counter(m["name"] for m in members).most_common(1)[0][0]
+        )
         rep = build_representative(display, members)
         if rep:
             reps.append(rep)
