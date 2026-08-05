@@ -231,7 +231,9 @@ def transform(row: dict) -> dict | None:
     base = _parse_amount(row.get("영양성분함량기준량")) or (100.0, "g")
     total = _parse_amount(row.get("식품중량"))
 
-    # 음식편의 ml 오기재 교정 (음료·차류만 ml 유지)
+    # 단위 불변식: 음료는 ml, 액체 아닌 음식(음식편)은 g.
+    # 수치는 그대로 둔다 — 마시는 제품 밀도 ≈ 1g/ml 라 표기 교정만이다.
+    # ① 음식편의 ml 오기재 교정 (밥·볶음까지 ml 로 기재된 3,155건, 2026-08-04)
     if (
         row["데이터구분코드"] == "D"
         and base[1] == "ml"
@@ -240,6 +242,12 @@ def transform(row: dict) -> dict | None:
         base = (base[0], "g")
         if total and total[1] == "ml":
             total = (total[0], "g")
+    # ② 역방향 — 음료인데 g 로 기재된 3,361건 (2026-08-05 PM 지적: 녹차·쿠키라떼가 g 표기)
+    category = _resolve_category(row)
+    if category == "음료" and base[1] == "g":
+        base = (base[0], "ml")
+        if total and total[1] == "g":
+            total = (total[0], "ml")
 
     carbs, protein, fat, estimated = _fill_missing_macros(
         calories,
@@ -269,7 +277,7 @@ def transform(row: dict) -> dict | None:
         "saturated_fat": _num(row.get("포화지방산(g)")),
         "trans_fat": _num(row.get("트랜스지방산(g)")),
         "brand": _pick_brand(row),
-        "category": _resolve_category(row),
+        "category": category,
         "total_weight": total[0] if total and total[1] == base[1] else None,
         "source": "public",
         "_estimated": estimated,  # 통계용 — DB 컬럼 아님
