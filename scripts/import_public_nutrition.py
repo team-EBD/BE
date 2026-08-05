@@ -396,6 +396,11 @@ def transform(row: dict) -> dict | None:
         if row["데이터구분코드"] == "D"
         else raw_name
     )
+    # 온도·사이즈 마커는 비대표 행의 표시명에서도 벗긴다 (B안, 2026-08-05 PM 결정).
+    # 브랜드 검색에서 대표가 다른 브랜드일 때 "핫(HOT) (L)" 이름이 새어 나오고,
+    # 그 행을 기록하면 스냅샷에도 남는다 — 사용자는 어디서도 이 문구를 보지 않는다.
+    # 원본 변형 정보는 CSV·식품코드(external_id)로 언제든 복원 가능.
+    display_name = strip_variant_markers(display_name) or display_name
 
     base = _parse_amount(row.get("영양성분함량기준량")) or (100.0, "g")
     total = _parse_amount(row.get("식품중량"))
