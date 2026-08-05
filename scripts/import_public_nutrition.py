@@ -135,6 +135,45 @@ def _parse_amount(text: str | None) -> tuple[float, str] | None:
 
 
 
+# 음료 머리어 — 상세명이 이걸로 끝나면 자기 설명이 되므로 분류 접두어가 불필요하다.
+# 한국어 합성어는 head-final: 이름의 끝이 음식의 정체다 (총칭 대표와 같은 원리).
+_DRINK_HEADS = (
+    "티", "차", "라떼", "주스", "스무디", "에이드", "커피", "아메리카노",
+    "에스프레소", "콜드브루", "프라페", "프라푸치노", "쉐이크", "셰이크",
+    "블렌디드", "리프레셔", "밀크티", "버블티",
+)
+_DRINK_HEAD_BLACKLIST = ("스파게티",)  # '티'로 끝나지만 음료가 아닌 것
+
+
+def _suffix_self_describing(suffix: str) -> bool:
+    n = normalize_name(suffix)
+    if any(n.endswith(b) for b in _DRINK_HEAD_BLACKLIST):
+        return False
+    return any(n.endswith(h) for h in _DRINK_HEADS)
+
+
+def display_name_from_raw(raw_name: str) -> str:
+    """음식(D)의 '대표식품명_상세명' 원본명 → 표시명. (curate 도 이 함수를 쓴다)
+
+    - 상세명이 대표식품명을 이미 포함하면 상세명만 (피자_불고기 피자 → 불고기 피자).
+    - 상세명이 음료 머리어(티·라떼·주스 등)로 끝나면 접두어를 뗀다 —
+      "기타차_딸기티" 는 "딸기티" 로 충분하다 (2026-08-05 PM 지적).
+    - 그 외에는 접두어를 붙여 맥락을 유지한다: "볶음밥_채소"·"김밥_계란" 은
+      접두어를 떼면 재료명만 남아 엉뚱한 음식이 된다 (제거 규칙 전수 검증 08-05).
+    """
+    name = raw_name.strip()
+    if "_" not in name:
+        return name
+    prefix, suffix = (part.strip() for part in name.split("_", 1))
+    if not suffix:
+        return name
+    if normalize_name(prefix) in normalize_name(suffix):
+        return suffix
+    if _suffix_self_describing(suffix):
+        return suffix
+    return f"{prefix} {suffix}"
+
+
 def _pick_brand(row: dict) -> str | None:
     for col in ("제조사명", "업체명", "유통업체명", "수입업체명"):
         value = (row.get(col) or "").strip()
@@ -216,17 +255,11 @@ def transform(row: dict) -> dict | None:
         return None
 
     raw_name = row["식품명"].strip()
-    display_name = raw_name
-    if row["데이터구분코드"] == "D" and "_" in raw_name:
-        # "대표식품_상세명" → 상세명이 대표식품을 이미 포함하면 상세명만
-        # (예: 피자_불고기 피자 → 불고기 피자), 아니면 붙여서 맥락 유지
-        # (예: 삼각김밥_숯불갈비 → 삼각김밥 숯불갈비)
-        prefix, suffix = (part.strip() for part in raw_name.split("_", 1))
-        if suffix:
-            if normalize_name(prefix) in normalize_name(suffix):
-                display_name = suffix
-            else:
-                display_name = f"{prefix} {suffix}"
+    display_name = (
+        display_name_from_raw(raw_name)
+        if row["데이터구분코드"] == "D"
+        else raw_name
+    )
 
     base = _parse_amount(row.get("영양성분함량기준량")) or (100.0, "g")
     total = _parse_amount(row.get("식품중량"))
