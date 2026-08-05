@@ -149,19 +149,28 @@ def build_representative(name: str, members: list[dict]) -> dict | None:
     members 는 transform() 을 통과한 dict 목록(브랜드 무관 전체).
     중량을 모르는 항목은 1인분 중량 산출에서만 빠지고, 영양 밀도 계산에는 참여한다.
     """
+    # g/ml 은 수치로 동일 취급한다 (음식 밀도 ≈ 1g/ml) — 단위별로 갈라 세면
+    # 죠스바(g 2·ml 2)처럼 최소 표본(3) 미달로 쪼개져 대표가 안 생긴다.
+    # 총칭 빌더(build_generic_foods)와 같은 규칙 (2026-08-04). 표기 단위는 최빈값.
     unit = Counter(m["base_unit"] for m in members).most_common(1)[0][0]
-    same_unit = [m for m in members if m["base_unit"] == unit]
+    same_unit = members
     if len(same_unit) < 3:
         return None
 
-    # 1인분 = 1회섭취참고량의 중앙값. 표본이 3개 미만이면 식품중량으로 폴백하되
-    # 업소용 대용량을 배제하기 위해 상한을 건다.
+    # 1인분 = 1회섭취참고량(servSize)의 중앙값. 표본이 3개 미만이면 식품중량으로
+    # 폴백한다 — 라면·컵라면·즉석죽·아이스크림 바는 포장 전체가 1회 섭취량이라
+    # 폴백이 정답이다 (신라면 120g, 죠스바 75g, 단호박죽 280g).
+    # 단, **정확히 100인 식품중량은 표본에서 뺀다** (2026-08-05 PM 결정): 기준량(100g당)을
+    # 중량 칸에 복사한 오기재와 구분이 불가능해 "자몽청 1인분(100g) 234kcal" ·
+    # "갈비탕 1인분(100g)" 같은 거짓 1인분 대표를 만들었다. servSize 의 100은 실측
+    # 신고값이므로 그대로 쓴다 (LA갈비 100g 반찬, 홍삼진액 100ml 파우치 등은 정당).
     servings = [m["_serv"] for m in same_unit if m.get("_serv")]
     if len(servings) < 3:
         servings = [
             m["total_weight"]
             for m in same_unit
-            if m.get("total_weight") and SERVING_MIN <= m["total_weight"] <= SERVING_MAX
+            if m.get("total_weight") and m["total_weight"] != 100
+            and SERVING_MIN <= m["total_weight"] <= SERVING_MAX
         ]
     if len(servings) < 3:
         return None
@@ -266,9 +275,26 @@ def run(path: Path, min_group: int, session_factory=SessionLocal) -> dict:
     for v in kept:
         groups[v["normalized_name"]].append(v)
 
+    # 같은 이름의 대표(시드·음식 D)가 이미 있으면 rep: 를 만들지 않는다 (2026-08-05).
+    # 총칭 빌더의 스킵 규칙과 동일한 이유 — 검색 랭킹의 이름 짧은 순 타이브레이크 때문에
+    # 적재 순서(id)만으로는 기존 대표가 이긴다고 보장할 수 없다. 실제로 분말 스틱 제품군
+    # rep:"딸기스무디"(30g 60kcal)가 음료 대표 "딸기 스무디"(350g 256kcal)를 가렸다.
+    with session_factory() as session:
+        existing_rep_names = set(
+            session.scalars(
+                select(NutritionItem.normalized_name).where(
+                    NutritionItem.is_representative.is_(True)
+                )
+            )
+        )
+
     reps: list[dict] = []
+    skipped_existing = 0
     for norm_name, members in groups.items():
         if len(members) < min_group:
+            continue
+        if norm_name in existing_rep_names:
+            skipped_existing += 1
             continue
         # 그룹 키(normalized_name)가 온도·사이즈 마커를 벗긴 값이므로 최빈 원본명에
         # "(대)" 같은 꼬리가 남을 수 있다 — 대표 표시명은 기본 이름으로 통일한다.
@@ -324,6 +350,7 @@ def run(path: Path, min_group: int, session_factory=SessionLocal) -> dict:
         "brand_serving": converted["brand_serving"],
         "groups": sum(1 for m in groups.values() if len(m) >= min_group),
         "reps": len(reps),
+        "skipped_existing": skipped_existing,
         "inserted": inserted,
         "updated": updated,
         "total": total,
@@ -347,7 +374,8 @@ def main() -> None:
         print(f"[mfds]   제외 - {reason}: {cnt:,}건")
     print(f"[mfds] 필터 통과 {r['filtered']:,}종")
     print(f"[mfds]   ├ 브랜드 제품     {r['brand']:,}종 (1회섭취참고량으로 1인분 환산 {r['brand_serving']:,}종)")
-    print(f"[mfds]   └ 동명 대표       {r['reps']:,}건 (동명 {args.min_group}개 이상 그룹 {r['groups']:,}개)")
+    print(f"[mfds]   └ 동명 대표       {r['reps']:,}건 (동명 {args.min_group}개 이상 그룹 {r['groups']:,}개,"
+          f" 기존 대표와 동명이라 스킵 {r['skipped_existing']:,}개)")
     print(f"[mfds] 신규 {r['inserted']:,} / 갱신 {r['updated']:,} / 테이블 총 {r['total']:,}행")
 
 
