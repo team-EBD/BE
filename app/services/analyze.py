@@ -24,7 +24,12 @@ from app.schemas.meal import (
     HabitAdjusted,
 )
 from app.services.correction import FACTORS, habit_factor
-from app.services.matching import base_serving_text, match_food_name, normalize_name
+from app.services.matching import (
+    base_serving_text,
+    db_candidates_for_text,
+    match_food_name,
+    normalize_name,
+)
 
 
 # AI 서버와 동일한 상한 (AI 서버가 이미 지키지만 방어적으로 재적용)
@@ -156,10 +161,23 @@ def analyze_meal_text(
 
     이미지가 없으므로 food_candidates.meal_image_id 는 NULL 로 저장된다.
     사용량은 이미지 분석과 같은 analyze 쿼터를 공유한다 (라우터에서 enforce).
+
+    선(先)-매칭: 문장에 이름이 등장하는 영양 DB 항목을 먼저 찾아 AI 에
+    함께 보낸다 — AI 음식명이 DB 명명에 정렬돼 사후 매칭 실패(→ 추정
+    영양 폴백)가 줄어든다. 후보가 없으면 기존과 동일하게 자유 추출.
     """
     started = time.perf_counter()
     habit = db.scalar(select(EatingHabit).where(EatingHabit.user_id == user.id))
-    result = ai.parse_text(text.strip())
+    cleaned = text.strip()
+    rows = db_candidates_for_text(db, cleaned)
+    if rows:
+        db_cands = [
+            {"name": r.name, "base_serving": base_serving_text(r)} for r in rows
+        ]
+        result = ai.parse_text(cleaned, db_candidates=db_cands)
+    else:
+        # 후보 없을 땐 구 시그니처 호출 — 테스트 더블·구버전 클라이언트 호환
+        result = ai.parse_text(cleaned)
     return _postprocess(db, user, habit, result, None, started)
 
 

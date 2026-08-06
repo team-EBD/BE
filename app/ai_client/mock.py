@@ -48,7 +48,7 @@ class MockAIClient:
             ),
         )
 
-    def parse_text(self, text: str) -> AnalyzeResult:
+    def parse_text(self, text: str, db_candidates: list | None = None) -> AnalyzeResult:
         # 문장 파싱은 음식당 예측 1개, bbox 없음 (실 AI 서버 계약과 동일 형태)
         return AnalyzeResult(
             status="success",
