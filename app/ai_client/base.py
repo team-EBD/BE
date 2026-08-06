@@ -95,8 +95,14 @@ class AIClient(Protocol):
     ) -> AnalyzeResult:
         ...
 
-    def parse_text(self, text: str) -> AnalyzeResult:
-        """자연어 식사 서술("김밥 한 줄이랑 라면 반 개") → 후보. 계약은 analyze 와 동일."""
+    def parse_text(
+        self, text: str, db_candidates: list[dict] | None = None
+    ) -> AnalyzeResult:
+        """자연어 식사 서술("김밥 한 줄이랑 라면 반 개") → 후보. 계약은 analyze 와 동일.
+
+        db_candidates: 문장에서 선(先)-매칭한 영양 DB 후보 [{name, base_serving}] —
+        AI 가 음식명·수량 기준을 DB 에 정렬하는 데 쓴다. 없으면 자유 추출.
+        """
         ...
 
     def recommend(

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, literal, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.pagination import PageParams
@@ -61,6 +61,49 @@ def base_serving_text(item: NutritionItem) -> str:
         # 시드·대표 항목은 1인분 기준으로 환산돼 있다 (curate_representative_foods)
         return f"1인분({amount_text}{item.base_unit})"
     return f"{amount_text}{item.base_unit}"
+
+
+def db_candidates_for_text(
+    db: Session, text: str, limit: int = 12
+) -> list[NutritionItem]:
+    """문장 안에 이름이 등장하는 영양 DB 항목 (자연어 파싱 선(先)-매칭용).
+
+    문장을 토큰화하는 대신 '항목 이름이 문장에 포함되는가'를 뒤집어 검사한다 —
+    조사("김밥이랑")·띄어쓰기 문제를 SQL 한 번으로 피한다. 공백 제거한
+    normalized_name 기준이며, 1글자 이름("밥")은 과다 매칭이라 제외한다.
+
+    **대표(is_representative) 항목만** 후보로 준다 — match_food_name 이 대표만
+    매칭하므로, 비대표 이름에 AI 를 정렬시키면 사후 매칭이 오히려 실패하고
+    기준량(100g당)도 1인분 의미가 아니다. 동명 중복은 1건만 남기고,
+    구체적(긴) 이름 우선 + 이름순으로 정렬을 고정한다(프롬프트 결정론).
+    """
+    normalized_text = normalize_name(text)
+    if not normalized_text:
+        return []
+    condition = and_(
+        NutritionItem.is_representative.is_(True),
+        func.length(NutritionItem.normalized_name) >= 2,
+        literal(normalized_text).contains(NutritionItem.normalized_name),
+    )
+    dedupe_order = (NutritionItem.id,)
+    row_rank = (
+        func.row_number()
+        .over(partition_by=NutritionItem.normalized_name, order_by=dedupe_order)
+        .label("row_rank")
+    )
+    ranked = select(NutritionItem.id.label("item_id"), row_rank).where(condition).subquery()
+    return list(
+        db.scalars(
+            select(NutritionItem)
+            .join(ranked, ranked.c.item_id == NutritionItem.id)
+            .where(ranked.c.row_rank == 1)
+            .order_by(
+                func.length(NutritionItem.normalized_name).desc(),
+                NutritionItem.normalized_name,
+            )
+            .limit(limit)
+        )
+    )
 
 
 def search_items(

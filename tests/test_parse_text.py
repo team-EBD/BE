@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from app.ai_client import get_ai_client
 from app.ai_client.base import failed_analyze
+from app.ai_client.mock import MockAIClient
 from app.main import app
 from app.models import AiCallLog, FoodCandidate
 
@@ -75,3 +76,80 @@ def test_parse_text_too_long_rejected(client, auth_headers):
 def test_parse_text_requires_auth(client):
     res = client.post("/v1/meals/parse-text", json={"text": "김밥"})
     assert res.status_code == 401
+
+
+# ------------------------------- 선(先)-매칭: 문장 → DB 후보 → AI 전달
+
+
+def test_db_candidates_found_in_sentence(client, auth_headers, db_factory):
+    """조사가 붙어도("김치찌개랑") 이름 포함 검사로 후보를 찾는다."""
+    from app.services.matching import db_candidates_for_text
+
+    with db_factory() as db:
+        rows = db_candidates_for_text(db, "김치찌개랑 공기밥 먹었어")
+        names = [r.name for r in rows]
+        assert "김치찌개" in names
+        assert "공기밥" in names
+        assert all(r.is_representative for r in rows)
+
+
+def test_db_candidates_specific_name_first(client, auth_headers, db_factory):
+    """더 구체적인(긴) 이름이 목록 앞에 온다 — AI 가 구체명을 우선 보게."""
+    from app.services.matching import db_candidates_for_text
+
+    with db_factory() as db:
+        rows = db_candidates_for_text(db, "김치찌개")
+        assert rows, "김치찌개 시드 항목을 찾아야 함"
+        lengths = [len(r.name.replace(" ", "")) for r in rows]
+        assert lengths == sorted(lengths, reverse=True)
+
+
+def test_db_candidates_empty_for_non_food(client, auth_headers, db_factory):
+    from app.services.matching import db_candidates_for_text
+
+    with db_factory() as db:
+        assert db_candidates_for_text(db, "오늘 날씨 참 좋다") == []
+
+
+def test_parse_passes_db_candidates_to_ai(client, auth_headers):
+    """문장에서 찾은 후보가 이름+기준량 형태로 AI 클라이언트에 전달된다."""
+
+    class RecordingParseClient(MockAIClient):
+        def __init__(self):
+            self.seen = "NOT_CALLED"
+
+        def parse_text(self, text, db_candidates=None):
+            self.seen = db_candidates
+            return super().parse_text(text, db_candidates)
+
+    recorder = RecordingParseClient()
+    app.dependency_overrides[get_ai_client] = lambda: recorder
+    try:
+        parse(client, auth_headers, "김치찌개 한 그릇")
+        assert isinstance(recorder.seen, list) and recorder.seen
+        names = [c["name"] for c in recorder.seen]
+        assert "김치찌개" in names
+        assert all("base_serving" in c and c["base_serving"] for c in recorder.seen)
+    finally:
+        app.dependency_overrides[get_ai_client] = lambda: MockAIClient()
+
+
+def test_parse_without_candidates_uses_legacy_signature(client, auth_headers):
+    """후보가 없으면 구 시그니처(위치 인자만)로 호출 — 테스트 더블 호환 유지."""
+
+    class LegacyParseClient(MockAIClient):
+        def __init__(self):
+            self.called = False
+
+        def parse_text(self, text):  # db_candidates 인자 없는 구버전
+            self.called = True
+            return MockAIClient.parse_text(self, text)
+
+    legacy = LegacyParseClient()
+    app.dependency_overrides[get_ai_client] = lambda: legacy
+    try:
+        res = parse(client, auth_headers, "오늘 뭔가 특별한 우주음식")
+        assert res.status_code == 200
+        assert legacy.called
+    finally:
+        app.dependency_overrides[get_ai_client] = lambda: MockAIClient()

@@ -75,8 +75,13 @@ class RealAIClient:
             return failed_analyze(error, latency)
         return parse_analyze(data or {}, latency)
 
-    def parse_text(self, text: str) -> AnalyzeResult:
-        data, error, latency = self._post("/internal/parse-meal", {"text": text})
+    def parse_text(
+        self, text: str, db_candidates: list[dict] | None = None
+    ) -> AnalyzeResult:
+        payload: dict = {"text": text}
+        if db_candidates:
+            payload["db_candidates"] = db_candidates
+        data, error, latency = self._post("/internal/parse-meal", payload)
         if error:
             return failed_analyze(error, latency)
         return parse_analyze(data or {}, latency)
