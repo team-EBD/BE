@@ -157,8 +157,40 @@ def search_items(
     return items, total
 
 
-def match_food_name(db: Session, food_name: str) -> NutritionItem | None:
-    """AI 후보 음식명을 영양 DB 1건에 매칭. 없으면 None.
+# --- 트라이그램 유사도 (SCRUM-246) ---------------------------------------
+# pg_trgm 과 같은 알고리즘(양끝 패딩 3-gram + Jaccard)을 파이썬으로 구현한다.
+# SQL 확장 대신 파이썬인 이유: 테스트가 SQLite 로 돌아 pg_trgm 코드 경로를
+# 자동 검증할 수 없고(Postgres 테스트 트랙은 보류), 파이썬 구현은 두 엔진에서
+# 동작이 동일하다. 유사도 단계는 정확 일치 실패 시에만 타므로(선매칭 이후 소수)
+# 대표 항목 전수 채점(1.5만 건, 수십 ms)이 병목이 되지 않는다.
+
+# 컷 미달이면 매칭 포기 — 4글자 음식명의 끝 한 글자 오타("김치찌게")가 약 0.43,
+# 이름만 형제인 다른 음식("물냉면" vs "비빔냉면")이 약 0.13 으로 그 사이 값.
+SIMILARITY_CUT = 0.35
+# 1등-2등 격차가 이보다 작으면 어느 쪽인지 확신할 수 없다고 보고 매칭 포기.
+SIMILARITY_MARGIN = 0.10
+
+
+def _trigrams(s: str) -> frozenset[str]:
+    # pg_trgm 규약: 앞 2칸·뒤 1칸 공백 패딩 후 3글자 슬라이딩
+    padded = f"  {s} "
+    return frozenset(padded[i : i + 3] for i in range(len(padded) - 2))
+
+
+def trigram_similarity(a: str, b: str) -> float:
+    ta, tb = _trigrams(a), _trigrams(b)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
+def match_food_name(db: Session, food_name: str) -> tuple[NutritionItem | None, str]:
+    """AI 후보 음식명을 영양 DB 1건에 매칭. (item, path) 를 반환한다.
+
+    path: "exact"(정확 일치) | "substring"(DB 이름이 AI 이름을 포함) |
+    "fuzzy"(트라이그램 유사도) | "none"(매칭 포기 → 호출부가 AI 추정 폴백).
+    fuzzy 매칭은 호출부에서 confidence 를 감산해 내려보낸다 (SCRUM-246 —
+    별도 "유사 매칭" UI 없이 기존 확신도 채널로 불확실성을 전달).
 
     매칭 대상은 **대표(is_representative) 항목만**이다. 분석 흐름은 매칭값을
     1인분 기준으로 간주해 AI 추정치를 대체하는데, 대표 항목(시드 + 큐레이션)만
@@ -167,7 +199,7 @@ def match_food_name(db: Session, food_name: str) -> NutritionItem | None:
     """
     normalized = normalize_name(food_name)
     if not normalized:
-        return None
+        return None, "none"
     representative_only = NutritionItem.is_representative.is_(True)
     exact = db.scalar(
         select(NutritionItem)
@@ -176,11 +208,38 @@ def match_food_name(db: Session, food_name: str) -> NutritionItem | None:
         .limit(1)
     )
     if exact is not None:
-        return exact
-    return db.scalar(
-        select(NutritionItem)
-        .where(NutritionItem.normalized_name.contains(normalized), representative_only)
-        # 가장 짧은(일반적인) 이름 우선 — 동률이면 낮은 id(시드 우선)
-        .order_by(func.length(NutritionItem.normalized_name), NutritionItem.id)
-        .limit(1)
-    )
+        return exact, "exact"
+
+    # 유사도 단계 — 대표 항목 전수를 파이썬에서 채점.
+    # 포함(substring) 후보는 구 부분일치의 계승이라 컷 없이 통과시키되 정렬만
+    # 유사도 기준으로 바꾼다(동률이면 짧은 이름 → 낮은 id — 구 동작 유지).
+    # 포함 후보가 하나도 없을 때만 순수 유사도(fuzzy)로 넘어가며, 이때는
+    # 컷·격차 규칙을 모두 통과해야 한다 — 틀린 매칭이 매칭 실패보다 나쁘다.
+    query_tri = _trigrams(normalized)
+    substring: list[tuple[float, int, int, str]] = []  # (sim, len, id, name)
+    fuzzy: list[tuple[float, int, int, str]] = []
+    rows = db.execute(
+        select(NutritionItem.id, NutritionItem.normalized_name).where(representative_only)
+    ).all()
+    for item_id, name in rows:
+        name_tri = _trigrams(name)
+        union = len(query_tri | name_tri)
+        sim = len(query_tri & name_tri) / union if union else 0.0
+        if normalized in name:
+            substring.append((sim, len(name), item_id, name))
+        elif sim >= SIMILARITY_CUT:
+            fuzzy.append((sim, len(name), item_id, name))
+
+    def _best(cands: list[tuple[float, int, int, str]]) -> tuple[float, int, int, str]:
+        return min(cands, key=lambda t: (-t[0], t[1], t[2]))
+
+    if substring:
+        return db.get(NutritionItem, _best(substring)[2]), "substring"
+    if fuzzy:
+        top = _best(fuzzy)
+        # 격차 비교는 **다른 이름**끼리만 — 동명 중복 행은 같은 음식이다
+        rest = [c for c in fuzzy if c[3] != top[3]]
+        if rest and top[0] - _best(rest)[0] < SIMILARITY_MARGIN:
+            return None, "none"  # 격차 근소 — 물냉면/비빔냉면류 오연결 방지
+        return db.get(NutritionItem, top[2]), "fuzzy"
+    return None, "none"
