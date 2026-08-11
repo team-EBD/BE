@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import logging
 import time
 
 from pydantic import ValidationError
@@ -32,9 +33,16 @@ from app.services.matching import (
 )
 
 
+logger = logging.getLogger("eatlog.analyze")
+
 # AI 서버와 동일한 상한 (AI 서버가 이미 지키지만 방어적으로 재적용)
 MAX_FOODS = 5
 MAX_PREDICTIONS_PER_FOOD = 3
+
+# 유사도(fuzzy) 매칭은 확신도를 한 단계 감산해 내려보낸다 (SCRUM-246).
+# 별도 "유사 매칭" UI 를 만들지 않고 기존 confidence 채널로 불확실성을 전달
+# — 이미지 분석의 정답률 표시와 신호가 이원화되지 않게 한다 (PM 결정 08-11).
+FUZZY_CONFIDENCE_PENALTY = 0.2
 
 
 def _grouped_candidates(raw: list) -> list[tuple[int, object]]:
@@ -206,7 +214,15 @@ def _postprocess(
     factor, applied = habit_factor(habit)
     candidates: list[AnalyzeCandidate] = []
     for rank, (food_index, cand) in enumerate(_grouped_candidates(result.candidates), start=1):
-        matched = match_food_name(db, cand.food_name)
+        matched, match_path = match_food_name(db, cand.food_name)
+        # 경로별 비율(exact/substring/fuzzy/none)이 유사도 컷 튜닝의 근거 (SCRUM-246)
+        logger.info(
+            "nutrition_match path=%s food=%s item_id=%s",
+            match_path, cand.food_name, matched.id if matched else None,
+        )
+        confidence = float(cand.confidence)
+        if match_path == "fuzzy":
+            confidence = round(max(confidence - FUZZY_CONFIDENCE_PENALTY, 0.0), 4)
         serving = _reconcile_serving(cand, matched)
         row = FoodCandidate(
             meal_image_id=meal_image_id,
@@ -214,7 +230,7 @@ def _postprocess(
             nutrition_item_id=matched.id if matched else None,
             food_name=cand.food_name,
             normalized_name=normalize_name(cand.food_name),
-            confidence_score=cand.confidence,
+            confidence_score=confidence,
             estimated_serving=serving,
             rank=rank,
         )
@@ -267,7 +283,7 @@ def _postprocess(
                 nutrition_item_id=row.nutrition_item_id,
                 food_index=food_index,
                 normalized_name=row.normalized_name,
-                confidence_score=float(cand.confidence),
+                confidence_score=confidence,
                 estimated_serving=serving,
                 has_soup=cand.has_soup,
                 has_sauce=cand.has_sauce,
