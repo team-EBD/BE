@@ -572,6 +572,45 @@
       "fat": 9.0,
       "category": "샐러드",
       "source": "seed"
+    },
+    {
+      "id": 44,
+      "name": "컵라면",
+      "normalized_name": "컵라면",
+      "base_amount": 86,
+      "base_unit": "g",
+      "calories": 375,
+      "carbs": 57.0,
+      "protein": 7.4,
+      "fat": 13.0,
+      "category": "편의점",
+      "source": "seed"
+    },
+    {
+      "id": 45,
+      "name": "구운란",
+      "normalized_name": "구운란",
+      "base_amount": 50,
+      "base_unit": "g",
+      "calories": 80,
+      "carbs": 0.6,
+      "protein": 6.8,
+      "fat": 5.4,
+      "category": "편의점",
+      "source": "seed"
+    },
+    {
+      "id": 46,
+      "name": "구운 계란",
+      "normalized_name": "구운계란",
+      "base_amount": 50,
+      "base_unit": "g",
+      "calories": 80,
+      "carbs": 0.6,
+      "protein": 6.8,
+      "fat": 5.4,
+      "category": "편의점",
+      "source": "seed"
     }
   ]
 }
