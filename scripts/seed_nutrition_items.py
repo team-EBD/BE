@@ -1,6 +1,6 @@
 """nutrition_items 시드 로더 (JSON → DB).
 
-`seed/nutrition_items_seed.json`(목업 43종)을 `nutrition_items` 테이블에 적재한다.
+`seed/nutrition_items_seed.json`(목업 46종)을 `nutrition_items` 테이블에 적재한다.
 
 - **멱등(idempotent)**: `normalized_name` 을 자연키로 upsert 하므로 여러 번 실행해도
   중복 행이 생기지 않는다(id 는 DB auto-increment, 시드 JSON 의 id 는 참조용으로 무시).
