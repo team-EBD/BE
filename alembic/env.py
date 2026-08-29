@@ -1,0 +1,66 @@
+"""Alembic 마이그레이션 환경.
+
+DB URL 과 target metadata 를 app 설정/모델에서 주입한다.
+- URL: 환경변수 `ALEMBIC_DATABASE_URL` 이 있으면 우선(테스트/오프라인 autogenerate 용),
+  없으면 app 설정(config.py)의 Postgres URL 사용.
+- metadata: app.models 를 import 해 17개 테이블을 모두 등록한 Base.metadata.
+"""
+import os
+
+from sqlalchemy import engine_from_config, pool
+
+from alembic import context
+
+# 모든 모델을 등록하기 위해 반드시 app.models 를 import 한다.
+from app.core.config import settings
+from app.core.logging import apply_alembic_ini_logging
+from app.models import Base
+
+config = context.config
+
+# 로깅 설정은 alembic 을 CLI 로 단독 실행할 때만 적용한다. 앱 기동 중
+# 인-프로세스 실행에서 fileConfig 를 그대로 부르면 uvicorn/앱 로거가 전부
+# 꺼져 서버 로그가 통째로 사라진다 (app/core/logging.py 주석 참고).
+apply_alembic_ini_logging(config)
+
+target_metadata = Base.metadata
+
+
+def _get_url() -> str:
+    return os.getenv("ALEMBIC_DATABASE_URL") or settings.sqlalchemy_database_uri
+
+
+def run_migrations_offline() -> None:
+    context.configure(
+        url=_get_url(),
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+        compare_type=True,
+    )
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+def run_migrations_online() -> None:
+    section = config.get_section(config.config_ini_section, {})
+    section["sqlalchemy.url"] = _get_url()
+    connectable = engine_from_config(
+        section,
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+    )
+    with connectable.connect() as connection:
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            compare_type=True,
+        )
+        with context.begin_transaction():
+            context.run_migrations()
+
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()
