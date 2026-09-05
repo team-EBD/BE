@@ -95,6 +95,7 @@ BE/
 │   ├── services/          # correction·matching·summary·meals·analyze
 │   ├── ai_client/         # AI 서버 클라이언트 (mock/real, 실패 계약 변환)
 │   ├── social_client/     # 구글 토큰 검증 (provider 확장 스위치)
+│   ├── billing_client/    # 인앱 결제 검증 (mock/Google Play/App Store)
 │   └── storage/           # 이미지 스토리지 추상화 (로컬 → S3 교체 예정)
 ├── alembic/               # 마이그레이션
 ├── scripts/               # 시드 로더
@@ -106,6 +107,25 @@ BE/
 ```
 
 > 계획서의 `repositories/` 계층은 MVP 규모에서 생략 — services 가 쿼리를 직접 수행한다.
+
+## 인앱 결제 (구독)
+
+`BILLING_BACKEND=store` 로 두면 Google Play / App Store 서버 API 로 영수증을 검증한다.
+기본값 `mock` 은 **어떤 토큰이든 프리미엄으로 인정**하므로 로컬/테스트 전용이다.
+
+| 메서드 | 경로 | 설명 |
+| --- | --- | --- |
+| GET | `/v1/subscriptions/me` | 현재 구독 상태 (캐시가 오래되면 스토어 재조회) |
+| POST | `/v1/subscriptions/verify` | 구매 토큰 검증·등록 (결제 완료 / 구매 복원) |
+| POST | `/v1/subscriptions/notifications/google` | Play 실시간 개발자 알림(RTDN) |
+| POST | `/v1/subscriptions/notifications/apple` | App Store Server Notifications V2 |
+
+- 권한 판정은 **서버가 스토어에 물어본 결과**로만 한다. FE 가 보내는 것은 구매 토큰뿐이다.
+- 프리미엄이면 AI 일일 한도가 `*_DAILY_LIMIT_PREMIUM`(기본 0 = 무제한)로 바뀐다.
+- 같은 영수증을 다른 계정이 등록하려 하면 409 (계정 돌려쓰기 방지).
+- 스토어 장애 시 검증은 503 이고, **이미 저장된 권한은 유지**한다.
+- 콘솔에서 해야 하는 1회 설정(서비스 계정·API 키·상품 등록·알림 URL)은
+  [`docs/인앱결제-서버-설정.md`](docs/인앱결제-서버-설정.md) 참고.
 
 ## 엔드포인트 규약
 
