@@ -121,6 +121,33 @@ jobs:
                   value: eatlog.service@gmail.com
                 - name: SMTP_PASSWORD
                   value: ${{ secrets.SMTP_PASSWORD }}
+                # 인앱 결제(구독). store = 스토어 API 로 실제 영수증을 검증한다.
+                # 기본값 mock 은 **어떤 토큰이든 프리미엄으로 인정**하므로 운영에서
+                # 절대 쓰면 안 된다 — 자격증명 시크릿이 아직 없으면 검증이 503 으로
+                # 실패할 뿐, 무료로 프리미엄이 열리지는 않는다(안전한 실패).
+                - name: BILLING_BACKEND
+                  value: store
+                - name: SUBSCRIPTION_PRODUCT_IDS
+                  value: eatlog_premium_monthly,eatlog_premium_yearly
+                - name: GOOGLE_PLAY_PACKAGE_NAME
+                  value: com.eatlog
+                # Play Console 에 연결한 서비스 계정 JSON (androidpublisher 권한).
+                # Firebase 서비스 계정과 다른 계정이다 — 재사용 금지.
+                - name: GOOGLE_PLAY_CREDENTIALS_JSON
+                  value: '${{ secrets.GOOGLE_PLAY_CREDENTIALS_JSON }}'
+                - name: GOOGLE_PLAY_RTDN_SECRET
+                  value: ${{ secrets.GOOGLE_PLAY_RTDN_SECRET }}
+                - name: APP_STORE_ISSUER_ID
+                  value: ${{ secrets.APP_STORE_ISSUER_ID }}
+                - name: APP_STORE_KEY_ID
+                  value: ${{ secrets.APP_STORE_KEY_ID }}
+                # .p8 내용. 개행은 이스케이프(백슬래시 n)해 한 줄로 넣는다.
+                - name: APP_STORE_PRIVATE_KEY
+                  value: '${{ secrets.APP_STORE_PRIVATE_KEY }}'
+                - name: APP_STORE_BUNDLE_ID
+                  value: com.eatlog
+                - name: APP_STORE_NOTIFICATION_SECRET
+                  value: ${{ secrets.APP_STORE_NOTIFICATION_SECRET }}
               buildenv: []
             context:
               git:

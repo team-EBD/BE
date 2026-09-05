@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     # --- 일일 AI 사용량 제한 (사용자당. 0 이하 = 무제한) ---
     analyze_daily_limit: int = 10
     recommend_daily_limit: int = 10
+    # 프리미엄 구독자 한도 (기본 0 = 무제한). 무료 한도와 별도로 둔다 —
+    # 무료 한도를 낮춰도 구독자 정책은 건드리지 않게.
+    analyze_daily_limit_premium: int = 0
+    recommend_daily_limit_premium: int = 0
     # 하루 경계 시각 (KST). 6이면 06:00~다음날 06:00 를 '하루'로 취급 —
     # 캘린더/요약(FE day_start_hour=6)과 사용량 리셋 기준을 일치시킨다.
     day_start_hour: int = 6
@@ -113,6 +117,37 @@ class Settings(BaseSettings):
     # 둘 다 비면 ADC(GOOGLE_APPLICATION_CREDENTIALS/메타데이터 서버)로 폴백.
     firebase_credentials_json: str = ""
     firebase_credentials_file: str = ""
+
+    # --- 인앱 결제 (구독) ---
+    # billing_backend: mock(스토어 없이 로컬/테스트) | store(Play·App Store 실연동)
+    billing_backend: str = "mock"
+    # 구독 상품 ID — FE 와 반드시 같은 값이어야 한다. 콤마로 여러 개(월간/연간).
+    # Play 는 '구독 ID', App Store 는 '제품 ID' 로 등록한 값.
+    subscription_product_ids: str = "eatlog_premium_monthly,eatlog_premium_yearly"
+    # 캐시된 구독 상태를 스토어에 다시 물어보는 주기(분). 0 이하면 조회할 때마다.
+    subscription_refresh_minutes: int = 60
+
+    # Google Play — 서비스 계정(androidpublisher 권한)
+    google_play_package_name: str = "com.eatlog"
+    google_play_credentials_json: str = ""  # 서비스 계정 JSON 문자열(배포 환경변수용)
+    google_play_credentials_file: str = ""  # 서비스 계정 JSON 파일 경로(로컬용)
+    # Play RTDN(실시간 개발자 알림) Pub/Sub 푸시 검증용 공유 시크릿.
+    # 구독 URL 쿼리스트링(?token=...)으로 받아 대조한다. 비면 검증 생략.
+    google_play_rtdn_secret: str = ""
+
+    # App Store — App Store Connect API 키(.p8)
+    app_store_issuer_id: str = ""
+    app_store_key_id: str = ""
+    app_store_private_key: str = ""  # .p8 내용(PEM). 개행은 \n 이스케이프 허용
+    # 비우면 apple_bundle_id(소셜 로그인용)를 재사용한다
+    app_store_bundle_id: str = ""
+    # App Store Server Notifications V2 검증용 공유 시크릿 (URL 쿼리 ?token=...)
+    app_store_notification_secret: str = ""
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def subscription_product_id_list(self) -> list[str]:
+        return [p.strip() for p in self.subscription_product_ids.split(",") if p.strip()]
 
     @computed_field  # type: ignore[prop-decorator]
     @property
