@@ -24,6 +24,11 @@ import httpx
 from jose import jwt
 
 from app.billing_client.base import (
+    REASON_BAD_CREDENTIALS,
+    REASON_NOT_CONFIGURED,
+    REASON_PERMISSION,
+    REASON_UNREACHABLE,
+    BillingAccessCheck,
     BillingUnavailableError,
     BillingVerificationError,
     StoreSubscription,
@@ -91,19 +96,22 @@ class GooglePlayBillingClient:
                     raw = fp.read()
             except OSError as exc:
                 raise BillingUnavailableError(
-                    f"Play 서비스 계정 파일을 읽을 수 없습니다: {exc}"
+                    f"Play 서비스 계정 파일을 읽을 수 없습니다: {exc}", REASON_NOT_CONFIGURED
                 ) from exc
         else:
-            raise BillingUnavailableError("Play 서비스 계정 자격증명이 설정되지 않았습니다.")
+            raise BillingUnavailableError(
+                "Play 서비스 계정 자격증명이 설정되지 않았습니다.", REASON_NOT_CONFIGURED
+            )
         try:
             data = json.loads(raw)
         except ValueError as exc:
             raise BillingUnavailableError(
-                "Play 서비스 계정 JSON 형식이 올바르지 않습니다."
+                "Play 서비스 계정 JSON 형식이 올바르지 않습니다.", REASON_BAD_CREDENTIALS
             ) from exc
         if not data.get("client_email") or not data.get("private_key"):
             raise BillingUnavailableError(
-                "Play 서비스 계정 JSON 에 client_email/private_key 가 없습니다."
+                "Play 서비스 계정 JSON 에 client_email/private_key 가 없습니다.",
+                REASON_BAD_CREDENTIALS,
             )
         return data
 
@@ -136,10 +144,14 @@ class GooglePlayBillingClient:
                     timeout=_TIMEOUT,
                 )
             except httpx.HTTPError as exc:
-                raise BillingUnavailableError(f"Google 토큰 발급 통신 실패: {exc}") from exc
+                raise BillingUnavailableError(
+                    f"Google 토큰 발급 통신 실패: {exc}", REASON_UNREACHABLE
+                ) from exc
             if res.status_code >= 400:
                 logger.warning("Google 토큰 발급 실패 %d - %s", res.status_code, res.text[:200])
-                raise BillingUnavailableError("Google 액세스 토큰 발급에 실패했습니다.")
+                raise BillingUnavailableError(
+                    "Google 액세스 토큰 발급에 실패했습니다.", REASON_BAD_CREDENTIALS
+                )
             body = res.json()
             self._token = body["access_token"]
             self._token_expires_at = (
@@ -152,7 +164,9 @@ class GooglePlayBillingClient:
         self, platform: str, product_id: str, purchase_token: str
     ) -> StoreSubscription:
         if not self._package_name:
-            raise BillingUnavailableError("GOOGLE_PLAY_PACKAGE_NAME 이 설정되지 않았습니다.")
+            raise BillingUnavailableError(
+                "GOOGLE_PLAY_PACKAGE_NAME 이 설정되지 않았습니다.", REASON_NOT_CONFIGURED
+            )
         url = (
             f"{_API_BASE}/applications/{self._package_name}"
             f"/purchases/subscriptionsv2/tokens/{purchase_token}"
@@ -164,15 +178,26 @@ class GooglePlayBillingClient:
                 timeout=_TIMEOUT,
             )
         except httpx.HTTPError as exc:
-            raise BillingUnavailableError(f"Play 구독 조회 통신 실패: {exc}") from exc
+            raise BillingUnavailableError(
+                f"Play 구독 조회 통신 실패: {exc}", REASON_UNREACHABLE
+            ) from exc
 
         if res.status_code in (400, 404, 410):
             # Play 는 위조/소멸된 토큰을 400/404 로 답한다 — 무효한 구매
             logger.info("Play 구독 조회 무효 %d - %s", res.status_code, res.text[:200])
             raise BillingVerificationError("Google Play 에서 확인되지 않는 구매입니다.")
+        if res.status_code in (401, 403):
+            # 서비스 계정에 권한이 없거나, 권한을 준 직후라 아직 반영되지 않았다
+            # (Play Console 권한 부여는 반영에 최대 24시간이 걸린다).
+            logger.warning("Play 구독 조회 권한 거부 %d - %s", res.status_code, res.text[:300])
+            raise BillingUnavailableError(
+                "Google Play 가 서비스 계정 권한을 인정하지 않습니다.", REASON_PERMISSION
+            )
         if res.status_code >= 400:
             logger.warning("Play 구독 조회 실패 %d - %s", res.status_code, res.text[:200])
-            raise BillingUnavailableError("Google Play 구독 조회에 실패했습니다.")
+            raise BillingUnavailableError(
+                "Google Play 구독 조회에 실패했습니다.", REASON_UNREACHABLE
+            )
 
         return self._to_subscription(res.json(), product_id, purchase_token)
 
@@ -226,3 +251,48 @@ class GooglePlayBillingClient:
                 logger.info("Play 구매 확인 응답 %d - %s", res.status_code, res.text[:200])
         except (httpx.HTTPError, BillingUnavailableError) as exc:
             logger.info("Play 구매 확인 생략 - %s", exc)
+
+    # --- 설정 점검 --------------------------------------------------------
+    def check_access(self) -> BillingAccessCheck:
+        """실제 구매 없이 자격증명과 Play 권한을 점검한다.
+
+        존재할 수 없는 purchaseToken 으로 조회를 시도한다.
+        - 400/404/410 → 권한은 정상이고 토큰만 무효 = **설정 완료**
+        - 401/403     → 서비스 계정 권한 없음 또는 반영 대기(최대 24시간)
+        """
+        out = BillingAccessCheck(platform="android")
+        out.configured = bool(
+            self._package_name and (self._credentials_json or self._credentials_file)
+        )
+        if not out.configured:
+            out.reason = REASON_NOT_CONFIGURED
+            return out
+
+        try:
+            token = self._access_token()
+        except BillingUnavailableError as exc:
+            out.credentials_ok = False
+            out.reason = getattr(exc, "reason", REASON_BAD_CREDENTIALS)
+            return out
+        out.credentials_ok = True
+
+        url = (
+            f"{_API_BASE}/applications/{self._package_name}"
+            f"/purchases/subscriptionsv2/tokens/eatlog-health-probe"
+        )
+        try:
+            res = httpx.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=_TIMEOUT)
+        except httpx.HTTPError:
+            out.reason = REASON_UNREACHABLE
+            return out
+
+        out.status = res.status_code
+        if res.status_code in (400, 404, 410):
+            out.store_access_ok = True  # "그런 구매 없음" = 권한은 정상
+        elif res.status_code in (401, 403):
+            out.store_access_ok = False
+            out.reason = REASON_PERMISSION
+        else:
+            out.store_access_ok = False
+            out.reason = REASON_UNREACHABLE
+        return out

@@ -29,6 +29,11 @@ import httpx
 from jose import jwt
 
 from app.billing_client.base import (
+    REASON_BAD_CREDENTIALS,
+    REASON_NOT_CONFIGURED,
+    REASON_PERMISSION,
+    REASON_UNREACHABLE,
+    BillingAccessCheck,
     BillingUnavailableError,
     BillingVerificationError,
     StoreSubscription,
@@ -84,7 +89,9 @@ class AppStoreBillingClient:
 
     def _auth_token(self) -> str:
         if not (self._issuer_id and self._key_id and self._private_key and self._bundle_id):
-            raise BillingUnavailableError("App Store Server API 자격증명이 설정되지 않았습니다.")
+            raise BillingUnavailableError(
+                "App Store Server API 자격증명이 설정되지 않았습니다.", REASON_NOT_CONFIGURED
+            )
         issued = int(time.time())
         try:
             return jwt.encode(
@@ -100,7 +107,9 @@ class AppStoreBillingClient:
                 headers={"kid": self._key_id, "typ": "JWT"},
             )
         except Exception as exc:  # noqa: BLE001 — 키 형식 오류를 설정 문제로 표면화
-            raise BillingUnavailableError(f"App Store API 키 서명 실패: {exc}") from exc
+            raise BillingUnavailableError(
+                f"App Store API 키 서명 실패: {exc}", REASON_BAD_CREDENTIALS
+            ) from exc
 
     def _get(self, base: str, transaction_id: str) -> httpx.Response:
         url = f"{base}/inApps/v1/subscriptions/{transaction_id}"
@@ -111,7 +120,9 @@ class AppStoreBillingClient:
                 timeout=_TIMEOUT,
             )
         except httpx.HTTPError as exc:
-            raise BillingUnavailableError(f"App Store 구독 조회 통신 실패: {exc}") from exc
+            raise BillingUnavailableError(
+                f"App Store 구독 조회 통신 실패: {exc}", REASON_UNREACHABLE
+            ) from exc
 
     def verify_subscription(
         self, platform: str, product_id: str, purchase_token: str
@@ -123,9 +134,16 @@ class AppStoreBillingClient:
 
         if res.status_code == 404:
             raise BillingVerificationError("App Store 에서 확인되지 않는 구매입니다.")
+        if res.status_code in (401, 403):
+            logger.warning("App Store 인증 거부 %d - %s", res.status_code, res.text[:300])
+            raise BillingUnavailableError(
+                "App Store 가 API 키를 인정하지 않습니다.", REASON_PERMISSION
+            )
         if res.status_code >= 400:
             logger.warning("App Store 구독 조회 실패 %d - %s", res.status_code, res.text[:200])
-            raise BillingUnavailableError("App Store 구독 조회에 실패했습니다.")
+            raise BillingUnavailableError(
+                "App Store 구독 조회에 실패했습니다.", REASON_UNREACHABLE
+            )
 
         return self._to_subscription(res.json(), product_id, purchase_token)
 
@@ -180,3 +198,43 @@ class AppStoreBillingClient:
     def acknowledge(self, platform: str, product_id: str, purchase_token: str) -> None:
         """iOS 는 서버측 확인 절차가 없다 (StoreKit 의 finishTransaction 이 담당)."""
         return None
+
+    # --- 설정 점검 --------------------------------------------------------
+    def check_access(self) -> BillingAccessCheck:
+        """존재할 수 없는 트랜잭션 ID 로 조회해 키와 권한만 확인한다.
+
+        - 404 → 키·서명은 정상이고 트랜잭션만 없음 = **설정 완료**
+        - 401 → Issuer ID / Key ID / .p8 불일치
+        """
+        out = BillingAccessCheck(platform="ios")
+        out.configured = bool(
+            self._issuer_id and self._key_id and self._private_key and self._bundle_id
+        )
+        if not out.configured:
+            out.reason = REASON_NOT_CONFIGURED
+            return out
+
+        try:
+            self._auth_token()
+        except BillingUnavailableError as exc:
+            out.credentials_ok = False
+            out.reason = getattr(exc, "reason", REASON_BAD_CREDENTIALS)
+            return out
+        out.credentials_ok = True
+
+        try:
+            res = self._get(_PROD_BASE, "0")
+        except BillingUnavailableError as exc:
+            out.reason = getattr(exc, "reason", REASON_UNREACHABLE)
+            return out
+
+        out.status = res.status_code
+        if res.status_code == 404:
+            out.store_access_ok = True
+        elif res.status_code in (401, 403):
+            out.store_access_ok = False
+            out.reason = REASON_PERMISSION
+        else:
+            out.store_access_ok = False
+            out.reason = REASON_UNREACHABLE
+        return out

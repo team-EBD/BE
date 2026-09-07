@@ -149,10 +149,13 @@ def _store_error_to_api_error(exc: Exception) -> APIError:
             "스토어에서 확인되지 않는 구매입니다. 결제 내역을 확인해 주세요.",
             details=[{"field": "purchase_token", "reason": "not_found"}],
         )
+    # reason 은 운영자용 진단 코드다. 사용자 문구는 그대로 두되, 응답에 담아
+    # 서버 로그를 못 보는 상황에서도 원인을 가릴 수 있게 한다.
     return APIError(
         503,
         "SERVICE_UNAVAILABLE",
         "결제 확인 서버에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.",
+        details=[{"field": "store", "reason": getattr(exc, "reason", "store_unavailable")}],
     )
 
 

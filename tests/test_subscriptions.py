@@ -318,3 +318,82 @@ def test_premium_lifts_analyze_limit(client, auth_headers, monkeypatch):
     assert analyze().status_code == 429
     verify(client, auth_headers)
     assert analyze().status_code == 200
+
+
+# --- 설정 점검 (GET /subscriptions/health) ------------------------------------
+
+def test_health_requires_auth(client):
+    assert client.get("/v1/subscriptions/health").status_code == 401
+
+
+def test_health_reports_mock_backend(client, auth_headers):
+    body = client.get("/v1/subscriptions/health", headers=auth_headers).json()
+    assert body["android"]["reason"] == "mock_backend"
+    assert body["android"]["store_access_ok"] is True
+
+
+def test_health_reports_missing_config(client, auth_headers):
+    """자격증명이 비어 있으면 not_configured 로 구분된다 (권한 문제와 헷갈리지 않게)."""
+    from app.api.v1.subscriptions import get_billing_client_factory
+    from app.billing_client.app_store import AppStoreBillingClient
+    from app.billing_client.google_play import GooglePlayBillingClient
+
+    clients = {
+        "android": GooglePlayBillingClient(package_name="", credentials_json=""),
+        "ios": AppStoreBillingClient(issuer_id="", key_id="", private_key="", bundle_id=""),
+    }
+    app.dependency_overrides[get_billing_client_factory] = lambda: (lambda p: clients[p])
+    try:
+        body = client.get("/v1/subscriptions/health", headers=auth_headers).json()
+    finally:
+        app.dependency_overrides.pop(get_billing_client_factory, None)
+
+    for platform in ("android", "ios"):
+        assert body[platform]["configured"] is False
+        assert body[platform]["reason"] == "not_configured"
+
+
+def test_store_outage_response_carries_reason(client, auth_headers):
+    """503 응답만 보고도 원인을 가릴 수 있어야 한다 (서버 로그 없이 진단)."""
+    res = verify(client, auth_headers, token="down-1")
+    assert res.status_code == 503
+    assert res.json()["error"]["details"][0]["reason"] == "store_unavailable"
+
+
+def test_google_permission_denied_is_distinguishable(monkeypatch):
+    """Play 가 401/403 이면 store_permission — 권한 반영 대기와 설정 누락을 구분한다."""
+    import httpx
+
+    from app.billing_client.base import BillingUnavailableError
+    from app.billing_client.google_play import GooglePlayBillingClient
+
+    gp = GooglePlayBillingClient(package_name="com.eatlog", credentials_json="{}")
+    monkeypatch.setattr(gp, "_access_token", lambda: "fake-token")
+    monkeypatch.setattr(
+        httpx, "get", lambda *a, **k: httpx.Response(403, text="insufficient permissions")
+    )
+
+    with pytest.raises(BillingUnavailableError) as exc:
+        gp.verify_subscription("android", PRODUCT, "tok")
+    assert exc.value.reason == "store_permission"
+
+    check = gp.check_access()
+    assert check.credentials_ok is True
+    assert check.store_access_ok is False
+    assert check.reason == "store_permission"
+    assert check.status == 403
+
+
+def test_google_probe_treats_unknown_token_as_healthy(monkeypatch):
+    """존재하지 않는 토큰에 400/404 가 오면 권한은 정상이라는 뜻이다."""
+    import httpx
+
+    from app.billing_client.google_play import GooglePlayBillingClient
+
+    gp = GooglePlayBillingClient(package_name="com.eatlog", credentials_json="{}")
+    monkeypatch.setattr(gp, "_access_token", lambda: "fake-token")
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: httpx.Response(404, text="not found"))
+
+    check = gp.check_access()
+    assert check.store_access_ok is True
+    assert check.reason is None

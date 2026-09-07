@@ -15,6 +15,7 @@ import logging
 from datetime import timedelta
 
 from app.billing_client.base import (
+    BillingAccessCheck,
     BillingUnavailableError,
     BillingVerificationError,
     StoreSubscription,
@@ -59,3 +60,13 @@ class MockBillingClient:
 
     def acknowledge(self, platform: str, product_id: str, purchase_token: str) -> None:
         logger.info("[mock billing] acknowledge %s %s", platform, product_id)
+
+    def check_access(self) -> BillingAccessCheck:
+        """목은 항상 정상 — 대신 mock 임을 드러내 운영 오인을 막는다."""
+        return BillingAccessCheck(
+            platform="mock",
+            configured=True,
+            credentials_ok=True,
+            store_access_ok=True,
+            reason="mock_backend",
+        )
