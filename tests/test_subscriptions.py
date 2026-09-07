@@ -397,3 +397,38 @@ def test_google_probe_treats_unknown_token_as_healthy(monkeypatch):
     check = gp.check_access()
     assert check.store_access_ok is True
     assert check.reason is None
+
+
+def test_apple_probe_treats_bad_transaction_id_as_healthy(monkeypatch):
+    """Apple 은 형식이 틀린 transactionId 에 400 을 준다 — 인증은 통과했다는 뜻이다."""
+    import httpx
+
+    from app.billing_client.app_store import AppStoreBillingClient
+
+    apple = AppStoreBillingClient(
+        issuer_id="issuer", key_id="KEYID12345", private_key="pem", bundle_id="com.eatlog"
+    )
+    monkeypatch.setattr(apple, "_auth_token", lambda: "fake-jwt")
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: httpx.Response(400, text="InvalidTransactionId"))
+
+    check = apple.check_access()
+    assert check.credentials_ok is True
+    assert check.store_access_ok is True
+    assert check.reason is None
+
+
+def test_apple_probe_flags_bad_key(monkeypatch):
+    """401 이면 Issuer ID / Key ID / .p8 조합이 틀린 것."""
+    import httpx
+
+    from app.billing_client.app_store import AppStoreBillingClient
+
+    apple = AppStoreBillingClient(
+        issuer_id="issuer", key_id="KEYID12345", private_key="pem", bundle_id="com.eatlog"
+    )
+    monkeypatch.setattr(apple, "_auth_token", lambda: "fake-jwt")
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: httpx.Response(401, text="Unauthenticated"))
+
+    check = apple.check_access()
+    assert check.store_access_ok is False
+    assert check.reason == "store_permission"
