@@ -25,3 +25,6 @@ pgdata/
 
 # 사용자 업로드 (로컬 산출물 — 커밋 금지)
 uploads/
+
+# Windows/MSYS 크래시 덤프 (커밋 대상 아님)
+*.stackdump

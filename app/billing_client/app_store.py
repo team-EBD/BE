@@ -203,8 +203,10 @@ class AppStoreBillingClient:
     def check_access(self) -> BillingAccessCheck:
         """존재할 수 없는 트랜잭션 ID 로 조회해 키와 권한만 확인한다.
 
-        - 404 → 키·서명은 정상이고 트랜잭션만 없음 = **설정 완료**
-        - 401 → Issuer ID / Key ID / .p8 불일치
+        - 400/404 → 키·서명은 통과했고 트랜잭션 ID 만 거부됨 = **설정 완료**
+          (Apple 은 형식이 맞지 않는 transactionId 에 404 가 아니라 400 을 준다.
+           400 을 받았다는 것 자체가 JWT 인증을 통과했다는 뜻이다.)
+        - 401/403 → Issuer ID / Key ID / .p8 불일치
         """
         out = BillingAccessCheck(platform="ios")
         out.configured = bool(
@@ -229,7 +231,7 @@ class AppStoreBillingClient:
             return out
 
         out.status = res.status_code
-        if res.status_code == 404:
+        if res.status_code in (400, 404):
             out.store_access_ok = True
         elif res.status_code in (401, 403):
             out.store_access_ok = False
