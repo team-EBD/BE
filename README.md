@@ -119,6 +119,7 @@ BE/
 | POST | `/v1/subscriptions/verify` | 구매 토큰 검증·등록 (결제 완료 / 구매 복원) |
 | POST | `/v1/subscriptions/notifications/google` | Play 실시간 개발자 알림(RTDN) |
 | POST | `/v1/subscriptions/notifications/apple` | App Store Server Notifications V2 |
+| GET | `/v1/subscriptions/health` | 결제 설정 점검 (실제 구매 없이 자격증명·스토어 권한 확인) |
 
 - 권한 판정은 **서버가 스토어에 물어본 결과**로만 한다. FE 가 보내는 것은 구매 토큰뿐이다.
 - 프리미엄이면 AI 일일 한도가 `*_DAILY_LIMIT_PREMIUM`(기본 0 = 무제한)로 바뀐다.

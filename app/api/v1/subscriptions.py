@@ -21,6 +21,7 @@ from typing import Annotated, Callable
 from fastapi import APIRouter, Depends, Request
 
 from app.billing_client import BillingClient, get_billing_client
+from app.billing_client.base import BillingAccessCheck
 from app.core.config import settings
 from app.core.deps import DB, CurrentUser
 from app.models.billing import Subscription
@@ -86,6 +87,40 @@ def verify_subscription(
         purchase_token=body.purchase_token,
     )
     return _to_response(sub)
+
+
+@router.get("/health")
+def billing_health(user: CurrentUser, billing: BillingFactory) -> dict:
+    """결제 설정 점검 (로그인 필요).
+
+    실제 구매 없이 "설정이 빠졌는지 / 키가 틀렸는지 / 스토어 권한이 아직 반영
+    안 됐는지" 를 가른다. 서버 로그를 볼 수 없는 상황에서 결제 503 의 원인을
+    찾기 위한 진단용 — 비밀값은 담지 않고 불리언·코드·상태코드만 돌려준다.
+
+    reason 읽는 법:
+      not_configured   설정값이 비어 있다 (Parameter Store 확인)
+      bad_credentials  JSON 형식 오류 / .p8 불일치 / 토큰 발급 거부
+      store_permission 스토어가 권한을 인정하지 않음
+                       — Play 는 권한 부여 후 반영에 최대 24시간
+      store_unreachable 네트워크·타임아웃·스토어 5xx
+      null             정상
+    """
+    result: dict[str, dict] = {"billing_backend": settings.billing_backend}
+    for platform in ("android", "ios"):
+        try:
+            check: BillingAccessCheck = billing(platform).check_access()
+        except Exception as exc:  # noqa: BLE001 — 진단 경로가 500 을 내면 안 된다
+            logger.exception("결제 설정 점검 실패 platform=%s", platform)
+            result[platform] = {"configured": False, "reason": "check_failed"}
+            continue
+        result[platform] = {
+            "configured": check.configured,
+            "credentials_ok": check.credentials_ok,
+            "store_access_ok": check.store_access_ok,
+            "reason": check.reason,
+            "status": check.status,
+        }
+    return result
 
 
 # --- 스토어 알림 -----------------------------------------------------------
