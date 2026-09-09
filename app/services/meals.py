@@ -33,6 +33,7 @@ _SERVING_EPS = 1e-6
 from app.schemas.meal import MealCreateRequest, MealItemInput, MealUpdateRequest
 from app.services.game_profile import ensure_game_profile
 from app.services.game_rewards import apply_meal_rewards
+from app.services.recommend.feedback import mark_eaten as mark_recommendation_eaten
 from app.services.summary import recompute_daily_summary
 
 logger = logging.getLogger(__name__)
@@ -198,6 +199,12 @@ def create_meal(
     db.flush()
     _insert_items(db, meal, body.items)
     _mark_selected_candidates(db, user, body.items)
+
+    # 최근 추천과 겹치면 "추천을 실제로 먹었다"고 표시한다 (실패해도 저장은 진행)
+    if not body.is_skipped:
+        mark_recommendation_eaten(
+            db, user.id, meal.id, [item.food_name for item in body.items]
+        )
 
     recompute_daily_summary(db, user.id, kst_date_of(eaten_at))
     if commit:
