@@ -14,6 +14,7 @@ from app.core.errors import APIError
 from app.core.timeutil import kst_date_of, now_utc, to_utc
 from app.models import CorrectionLog, MealImage, MealItem, MealRecord, User
 from app.schemas.meal import MealCreateRequest, MealItemInput, MealUpdateRequest
+from app.services.recommend.feedback import mark_eaten as mark_recommendation_eaten
 from app.services.summary import recompute_daily_summary
 
 
@@ -106,6 +107,12 @@ def create_meal(db: Session, user: User, body: MealCreateRequest) -> MealRecord:
     db.add(meal)
     db.flush()
     _insert_items(db, meal, body.items)
+
+    # 최근 추천과 겹치면 "추천을 실제로 먹었다"고 표시한다 (실패해도 저장은 진행)
+    if not body.is_skipped:
+        mark_recommendation_eaten(
+            db, user.id, meal.id, [item.food_name for item in body.items]
+        )
 
     recompute_daily_summary(db, user.id, kst_date_of(eaten_at))
     db.commit()
