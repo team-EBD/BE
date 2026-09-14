@@ -29,6 +29,15 @@ class Settings(BaseSettings):
     # 직접 지정 시 우선 사용 (없으면 위 값들로 조합)
     database_url: str | None = None
 
+    # --- DB 커넥션 풀 (워커 프로세스당) ---
+    # 동기 엔드포인트는 스레드풀(기본 40)에서 돌고, 분석 API 는 AI 응답(10~30초)을
+    # 기다리는 동안 커넥션을 쥔다. SQLAlchemy 기본값(5+10=15)이면 동시 분석 16건째부터
+    # pool_timeout 뒤 500 이 났다(2026-09-14 용량 점검). 워커 수 × (size+overflow) 와
+    # AI 서버 풀(10)을 합쳐 RDS max_connections(t4g.micro ≈ 110) 아래로 유지한다.
+    db_pool_size: int = 15
+    db_max_overflow: int = 15
+    db_pool_timeout_seconds: int = 30
+
     # --- 자체 JWT (Phase 2) ---
     jwt_secret: str = "change-me-in-production"
     jwt_algorithm: str = "HS256"
