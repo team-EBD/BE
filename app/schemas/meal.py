@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 from app.schemas.common import KSTDateTime
+from app.schemas.game import MealRewards
 
 CorrectionType = Literal["half", "large", "no_soup", "no_sauce", "custom"]
 MealType = Literal["breakfast", "lunch", "dinner", "snack"]
@@ -167,6 +168,9 @@ class MealCreateResponse(BaseModel):
     total_protein: float
     total_fat: float
     items: list[MealItemBrief]
+    # 게이미피케이션 보상 (XP·잎 코인·펫 유대). 별도 호출로 만들면 연출 타이밍을
+    # 놓치므로 저장 응답에 함께 싣는다. 구버전 서버/생략 기록에서는 없을 수 있다.
+    rewards: MealRewards | None = None
 
 
 class MealItemDetail(BaseModel):

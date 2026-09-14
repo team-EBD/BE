@@ -1,0 +1,285 @@
+{
+  "schema_version": 2,
+  "currency_display_name": "잎 코인",
+  "slot_limits": {
+    "pet": 1,
+    "background": 1,
+    "food": 5,
+    "blaster": 3,
+    "event_prop": 2
+  },
+  "items": [
+    {
+      "code": "pet_cat",
+      "name": "모카 고양이",
+      "category": "pet",
+      "asset_glb": "assets/kenney_cube-pets_1.0/Models/GLB format/animal-cat.glb",
+      "preview_png": "assets/kenney_cube-pets_1.0/Previews/animal-cat.png",
+      "unlock": { "type": "default" }
+    },
+    {
+      "code": "pet_dog",
+      "name": "구름 강아지",
+      "category": "pet",
+      "asset_glb": "assets/kenney_cube-pets_1.0/Models/GLB format/animal-dog.glb",
+      "preview_png": "assets/kenney_cube-pets_1.0/Previews/animal-dog.png",
+      "unlock": { "type": "coin", "price": 300 }
+    },
+    {
+      "code": "pet_bunny",
+      "name": "당근 토끼",
+      "category": "pet",
+      "asset_glb": "assets/kenney_cube-pets_1.0/Models/GLB format/animal-bunny.glb",
+      "preview_png": "assets/kenney_cube-pets_1.0/Previews/animal-bunny.png",
+      "unlock": { "type": "coin", "price": 450 }
+    },
+    {
+      "code": "pet_fox",
+      "name": "노을 여우",
+      "category": "pet",
+      "asset_glb": "assets/kenney_cube-pets_1.0/Models/GLB format/animal-fox.glb",
+      "preview_png": "assets/kenney_cube-pets_1.0/Previews/animal-fox.png",
+      "unlock": { "type": "coin", "price": 650 }
+    },
+    {
+      "code": "pet_penguin",
+      "name": "파도 펭귄",
+      "category": "pet",
+      "asset_glb": "assets/kenney_cube-pets_1.0/Models/GLB format/animal-penguin.glb",
+      "preview_png": "assets/kenney_cube-pets_1.0/Previews/animal-penguin.png",
+      "unlock": { "type": "coin", "price": 850 }
+    },
+    {
+      "code": "pet_koala",
+      "name": "숲 코알라",
+      "category": "pet",
+      "asset_glb": "assets/kenney_cube-pets_1.0/Models/GLB format/animal-koala.glb",
+      "preview_png": "assets/kenney_cube-pets_1.0/Previews/animal-koala.png",
+      "unlock": { "type": "coin", "price": 1100 }
+    },
+    {
+      "code": "pet_lion",
+      "name": "황금 사자",
+      "category": "pet",
+      "asset_glb": "assets/kenney_cube-pets_1.0/Models/GLB format/animal-lion.glb",
+      "preview_png": "assets/kenney_cube-pets_1.0/Previews/animal-lion.png",
+      "unlock": { "type": "coin", "price": 1400, "min_level": 20 }
+    },
+    {
+      "code": "pet_bee",
+      "name": "봄 꿀벌",
+      "category": "pet",
+      "asset_glb": "assets/kenney_cube-pets_1.0/Models/GLB format/animal-bee.glb",
+      "preview_png": "assets/kenney_cube-pets_1.0/Previews/animal-bee.png",
+      "unlock": { "type": "event", "event_code": "spring_bloom", "mission_count": 7 }
+    },
+    {
+      "code": "pet_chick",
+      "name": "아침 병아리",
+      "category": "pet",
+      "asset_glb": "assets/kenney_cube-pets_1.0/Models/GLB format/animal-chick.glb",
+      "preview_png": "assets/kenney_cube-pets_1.0/Previews/animal-chick.png",
+      "unlock": { "type": "event", "event_code": "morning_routine", "mission_count": 10 }
+    },
+    {
+      "code": "pet_panda",
+      "name": "지구 판다",
+      "category": "pet",
+      "asset_glb": "assets/kenney_cube-pets_1.0/Models/GLB format/animal-panda.glb",
+      "preview_png": "assets/kenney_cube-pets_1.0/Previews/animal-panda.png",
+      "unlock": { "type": "event", "event_code": "earth_week", "mission_count": 5 }
+    },
+    {
+      "code": "pet_crab",
+      "name": "여름 게",
+      "category": "pet",
+      "asset_glb": "assets/kenney_cube-pets_1.0/Models/GLB format/animal-crab.glb",
+      "preview_png": "assets/kenney_cube-pets_1.0/Previews/animal-crab.png",
+      "unlock": { "type": "event", "event_code": "summer_sea", "mission_count": 7 }
+    },
+    {
+      "code": "pet_polar",
+      "name": "겨울 북극곰",
+      "category": "pet",
+      "asset_glb": "assets/kenney_cube-pets_1.0/Models/GLB format/animal-polar.glb",
+      "preview_png": "assets/kenney_cube-pets_1.0/Previews/animal-polar.png",
+      "unlock": { "type": "event", "event_code": "winter_table", "mission_count": 10 }
+    },
+    {
+      "code": "bg_sunny_kitchen",
+      "name": "햇살 키친",
+      "category": "background",
+      "asset_png": "assets/generated-backgrounds/stage-sunny-kitchen.png",
+      "preview_png": "assets/generated-backgrounds/stage-sunny-kitchen.png",
+      "unlock": { "type": "default" }
+    },
+    {
+      "code": "bg_sunset_rooftop",
+      "name": "노을 루프탑",
+      "category": "background",
+      "asset_png": "assets/generated-backgrounds/stage-sunset-rooftop.png",
+      "preview_png": "assets/generated-backgrounds/stage-sunset-rooftop.png",
+      "unlock": { "type": "coin", "price": 500 }
+    },
+    {
+      "code": "bg_moonlit_greenhouse",
+      "name": "달빛 온실",
+      "category": "background",
+      "asset_png": "assets/generated-backgrounds/stage-moonlit-greenhouse.png",
+      "preview_png": "assets/generated-backgrounds/stage-moonlit-greenhouse.png",
+      "unlock": { "type": "coin", "price": 900 }
+    },
+    {
+      "code": "bg_harvest_festival",
+      "name": "수확제 과수원",
+      "category": "background",
+      "asset_png": "assets/generated-backgrounds/stage-harvest-festival.png",
+      "preview_png": "assets/generated-backgrounds/stage-harvest-festival.png",
+      "unlock": { "type": "event", "event_code": "harvest_festival", "mission_count": 7 }
+    },
+    {
+      "code": "food_apple",
+      "name": "빨간 사과",
+      "category": "food",
+      "asset_glb": "assets/kenney_food-kit/Models/GLB format/apple.glb",
+      "preview_png": "assets/kenney_food-kit/Previews/apple.png",
+      "unlock": { "type": "streak", "days": 7 }
+    },
+    {
+      "code": "food_egg",
+      "name": "달걀 프라이",
+      "category": "food",
+      "asset_glb": "assets/kenney_food-kit/Models/GLB format/egg-cooked.glb",
+      "preview_png": "assets/kenney_food-kit/Previews/egg-cooked.png",
+      "unlock": { "type": "streak", "days": 14 }
+    },
+    {
+      "code": "food_salad",
+      "name": "샐러드 볼",
+      "category": "food",
+      "asset_glb": "assets/kenney_food-kit/Models/GLB format/salad.glb",
+      "preview_png": "assets/kenney_food-kit/Previews/salad.png",
+      "unlock": { "type": "streak", "days": 30 }
+    },
+    {
+      "code": "food_cake",
+      "name": "축하 케이크",
+      "category": "food",
+      "asset_glb": "assets/kenney_food-kit/Models/GLB format/cake-birthday.glb",
+      "preview_png": "assets/kenney_food-kit/Previews/cake-birthday.png",
+      "unlock": { "type": "streak", "days": 100 }
+    },
+    {
+      "code": "food_broccoli",
+      "name": "브로콜리",
+      "category": "food",
+      "asset_glb": "assets/kenney_food-kit/Models/GLB format/broccoli.glb",
+      "preview_png": "assets/kenney_food-kit/Previews/broccoli.png",
+      "unlock": { "type": "food", "rule": "distinct_food_days", "food_tags": ["vegetable"], "days": 5, "confidence": 0.78 }
+    },
+    {
+      "code": "food_strawberry",
+      "name": "딸기",
+      "category": "food",
+      "asset_glb": "assets/kenney_food-kit/Models/GLB format/strawberry.glb",
+      "preview_png": "assets/kenney_food-kit/Previews/strawberry.png",
+      "unlock": { "type": "food", "rule": "distinct_food_days", "food_tags": ["fruit"], "days": 5, "confidence": 0.78 }
+    },
+    {
+      "code": "food_sushi_salmon",
+      "name": "연어 초밥",
+      "category": "food",
+      "asset_glb": "assets/kenney_food-kit/Models/GLB format/sushi-salmon.glb",
+      "preview_png": "assets/kenney_food-kit/Previews/sushi-salmon.png",
+      "unlock": { "type": "food", "rule": "distinct_food_days", "food_tags": ["fish"], "days": 5, "confidence": 0.78 }
+    },
+    {
+      "code": "food_pancakes",
+      "name": "팬케이크",
+      "category": "food",
+      "asset_glb": "assets/kenney_food-kit/Models/GLB format/pancakes.glb",
+      "preview_png": "assets/kenney_food-kit/Previews/pancakes.png",
+      "unlock": { "type": "food", "rule": "distinct_meal_slot_days", "meal_slot": "breakfast", "days": 5 }
+    },
+    {
+      "code": "food_taco",
+      "name": "타코",
+      "category": "food",
+      "asset_glb": "assets/kenney_food-kit/Models/GLB format/taco.glb",
+      "preview_png": "assets/kenney_food-kit/Previews/taco.png",
+      "unlock": { "type": "food", "rule": "distinct_menu_days", "days": 8 }
+    },
+    {
+      "code": "food_soup",
+      "name": "따뜻한 수프",
+      "category": "food",
+      "asset_glb": "assets/kenney_food-kit/Models/GLB format/bowl-soup.glb",
+      "preview_png": "assets/kenney_food-kit/Previews/bowl-soup.png",
+      "unlock": { "type": "food", "rule": "distinct_food_days", "food_tags": ["soup"], "days": 5, "confidence": 0.78 }
+    },
+    {
+      "code": "blaster_a",
+      "name": "포도 팝",
+      "category": "blaster",
+      "asset_glb": "assets/kenney_blaster-kit_2.1/Models/GLB format/blaster-a.glb",
+      "preview_png": "assets/kenney_blaster-kit_2.1/Previews/blaster-a.png",
+      "unlock": { "type": "coin", "price": 250 }
+    },
+    {
+      "code": "blaster_d",
+      "name": "라임 버스트",
+      "category": "blaster",
+      "asset_glb": "assets/kenney_blaster-kit_2.1/Models/GLB format/blaster-d.glb",
+      "preview_png": "assets/kenney_blaster-kit_2.1/Previews/blaster-d.png",
+      "unlock": { "type": "coin", "price": 450 }
+    },
+    {
+      "code": "blaster_i",
+      "name": "코럴 콤보",
+      "category": "blaster",
+      "asset_glb": "assets/kenney_blaster-kit_2.1/Models/GLB format/blaster-i.glb",
+      "preview_png": "assets/kenney_blaster-kit_2.1/Previews/blaster-i.png",
+      "unlock": { "type": "coin", "price": 700 }
+    },
+    {
+      "code": "blaster_p",
+      "name": "스타 캐논",
+      "category": "blaster",
+      "asset_glb": "assets/kenney_blaster-kit_2.1/Models/GLB format/blaster-p.glb",
+      "preview_png": "assets/kenney_blaster-kit_2.1/Previews/blaster-p.png",
+      "unlock": { "type": "coin", "price": 1000 }
+    },
+    {
+      "code": "event_bottle",
+      "name": "해적 병",
+      "category": "event_prop",
+      "asset_glb": "assets/kenney_pirate-kit/Models/GLB format/bottle-large.glb",
+      "preview_png": "assets/kenney_pirate-kit/Previews/bottle-large.png",
+      "unlock": { "type": "event", "event_code": "treasure_picnic", "stamp": 1 }
+    },
+    {
+      "code": "event_chest",
+      "name": "보물 상자",
+      "category": "event_prop",
+      "asset_glb": "assets/kenney_pirate-kit/Models/GLB format/chest.glb",
+      "preview_png": "assets/kenney_pirate-kit/Previews/chest.png",
+      "unlock": { "type": "event", "event_code": "treasure_picnic", "stamp": 3 }
+    },
+    {
+      "code": "event_palm",
+      "name": "야자수",
+      "category": "event_prop",
+      "asset_glb": "assets/kenney_pirate-kit/Models/GLB format/palm-detailed-straight.glb",
+      "preview_png": "assets/kenney_pirate-kit/Previews/palm-detailed-straight.png",
+      "unlock": { "type": "event", "event_code": "treasure_picnic", "stamp": 5 }
+    },
+    {
+      "code": "event_ship",
+      "name": "작은 해적선",
+      "category": "event_prop",
+      "asset_glb": "assets/kenney_pirate-kit/Models/GLB format/ship-pirate-small.glb",
+      "preview_png": "assets/kenney_pirate-kit/Previews/ship-pirate-small.png",
+      "unlock": { "type": "event", "event_code": "treasure_picnic", "stamp": 7 }
+    }
+  ]
+}

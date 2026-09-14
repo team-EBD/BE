@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -14,7 +16,11 @@ from app.core.errors import APIError
 from app.core.timeutil import kst_date_of, now_utc, to_utc
 from app.models import CorrectionLog, MealImage, MealItem, MealRecord, User
 from app.schemas.meal import MealCreateRequest, MealItemInput, MealUpdateRequest
+from app.services.game_profile import ensure_game_profile
+from app.services.game_rewards import apply_meal_rewards
 from app.services.summary import recompute_daily_summary
+
+logger = logging.getLogger(__name__)
 
 
 def get_owned_meal(db: Session, user: User, meal_id: int) -> MealRecord:
@@ -86,7 +92,9 @@ def _insert_items(
     return created
 
 
-def create_meal(db: Session, user: User, body: MealCreateRequest) -> MealRecord:
+def create_meal(
+    db: Session, user: User, body: MealCreateRequest, *, commit: bool = True
+) -> MealRecord:
     _validate_image(db, user, body.meal_image_id)
     eaten_at = to_utc(body.eaten_at)
     totals = _totals(body.items)
@@ -108,8 +116,39 @@ def create_meal(db: Session, user: User, body: MealCreateRequest) -> MealRecord:
     _insert_items(db, meal, body.items)
 
     recompute_daily_summary(db, user.id, kst_date_of(eaten_at))
-    db.commit()
+    if commit:
+        db.commit()
     return meal
+
+
+def create_meal_with_rewards(
+    db: Session, user: User, body: MealCreateRequest
+) -> tuple[MealRecord, dict | None]:
+    """식단 저장 + 게이미피케이션 보상을 **한 트랜잭션**으로 처리한다.
+
+    보상이 성공하면 둘이 함께 커밋되고, 실패하면 둘 다 롤백한 뒤 **식단만 다시
+    저장한다**. 게임 도메인(마이그레이션 지연·카탈로그 손상 등)이 기록 자체를
+    막아서는 안 되기 때문이다. 이때 rewards 는 None 이고 FE 는 연출을 건너뛴다.
+    """
+    try:
+        # 기록을 넣기 **전에** 프로필을 보장한다 — 기존 사용자 백필이 방금 저장한
+        # 이 기록까지 세어 유대가 두 번 오르는 것을 막는다.
+        ensure_game_profile(db, user)
+    except Exception:  # noqa: BLE001
+        logger.exception("게임 프로필 보장 실패 (기록은 정상 저장)")
+        db.rollback()
+        return create_meal(db, user, body, commit=True), None
+
+    meal = create_meal(db, user, body, commit=False)
+    try:
+        rewards = apply_meal_rewards(db, user, meal)
+    except Exception:  # noqa: BLE001 — 보상 실패가 기록 실패가 되면 안 된다
+        logger.exception("게이미피케이션 보상 지급 실패 (기록은 정상 저장)")
+        db.rollback()
+        meal = create_meal(db, user, body, commit=True)
+        return meal, None
+    db.commit()
+    return meal, rewards
 
 
 def update_meal(db: Session, user: User, meal_id: int, body: MealUpdateRequest) -> MealRecord:

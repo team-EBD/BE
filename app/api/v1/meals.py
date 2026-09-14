@@ -24,6 +24,7 @@ from app.core.timeutil import (
     to_utc,
 )
 from app.models import MealImage, MealRecord
+from app.schemas.game import MealRewards
 from app.schemas.meal import (
     AnalyzeFailedResponse,
     AnalyzeRequest,
@@ -46,7 +47,7 @@ from app.services.analyze import analyze_meal_image, analyze_meal_text
 from app.services.image_retention import retention_cutoff_utc
 from app.services.usage_limit import enforce_daily_limit
 from app.services.meals import (
-    create_meal,
+    create_meal_with_rewards,
     delete_meal,
     get_owned_meal,
     meal_items_with_corrections,
@@ -240,7 +241,7 @@ def _image_url(db, meal: MealRecord) -> str | None:
 
 @router.post("", response_model=MealCreateResponse, status_code=201)
 def create(body: MealCreateRequest, user: CurrentUser, db: DB) -> MealCreateResponse:
-    meal = create_meal(db, user, body)
+    meal, rewards = create_meal_with_rewards(db, user, body)
     items = [pair[0] for pair in meal_items_with_corrections(db, meal)]
     return MealCreateResponse(
         meal_id=meal.id,
@@ -255,6 +256,8 @@ def create(body: MealCreateRequest, user: CurrentUser, db: DB) -> MealCreateResp
             MealItemBrief(meal_item_id=i.id, food_name=i.food_name, calories=float(i.calories))
             for i in items
         ],
+        # 구버전 FE 는 이 필드를 무시한다 (연출 skip). 하위 호환을 위해 optional.
+        rewards=MealRewards(**rewards) if rewards else None,
     )
 
 
