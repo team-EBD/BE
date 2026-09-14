@@ -5,6 +5,8 @@
 - /static: 로컬 스토리지 이미지 서빙 (dev 전용 — 운영은 Object Storage URL)
 - lifespan: 보존 기간(저번달 1일~) 지난 식사 이미지 매일 정리
   + 주간 리포트 도착 푸시 발송(매주 설정 요일·시각, KST)
+  두 루프는 워커(프로세스)가 여럿이어도 advisory lock 을 잡은 한 워커만 돌린다
+  (app/core/leader.py, `_leader_loop`).
 """
 import asyncio
 import logging
@@ -16,8 +18,9 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.v1 import api_router
 from app.core.config import settings
-from app.core.database import SessionLocal
+from app.core.database import SessionLocal, engine
 from app.core.errors import register_exception_handlers
+from app.core.leader import leader_alive, release_leader, try_acquire_leader
 from app.core.logging import setup_logging
 from app.core.migrations import run_migrations_if_enabled
 from app.core.timeutil import kst_date_of, now_utc
@@ -32,6 +35,7 @@ logger = logging.getLogger("eatlog.main")
 
 _PURGE_INTERVAL_SECONDS = 24 * 60 * 60
 _WEEKLY_PUSH_CHECK_SECONDS = 60
+_LEADER_RETRY_SECONDS = 60
 
 
 def _run_image_purge() -> None:
@@ -78,22 +82,73 @@ async def _weekly_report_push_loop() -> None:
         await asyncio.sleep(_WEEKLY_PUSH_CHECK_SECONDS)
 
 
+def _start_background_loops() -> list[asyncio.Task]:
+    tasks = []
+    if settings.image_retention_purge_enabled:
+        tasks.append(asyncio.create_task(_image_purge_loop()))
+    if settings.weekly_report_push_enabled:
+        tasks.append(asyncio.create_task(_weekly_report_push_loop()))
+    return tasks
+
+
+async def _cancel_all(tasks: list[asyncio.Task]) -> None:
+    for task in tasks:
+        task.cancel()
+    # 취소가 실제로 끝난 뒤 돌아온다 (루프 안 `await` 지점에서 CancelledError 처리 완료)
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _leader_loop() -> None:
+    """백그라운드 루프 담당(leader) 선출·감시 — 이 태스크 하나가 루프들의 수명을 관리한다.
+
+    uvicorn 워커가 여럿이면 한 워커만 락을 잡는다(app/core/leader.py).
+    - 락을 못 잡은 워커: 60초마다 재시도. 담당 워커가 죽어 락이 풀리면 넘겨받는다.
+    - 락을 잡은 워커: 루프들을 띄우고 60초마다 락 커넥션이 살아 있는지 확인한다.
+      끊겼으면(DB 재시작 등) 루프를 멈추고 재선출로 돌아간다 — 옛 담당과 새 담당이
+      동시에 루프를 돌리는 일을 막는다.
+    락 시도 자체가 실패해도(DB 일시 장애) 서비스는 계속 API 를 처리하고 루프만 멈춘다.
+    """
+    waiting_logged = False
+    while True:
+        try:
+            acquired = await asyncio.to_thread(try_acquire_leader, engine)
+        except Exception:  # noqa: BLE001 — 락 시도 실패가 기동을 막지 않는다
+            logger.exception("leader lock 시도 실패 (다음 주기에 재시도)")
+            acquired = False
+
+        if not acquired:
+            if not waiting_logged:
+                logger.info("[startup] 다른 워커가 백그라운드 루프 담당 — 대기 (follower)")
+                waiting_logged = True
+            await asyncio.sleep(_LEADER_RETRY_SECONDS)
+            continue
+
+        logger.info("[startup] 백그라운드 루프 담당 워커 (leader)")
+        loops = _start_background_loops()
+        try:
+            while await asyncio.to_thread(leader_alive):
+                await asyncio.sleep(_LEADER_RETRY_SECONDS)
+        finally:
+            await _cancel_all(loops)
+        logger.warning("백그라운드 루프 중단 — 담당 자격 상실, 재선출 대기")
+        waiting_logged = False
+        await asyncio.sleep(_LEADER_RETRY_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 시작 명령이 scripts/start.sh 가 아니어도(cloudtype 대시보드 override)
     # 코드와 DB 스키마가 어긋나지 않도록 여기서 한 번 더 보장한다.
     await asyncio.to_thread(run_migrations_if_enabled)
 
-    tasks = []
-    if settings.image_retention_purge_enabled:
-        tasks.append(asyncio.create_task(_image_purge_loop()))
-    if settings.weekly_report_push_enabled:
-        tasks.append(asyncio.create_task(_weekly_report_push_loop()))
+    tasks: list[asyncio.Task] = []
+    if settings.image_retention_purge_enabled or settings.weekly_report_push_enabled:
+        tasks.append(asyncio.create_task(_leader_loop()))
     try:
         yield
     finally:
-        for task in tasks:
-            task.cancel()
+        await _cancel_all(tasks)
+        await asyncio.to_thread(release_leader)
 
 
 app = FastAPI(
