@@ -55,6 +55,12 @@ class MealRecord(Base):
         Boolean, nullable=False, default=False, server_default=sa_false()
     )  # 식사 생략(안 먹음) 기록 — items 없이 저장
     memo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 입력 방식 photo/text/search — 문장·직접 검색 기록은 이 값으로만 구분된다 (2026-09-11 분석 로그)
+    entry_method: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    # 이 기록의 초안을 만든 AI 호출 — food_candidates·client_events 와 조인하는 정답지 키
+    ai_call_log_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("ai_call_logs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     total_calories: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False, default=0)  # 합계 캐시
     total_carbs: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False, default=0)
     total_protein: Mapped[float] = mapped_column(Numeric(10, 2), nullable=False, default=0)
