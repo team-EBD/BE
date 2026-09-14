@@ -1,0 +1,124 @@
+{
+  "schema_version": 3,
+  "extends": "gamification-catalog.v2.json",
+  "currency_display_name": "잎 코인",
+  "logical_day": {
+    "timezone": "Asia/Seoul",
+    "starts_at_hour": 6
+  },
+  "pet_growth": {
+    "active_pet_limit": 1,
+    "equipped_skill_limit": 1,
+    "bond_unit": "distinct_active_record_day",
+    "eligible_meal": {
+      "is_skipped": false,
+      "max_bond_days_per_logical_date": 1
+    },
+    "never_decays": true,
+    "levels": [
+      {"level": 1, "days": 0, "name": "새 친구", "reward_type": "base"},
+      {"level": 2, "days": 3, "name": "익숙한 사이", "reward_type": "name_tag_and_greeting"},
+      {"level": 3, "days": 7, "name": "단짝", "reward_type": "signature_accessory_and_skill"},
+      {"level": 4, "days": 14, "name": "베프", "reward_type": "stage_effect_and_motion"},
+      {"level": 5, "days": 30, "name": "평생친구", "reward_type": "full_costume_and_title"}
+    ]
+  },
+  "first_friend": {
+    "unlock_distinct_record_days": 3,
+    "choices": ["pet_dog", "pet_bunny", "pet_fox"],
+    "choice_count": 1,
+    "expires": false
+  },
+  "pet_overrides": [
+    {
+      "code": "pet_cat",
+      "adoption": {"type": "default"},
+      "signature_skill": "streak_pause",
+      "growth_layers": ["base", "name_tag", "green_scarf", "leaf_steps", "forest_friend_costume"]
+    },
+    {
+      "code": "pet_dog",
+      "adoption": {"type": "coin_or_first_friend", "price": 120},
+      "signature_skill": "daily_xp_nudge",
+      "growth_layers": ["base", "name_tag", "yellow_bandana", "spark_steps", "sunny_friend_costume"]
+    },
+    {
+      "code": "pet_bunny",
+      "adoption": {"type": "coin_or_first_friend", "price": 180},
+      "signature_skill": "food_clarifier",
+      "growth_layers": ["base", "name_tag", "carrot_pin", "flower_steps", "garden_friend_costume"]
+    },
+    {
+      "code": "pet_fox",
+      "adoption": {"type": "coin_or_first_friend", "price": 240},
+      "signature_skill": "daily_mission_swap",
+      "growth_layers": ["base", "name_tag", "red_neckerchief", "ember_steps", "sunset_friend_costume"]
+    },
+    {
+      "code": "pet_penguin",
+      "adoption": {"type": "coin", "price": 320},
+      "signature_skill": "streak_pause",
+      "growth_layers": ["base", "name_tag", "blue_cap", "snow_steps", "winter_friend_costume"]
+    },
+    {
+      "code": "pet_koala",
+      "adoption": {"type": "coin", "price": 450},
+      "signature_skill": "food_clarifier",
+      "growth_layers": ["base", "name_tag", "eucalyptus_pin", "soft_steps", "grove_friend_costume"]
+    },
+    {
+      "code": "pet_lion",
+      "adoption": {"type": "coin", "price": 650, "min_account_level": 10},
+      "signature_skill": "daily_mission_swap",
+      "growth_layers": ["base", "name_tag", "gold_medal", "sun_steps", "royal_friend_costume"]
+    }
+  ],
+  "skills": [
+    {
+      "code": "streak_pause",
+      "name": "쉼표 지킴이",
+      "unlock_bond_level": 3,
+      "effect": "protect_one_missed_logical_date",
+      "activation": "automatic",
+      "recharge_distinct_record_days": 14,
+      "max_charges": 1,
+      "purchasable": false
+    },
+    {
+      "code": "daily_xp_nudge",
+      "name": "힘찬 응원",
+      "unlock_bond_level": 3,
+      "effect": "first_valid_meal_xp_flat_bonus",
+      "xp_bonus": 5,
+      "daily_uses": 1,
+      "affects_points": false,
+      "purchasable": false
+    },
+    {
+      "code": "food_clarifier",
+      "name": "발견 돋보기",
+      "unlock_bond_level": 3,
+      "effect": "offer_one_user_confirmed_food_candidate",
+      "recharge_days": 7,
+      "max_charges": 1,
+      "auto_confirms": false,
+      "feature_flag": "game_food_clarifier",
+      "purchasable": false
+    },
+    {
+      "code": "daily_mission_swap",
+      "name": "오늘의 바꾸기",
+      "unlock_bond_level": 3,
+      "effect": "replace_unstarted_daily_mission_in_same_reward_band",
+      "daily_uses": 1,
+      "purchasable": false
+    }
+  ],
+  "backfill": {
+    "active_pet_code": "pet_cat",
+    "lookback_days": 30,
+    "max_bond_days": 7,
+    "grant_first_friend_choice": true,
+    "grant_retroactive_points": false
+  }
+}
