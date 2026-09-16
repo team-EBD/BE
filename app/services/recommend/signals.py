@@ -1,11 +1,10 @@
-"""추천 신호 계산 — 끼니별 개인 빈도(시간 감쇠) · 전체 인기 · 끼니 예산.
+"""추천 신호 계산 — 끼니별 개인 빈도(시간 감쇠) · 전체 인기 · 질림 · 끼니 예산 · 밥 동반.
 
-DB 스키마 변경 없이 현재 테이블(meal_records · meal_items · user_profiles)만 읽는다.
 기록 수가 사용자당 수백 건 수준이라 행을 가져와 파이썬에서 집계한다 — SQLite 테스트와
 Postgres 운영에서 같은 코드가 돈다.
 
-음식 묶음 키는 normalize_name(food_name): 온도·사이즈 표기와 공백을 벗긴 이름.
-DB 쪽 메뉴명 정리가 들어오면 group_key 한 곳만 바꾼다.
+음식 묶음 키는 **군**(food_groups)이다 — 기록의 food_group_id → 매칭 상품의 food_group_id →
+이름 alias 순으로 찾고, 군이 없으면 normalize_name(기록 이름)으로 폴백한다 (groups.GroupIndex).
 """
 from __future__ import annotations
 
@@ -13,13 +12,15 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.core.timeutil import from_db, kst_date_of
 from app.models import MealItem, MealRecord, NutritionItem, User
 from app.services.matching import normalize_name
 from app.services.summary import aggregate_day, get_goals
+
+from .groups import ROLE_COMPANION, ROLE_MEAL, GroupIndex, GroupInfo, load_group_index
 
 MEAL_TYPES = ("breakfast", "lunch", "dinner", "snack")
 
@@ -30,6 +31,9 @@ DEFAULT_MEAL_RATIOS = {"breakfast": 0.25, "lunch": 0.35, "dinner": 0.35, "snack"
 # 기본 비율과 반씩 섞고 끼니별 하한을 둔다.
 PERSONAL_RATIO_WEIGHT = 0.5
 MIN_RATIO_BY_MEAL = {"breakfast": 0.15, "lunch": 0.15, "dinner": 0.15, "snack": 0.05}
+# 상한 — 저녁만 기록하는 사용자는 개인 비율 1.0 → 혼합 0.675 → 예산 1,350 이 된다.
+# 한 끼가 하루 목표의 절반을 넘게 잡히지 않도록 막는다.
+MAX_RATIO_BY_MEAL = {"breakfast": 0.4, "lunch": 0.5, "dinner": 0.5, "snack": 0.15}
 
 # 개인 빈도 = 습관 강도. 반감기 45일의 완만한 감쇠 — 석 달 전에 끊긴 습관은 서서히
 # 빠지되, 최근에 먹었다고 점수가 튀지는 않는다. "최근에 먹은 건 오히려 안 먹는다"는
@@ -42,7 +46,7 @@ MIN_MEAL_TYPE_ITEMS = 5
 # 으로 올라온다 (운영 미리보기: 스위트칠리소스·크림치즈가 간식 추천 1·2위).
 NO_FALLBACK_MEAL_TYPES = frozenset({"snack"})
 
-# 오기록 방어 — 기록의 1인분 열량이 영양 DB 대표값과 이만큼 벌어지면 집계에서 뺀다.
+# 오기록 방어 — 기록의 1인분 열량이 대표값(군 대표값 → 상품 대표값)과 이만큼 벌어지면 집계에서 뺀다.
 # 운영에 "김치 320kcal"(0.1인분 32kcal 로 저장된 걸 1인분으로 되돌린 값 — 기준이 된
 # AI 추정치가 틀렸다), "김 480kcal" 같은 기록이 있고 그대로 추천·anchor 로 나갔다.
 # 범위를 넓게 잡은 이유: 어긋난 값은 아래 '대표값으로 대체'가 먼저 바로잡고,
@@ -67,12 +71,16 @@ BUDGET_FLOOR = 0.3
 FIT_TOLERANCE = 0.2  # ±20% 안이면 '적정'
 MOOD_FACTOR = {"any": 1.0, "light": 0.8, "hearty": 1.2}
 
+# 밥 동반 — 개인 동시기록이 이 비율 이상이면 그 동반을 쓰고, 미만이면 "동반 없이 먹는 사람"
+COMPANION_MIN_SHARE = 0.5
+COMPANION_MIN_MEALS = 2  # 그 메뉴를 이만큼은 먹어 봐야 개인 동반 판단을 신뢰한다
+
 # 전체 인기 계산에서 제외할 계정 (내부 테스트 계정)
 EXCLUDED_EMAIL_SUFFIXES = ("@test.com",)
 
 
 def group_key(food_name: str) -> str:
-    """같은 음식으로 묶는 키. 지금은 normalize_name — DB 메뉴명 정리 후 교체 지점."""
+    """군을 못 찾았을 때의 폴백 키 — 온도·사이즈 표기와 공백을 벗긴 이름."""
     return normalize_name(food_name)
 
 
@@ -89,10 +97,10 @@ def meal_type_for_hour(hour: int) -> str:
 
 @dataclass
 class FoodStat:
-    """묶음 키 하나의 집계. 영양값은 1인분 기준(사용자 기록의 serving_amount 로 나눈 값 평균)."""
+    """묶음 키 하나의 집계. 영양값은 1인분 기준(군 대표값 우선, 없으면 기록값 평균)."""
 
     key: str
-    name: str  # 표시용 — 기록에서 가장 많이 쓰인 원문 이름
+    name: str  # 표시용 — 기록에서 가장 많이 쓰인 원문 이름 (사용자 어휘)
     score: float  # 감쇠 합(개인) 또는 건수(인기)
     count: int
     last_eaten: datetime
@@ -100,6 +108,10 @@ class FoodStat:
     carbs: float
     protein: float
     fat: float
+    group_id: int | None = None
+    group_name: str | None = None
+    family: str | None = None
+    role: str | None = None
 
 
 @dataclass
@@ -110,13 +122,15 @@ class _Row:
     carbs: float
     protein: float
     fat: float
+    group: GroupInfo | None
+    record_id: int
 
 
 _Macros = tuple[float, float, float, float]  # (kcal, 탄, 단, 지) 1인분
 
 
 def _plausible(recorded_per_serving: float, db_calories: float) -> bool:
-    """기록된 1인분 열량이 영양 DB 대표값과 상식 범위 안인가."""
+    """기록된 1인분 열량이 대표값과 상식 범위 안인가."""
     if db_calories <= 0:
         return True
     ratio = recorded_per_serving / db_calories
@@ -124,11 +138,7 @@ def _plausible(recorded_per_serving: float, db_calories: float) -> bool:
 
 
 def _reference_by_name(db: Session, keys: set[str]) -> dict[str, _Macros]:
-    """이름(정규화)으로 찾은 영양 DB 대표값 — 매칭 id 가 없는 기록의 대조 기준.
-
-    운영 기록의 74%가 nutrition_item_id NULL 이라, id 조인만으로는 오기록을 거의 못 거른다.
-    동명 중복은 낮은 id 1건만 쓴다(시드 우선).
-    """
+    """이름(정규화)으로 찾은 영양 DB 대표값 — 군도 매칭 id 도 없는 기록의 마지막 대조 기준."""
     if not keys:
         return {}
     rows = db.execute(
@@ -155,39 +165,38 @@ def _eaten_rows(
     db: Session,
     *,
     since: datetime,
+    index: GroupIndex,
     user_id: int | None = None,
     meal_type: str | None = None,
     exclude_test_users: bool = False,
 ) -> list[_Row]:
-    """실제로 먹은 기록 항목(삭제·생략 제외)을 1인분 기준 영양값으로 정규화해 반환.
+    """실제로 먹은 기록 항목(삭제·생략 제외)을 군·1인분 영양값으로 정규화해 반환.
 
-    영양값은 **영양 DB 대표값을 우선**한다 — 기록값은 AI 추정치를 사용자가 슬라이더로
-    조절한 결과라, 1인분으로 되돌리면 기준이 된 추정 오차가 그대로 증폭된다
-    (운영: 0.1인분 32kcal 로 저장된 김치 → 1인분 320kcal). 대표값과 대조해 설명이
-    안 되는 기록은 아예 뺀다(MISRECORD_*). 대표값을 못 찾으면 기록값을 그대로 쓴다.
+    영양값 우선순위: ① 군 대표값 ② 매칭된 대표 상품값 ③ 이름으로 찾은 대표 상품값 ④ 기록값.
+    기록값은 AI 추정치를 사용자가 슬라이더로 조절한 결과라 1인분으로 되돌리면 기준 오차가
+    증폭된다 (운영: 0.1인분 32kcal 로 저장된 김치 → 1인분 320kcal). 대표값과 대조해 설명이
+    안 되는 기록은 아예 뺀다(MISRECORD_*).
     """
     stmt = (
         select(
             MealItem.food_name,
             MealRecord.eaten_at,
+            MealRecord.id,
             MealItem.calories,
             MealItem.carbs,
             MealItem.protein,
             MealItem.fat,
             MealItem.serving_amount,
+            MealItem.food_group_id,
+            NutritionItem.food_group_id,
+            NutritionItem.is_representative,
             NutritionItem.calories,
             NutritionItem.carbs,
             NutritionItem.protein,
             NutritionItem.fat,
         )
         .join(MealRecord, MealItem.meal_record_id == MealRecord.id)
-        .outerjoin(
-            NutritionItem,
-            and_(
-                MealItem.nutrition_item_id == NutritionItem.id,
-                NutritionItem.is_representative.is_(True),
-            ),
-        )
+        .outerjoin(NutritionItem, MealItem.nutrition_item_id == NutritionItem.id)
         .where(
             MealRecord.deleted_at.is_(None),
             MealRecord.is_skipped.is_(False),
@@ -204,9 +213,10 @@ def _eaten_rows(
             # email 이 NULL 인 소셜 계정은 제외 대상이 아니다 (NOT LIKE 가 NULL 이 되지 않게)
             stmt = stmt.where(or_(User.email.is_(None), ~User.email.like(f"%{suffix}")))
 
-    raw: list[tuple[str, datetime, _Macros, _Macros | None]] = []
+    raw: list[tuple[str, datetime, int, _Macros, _Macros | None, GroupInfo | None]] = []
     for (
-        name, eaten_at, cal, carbs, protein, fat, serving, db_cal, db_carbs, db_protein, db_fat
+        name, eaten_at, record_id, cal, carbs, protein, fat, serving,
+        meal_gid, item_gid, item_rep, db_cal, db_carbs, db_protein, db_fat,
     ) in db.execute(stmt):
         divisor = float(serving or 0) or 1.0  # meal_items 값은 섭취량 반영값 → 1인분으로 되돌림
         recorded = (
@@ -215,47 +225,49 @@ def _eaten_rows(
             float(protein) / divisor,
             float(fat) / divisor,
         )
-        reference = (
-            (float(db_cal), float(db_carbs), float(db_protein), float(db_fat))
-            if db_cal is not None
-            else None
-        )
-        raw.append((name, from_db(eaten_at), recorded, reference))
+        group = index.resolve(name, meal_gid, item_gid)
+        reference: _Macros | None = None
+        if group is not None and group.has_macros:
+            reference = (group.calories, group.carbs or 0.0, group.protein or 0.0, group.fat or 0.0)  # type: ignore[arg-type]
+        elif item_rep and db_cal is not None:
+            reference = (float(db_cal), float(db_carbs), float(db_protein), float(db_fat))
+        raw.append((name, from_db(eaten_at), record_id, recorded, reference, group))
 
-    # 매칭 id 가 없는 기록은 이름으로 대표값을 한 번 더 찾는다 (운영 미매칭 74%)
+    # 군도 매칭도 없는 기록은 이름으로 대표값을 한 번 더 찾는다
     by_name = _reference_by_name(
-        db, {group_key(name) for name, _, _, ref in raw if ref is None}
+        db, {group_key(name) for name, _, _, _, ref, _ in raw if ref is None}
     )
 
     rows: list[_Row] = []
-    for name, eaten_at, recorded, reference in raw:
+    for name, eaten_at, record_id, recorded, reference, group in raw:
         reference = reference or by_name.get(group_key(name))
         if reference is not None and not _plausible(recorded[0], reference[0]):
             continue
         calories, carbs, protein, fat = reference or recorded
         rows.append(
             _Row(
-                name=name,
-                eaten_at=eaten_at,
-                calories=calories,
-                carbs=carbs,
-                protein=protein,
-                fat=fat,
+                name=name, eaten_at=eaten_at, calories=calories, carbs=carbs,
+                protein=protein, fat=fat, group=group, record_id=record_id,
             )
         )
     return rows
 
 
+def _key_of(row: _Row) -> str:
+    return row.group.key if row.group else group_key(row.name)
+
+
 def _aggregate(rows: list[_Row], weight_of) -> list[FoodStat]:
     groups: dict[str, list[_Row]] = defaultdict(list)
     for row in rows:
-        key = group_key(row.name)
+        key = _key_of(row)
         if key:
             groups[key].append(row)
 
     stats: list[FoodStat] = []
     for key, group in groups.items():
         n = len(group)
+        info = next((r.group for r in group if r.group), None)
         stats.append(
             FoodStat(
                 key=key,
@@ -267,6 +279,10 @@ def _aggregate(rows: list[_Row], weight_of) -> list[FoodStat]:
                 carbs=sum(r.carbs for r in group) / n,
                 protein=sum(r.protein for r in group) / n,
                 fat=sum(r.fat for r in group) / n,
+                group_id=info.id if info else None,
+                group_name=info.name if info else None,
+                family=info.family if info else None,
+                role=info.role if info else None,
             )
         )
     # 점수 내림차순, 동점은 키 순 — 같은 입력이면 같은 순서
@@ -280,6 +296,7 @@ def decayed_frequency(
     meal_type: str | None,
     *,
     now: datetime,
+    index: GroupIndex | None = None,
     half_life_days: float = HALF_LIFE_DAYS,
     window_days: int = FREQ_WINDOW_DAYS,
     min_items: int = MIN_MEAL_TYPE_ITEMS,
@@ -291,11 +308,12 @@ def decayed_frequency(
     최근에 먹었는지는 여기서 가산하지 않는다 (recency_penalties 가 감점으로 처리).
     그 끼니의 항목이 min_items 미만이면 끼니 구분 없이 다시 센다 — 간식은 예외.
     """
+    index = index or load_group_index(db)
     since = now - timedelta(days=window_days)
-    rows = _eaten_rows(db, since=since, user_id=user_id, meal_type=meal_type)
+    rows = _eaten_rows(db, since=since, index=index, user_id=user_id, meal_type=meal_type)
     can_fall_back = meal_type is not None and meal_type not in NO_FALLBACK_MEAL_TYPES
     if can_fall_back and len(rows) < min_items:
-        rows = _eaten_rows(db, since=since, user_id=user_id)
+        rows = _eaten_rows(db, since=since, index=index, user_id=user_id)
 
     def weight(row: _Row) -> float:
         days = max((now - row.eaten_at).total_seconds() / 86400, 0.0)
@@ -309,11 +327,14 @@ def global_popularity(
     meal_type: str | None,
     *,
     now: datetime,
+    index: GroupIndex | None = None,
     window_days: int = POPULARITY_WINDOW_DAYS,
 ) -> list[FoodStat]:
     """전체 사용자의 그 끼니 기록 건수 순 (내부 테스트 계정 제외). 콜드스타트·탐색용."""
+    index = index or load_group_index(db)
     rows = _eaten_rows(
-        db, since=now - timedelta(days=window_days), meal_type=meal_type, exclude_test_users=True
+        db, since=now - timedelta(days=window_days), index=index, meal_type=meal_type,
+        exclude_test_users=True,
     )
     return _aggregate(rows, lambda _row: 1.0)
 
@@ -323,6 +344,7 @@ def recency_penalties(
     user_id: int,
     *,
     now: datetime,
+    index: GroupIndex | None = None,
     window_days: int = FREQ_WINDOW_DAYS,
     default_interval_days: float = DEFAULT_REEAT_INTERVAL_DAYS,
 ) -> dict[str, float]:
@@ -332,10 +354,11 @@ def recency_penalties(
     재섭취 주기 = 3번 이상 먹은 음식이면 먹은 날들 사이의 평균 간격, 아니면 기본 5일.
     주기를 넘긴 음식은 0 — 다시 먹을 때가 됐다.
     """
-    rows = _eaten_rows(db, since=now - timedelta(days=window_days), user_id=user_id)
+    index = index or load_group_index(db)
+    rows = _eaten_rows(db, since=now - timedelta(days=window_days), index=index, user_id=user_id)
     eaten_days: dict[str, set] = defaultdict(set)
     for row in rows:
-        key = group_key(row.name)
+        key = _key_of(row)
         if key:
             eaten_days[key].add(row.eaten_at.date())
 
@@ -352,6 +375,59 @@ def recency_penalties(
         if penalty > 0:
             penalties[key] = round(penalty, 3)
     return penalties
+
+
+@dataclass
+class CompanionStat:
+    """메인 메뉴 키 → 사용자가 함께 먹는 동반(밥) 판단."""
+
+    companion_key: str | None  # 가장 자주 함께 기록된 companion 군. None = 동반 없이 먹음
+    share: float  # 그 메뉴 기록 중 동반이 함께 있던 비율
+    meals: int  # 그 메뉴를 먹은 기록 수
+
+
+def companion_stats(
+    db: Session,
+    user_id: int,
+    *,
+    now: datetime,
+    index: GroupIndex | None = None,
+    window_days: int = FREQ_WINDOW_DAYS,
+) -> dict[str, CompanionStat]:
+    """개인 동시기록 — 같은 끼니 기록 안에 메인(meal)과 동반(companion) 군이 함께 있었나.
+
+    김치찌개 기록 5번 중 4번에 쌀밥이 있었으면 share 0.8 → 기본 동반 대신 이걸 쓴다.
+    5번 중 1번뿐이면 share 0.2 → "밥 없이 먹는 사람" → 동반을 붙이지 않는다.
+    군이 없는 DB 에서는 빈 dict (엔진은 기본 동반도 없으므로 동반 표기가 꺼진다).
+    """
+    index = index or load_group_index(db)
+    if not index.enabled:
+        return {}
+    rows = _eaten_rows(db, since=now - timedelta(days=window_days), index=index, user_id=user_id)
+    by_record: dict[int, list[_Row]] = defaultdict(list)
+    for row in rows:
+        by_record[row.record_id].append(row)
+
+    meals_of: Counter = Counter()
+    with_companion: Counter = Counter()
+    companion_votes: dict[str, Counter] = defaultdict(Counter)
+    for items in by_record.values():
+        mains = {_key_of(r) for r in items if r.group and r.group.role == ROLE_MEAL}
+        comps = {_key_of(r) for r in items if r.group and r.group.role == ROLE_COMPANION}
+        for m in mains:
+            meals_of[m] += 1
+            if comps:
+                with_companion[m] += 1
+                for c in comps:
+                    companion_votes[m][c] += 1
+
+    out: dict[str, CompanionStat] = {}
+    for m, n in meals_of.items():
+        share = with_companion[m] / n
+        best = companion_votes[m].most_common(1)[0][0] if companion_votes[m] else None
+        out[m] = CompanionStat(companion_key=best if share >= COMPANION_MIN_SHARE else None,
+                               share=round(share, 2), meals=n)
+    return out
 
 
 @dataclass
@@ -388,7 +464,7 @@ def _meal_ratios(db: Session, user_id: int, *, now: datetime) -> tuple[dict[str,
     for mt in MEAL_TYPES:
         personal = by_type.get(mt, 0.0) / total
         mixed = PERSONAL_RATIO_WEIGHT * personal + (1 - PERSONAL_RATIO_WEIGHT) * DEFAULT_MEAL_RATIOS[mt]
-        blended[mt] = max(mixed, MIN_RATIO_BY_MEAL[mt])
+        blended[mt] = min(max(mixed, MIN_RATIO_BY_MEAL[mt]), MAX_RATIO_BY_MEAL[mt])
     return blended, "personal"
 
 

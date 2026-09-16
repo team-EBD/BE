@@ -11,8 +11,9 @@ import argparse
 from datetime import datetime
 
 from app.core.database import SessionLocal
-from app.core.timeutil import KST, to_utc
+from app.core.timeutil import KST, now_utc, to_utc
 from app.services.recommend import recommend
+from app.services.recommend.feedback import acceptance_rates
 from app.services.recommend.ranking import RankContext, score
 from app.services.recommend.signals import recency_penalties
 
@@ -25,7 +26,7 @@ def main() -> None:
     parser.add_argument("--now", default=None, help="KST, 예: 2026-08-28T18:30 (생략 시 현재)")
     args = parser.parse_args()
 
-    now = to_utc(datetime.fromisoformat(args.now).replace(tzinfo=KST)) if args.now else None
+    now = to_utc(datetime.fromisoformat(args.now).replace(tzinfo=KST)) if args.now else now_utc()
 
     with SessionLocal() as db:
         result = recommend(db, args.user, meal_type=args.meal, mood=args.mood, now=now)
@@ -36,18 +37,20 @@ def main() -> None:
             f" → 예산 {b.meal_budget} (mood={b.mood}) · 단백질 부족 {b.protein_gap:+.0f}g"
         )
         print(f"[anchor] {', '.join(result.anchors) or '(없음 — 유사 생성기 미동작)'}")
+        print(f"[음식군] {'사용 (군 키·계열 유사·동반 합산)' if result.groups_enabled else '없음 (이름 키 폴백)'}")
 
-        ctx = RankContext(
+        ctx = RankContext(  # 엔진과 같은 문맥을 다시 만들어 후보 전체의 점수를 보여준다
             budget=b.meal_budget,
             protein_gap=b.protein_gap,
-            recency=recency_penalties(db, args.user, now=now) if now else {},
+            recency=recency_penalties(db, args.user, now=now),
+            acceptance={**acceptance_rates(db, now=now), **acceptance_rates(db, args.user, now=now)},
         )
         max_freq = max((c.freq for c in result.candidates), default=0.0)
         picked = {i.key for i in result.items}
-        print(f"\n[후보 {len(result.candidates)}개]  ★ = 최종 선택  (recent = 질림 감점)")
+        print(f"\n[후보 {len(result.candidates)}개]  ★ = 최종 선택  (recent = 질림 감점, 합산 = 메인+동반 kcal)")
         print(
-            f"{'':2}{'출처':<9}{'이름':<18}{'kcal':>6}{'단백':>6}{'freq':>6}{'fit':>6}"
-            f"{'prot':>6}{'recent':>7}{'점수':>7}"
+            f"{'':2}{'출처':<9}{'이름':<18}{'계열':<12}{'동반':<8}{'kcal':>6}{'합산':>6}{'단백':>6}"
+            f"{'freq':>6}{'fit':>6}{'prot':>6}{'accept':>7}{'recent':>7}{'점수':>7}"
         )
         rows = sorted(
             (score(c, ctx, max_freq) for c in result.candidates), key=lambda r: -r.score
@@ -56,14 +59,18 @@ def main() -> None:
             c = r.candidate
             mark = "★ " if c.key in picked else "  "
             print(
-                f"{mark}{c.source:<9}{c.name[:16]:<18}{c.calories:>6.0f}{c.protein:>6.1f}"
-                f"{r.parts['freq']:>6.2f}{r.parts['fit']:>6.2f}{r.parts['protein']:>6.2f}"
+                f"{mark}{c.source:<9}{c.name[:16]:<18}{(c.family or '-')[:10]:<12}"
+                f"{(c.companion_name or '-')[:6]:<8}{c.calories:>6.0f}{c.total_calories:>6.0f}"
+                f"{c.protein:>6.1f}{r.parts['freq']:>6.2f}{r.parts['fit']:>6.2f}"
+                f"{r.parts['protein']:>6.2f}{r.parts.get('accept', 0.0):>7.2f}"
                 f"{r.parts['recent']:>7.2f}{r.score:>7.3f}"
             )
 
         print("\n[추천]")
         for i, item in enumerate(result.items, 1):
-            print(f"{i}. {item.name} ({item.calories}kcal · {item.budget_label} · {item.source})")
+            with_companion = f" + {item.companion_name} {item.companion_kcal} = {item.total_calories}" if item.companion_name else ""
+            group = f" · 군 {item.group_name}/{item.family}" if item.group_name else ""
+            print(f"{i}. {item.name} ({item.calories}kcal{with_companion} · {item.budget_label} · {item.source}{group})")
             print(f"   {item.reason}")
 
 

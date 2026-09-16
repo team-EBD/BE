@@ -21,8 +21,15 @@ from app.models import (
     MealImage,
     MealItem,
     MealRecord,
+    NutritionItem,
     User,
 )
+from app.schemas.meal import MealCreateRequest, MealItemInput, MealUpdateRequest
+from app.services.game_profile import ensure_game_profile
+from app.services.game_rewards import apply_meal_rewards
+from app.services.recommend.feedback import mark_eaten as mark_recommendation_eaten
+from app.services.recommend.groups import load_group_index
+from app.services.summary import recompute_daily_summary
 
 logger = logging.getLogger(__name__)
 
@@ -30,13 +37,6 @@ logger = logging.getLogger(__name__)
 # 상세 응답의 correction_type(칩 라벨)에는 섞이지 않는다.
 SERVING_ADJUSTED = "serving_adjusted"
 _SERVING_EPS = 1e-6
-from app.schemas.meal import MealCreateRequest, MealItemInput, MealUpdateRequest
-from app.services.game_profile import ensure_game_profile
-from app.services.game_rewards import apply_meal_rewards
-from app.services.recommend.feedback import mark_eaten as mark_recommendation_eaten
-from app.services.summary import recompute_daily_summary
-
-logger = logging.getLogger(__name__)
 
 
 def get_owned_meal(db: Session, user: User, meal_id: int) -> MealRecord:
@@ -118,15 +118,41 @@ def _totals(items: list[MealItemInput]) -> dict[str, float]:
     }
 
 
+def _resolve_food_groups(db: Session, items: list[MealItemInput]) -> list[int | None]:
+    """항목별 음식군 id — 매칭 상품의 군 → 이름 alias → 군명 정확일치. 못 찾으면 None(미분류).
+
+    docs/음식군-DB-계약.md §3 I. 어미 추정은 하지 않는다 (오탐이 개인 빈도를 오염시킨다).
+    군 테이블이 비어 있으면 전부 None — 군 도입 전과 동일하게 저장된다.
+    """
+    index = load_group_index(db)
+    if not index.enabled:
+        return [None] * len(items)
+    ids = [i.nutrition_item_id for i in items if i.nutrition_item_id is not None]
+    item_groups: dict[int, int | None] = {}
+    if ids:
+        item_groups = dict(
+            db.execute(
+                select(NutritionItem.id, NutritionItem.food_group_id).where(NutritionItem.id.in_(ids))
+            ).all()
+        )
+    resolved: list[int | None] = []
+    for item in items:
+        group = index.resolve(item.food_name, item_groups.get(item.nutrition_item_id))
+        resolved.append(group.id if group else None)
+    return resolved
+
+
 def _insert_items(
     db: Session, meal: MealRecord, items: list[MealItemInput]
 ) -> list[MealItem]:
-    """meal_items 생성 + 보정이 있으면 correction_logs(before/after) 기록."""
+    """meal_items 생성 + 음식군 스냅샷 + 보정이 있으면 correction_logs(before/after) 기록."""
     created: list[MealItem] = []
-    for item in items:
+    group_ids = _resolve_food_groups(db, items)
+    for item, group_id in zip(items, group_ids):
         row = MealItem(
             meal_record_id=meal.id,
             nutrition_item_id=item.nutrition_item_id,
+            food_group_id=group_id,
             food_name=item.food_name,
             serving_amount=item.serving_amount,
             calories=item.calories,
@@ -197,13 +223,14 @@ def create_meal(
     )
     db.add(meal)
     db.flush()
-    _insert_items(db, meal, body.items)
+    created_items = _insert_items(db, meal, body.items)
     _mark_selected_candidates(db, user, body.items)
 
     # 최근 추천과 겹치면 "추천을 실제로 먹었다"고 표시한다 (실패해도 저장은 진행)
     if not body.is_skipped:
         mark_recommendation_eaten(
-            db, user.id, meal.id, [item.food_name for item in body.items]
+            db, user.id, meal.id, [item.food_name for item in body.items],
+            food_group_ids=[row.food_group_id for row in created_items],
         )
 
     recompute_daily_summary(db, user.id, kst_date_of(eaten_at))

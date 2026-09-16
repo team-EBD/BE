@@ -58,7 +58,9 @@ def fit_score(calories: float, budget: int) -> float:
 
 def score(cand: Candidate, ctx: RankContext, max_freq: float) -> Ranked:
     freq = cand.freq / max_freq if max_freq > 0 else 0.0
-    fit = fit_score(cand.calories, ctx.budget)
+    # 예산 적합은 메인 + 동반(밥) 합산으로 — 김치찌개 320 단독은 예산 630 에 '가벼움'이지만
+    # 실제 식사(찌개+밥 620)는 '적정'이다 (docs/음식군-DB-계약.md §8)
+    fit = fit_score(cand.total_calories, ctx.budget)
     protein = (
         min(cand.protein / ctx.protein_gap, 1.0) if ctx.protein_gap > 0 and cand.protein > 0 else 0.0
     )

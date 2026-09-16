@@ -1,15 +1,22 @@
-"""추천 행동 로그 — 노출·채택·섭취 기록과 채택률 산출 검증.
+"""추천 행동 로그 — recommendation_items 행으로 노출·채택·섭취를 기록하고 채택률을 산출한다.
 
-스키마 변경 없이 recommendation_logs 의 JSON 컬럼을 쓰므로, 그 계약(키 이름·시각 형식)이
-여기서 고정된다. 전용 컬럼이 생기면 이 테스트가 이관 기준이 된다.
+docs/음식군-DB-계약.md §2.5 · §3 J. 군이 없는 DB(테스트 기본)에서는 이름 키로, 군이 있으면 군 키로 맞춘다.
 """
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import select
 
-from app.models import MealItem, MealRecord, RecommendationLog, User
+from app.models import (
+    FoodGroup,
+    MealItem,
+    MealRecord,
+    RecommendationItem,
+    RecommendationLog,
+    User,
+)
 from app.services.recommend import recommend
 from app.services.recommend.feedback import (
     acceptance_rates,
@@ -67,7 +74,13 @@ def _expose(db, user_id, now=NOW):
     return log, result
 
 
-def test_log_exposure_records_context_and_items(db_factory):
+def _rows(db, log_id):
+    return db.scalars(
+        select(RecommendationItem).where(RecommendationItem.log_id == log_id).order_by(RecommendationItem.rank)
+    ).all()
+
+
+def test_log_exposure_writes_context_and_item_rows(db_factory):
     db = db_factory()
     u = _user(db, "u1", email="u@gmail.com")
     _history(db, u, ("김치찌개", 320, 18, 22, 16), [1, 3, 5])
@@ -75,16 +88,15 @@ def test_log_exposure_records_context_and_items(db_factory):
 
     log, result = _expose(db, u.id)
     assert log.user_id == u.id
-    assert log.meal_context["meal_type"] == "dinner"
-    assert log.meal_context["engine"] == "v2"
+    assert log.meal_context["meal_type"] == "dinner" and log.meal_context["engine"] == "v2"
     assert log.meal_context["meal_budget"] == result.budget.meal_budget
-    assert len(log.recommended_items) == len(result.items)
+    assert [i["name"] for i in log.recommended_items] == [i.name for i in result.items]
 
-    item = log.recommended_items[0]
-    assert item["key"] == result.items[0].key
-    assert item["source"] in ("personal", "popular", "similar")
-    assert item["accepted_at"] is None and item["eaten_at"] is None
-    assert "reason" in item and "score" in item
+    rows = _rows(db, log.id)
+    assert [r.rank for r in rows] == list(range(1, len(result.items) + 1))
+    assert [r.name for r in rows] == [i.name for i in result.items]
+    assert all(r.source in ("personal", "popular", "similar") for r in rows)
+    assert all(r.accepted_at is None and r.eaten_at is None for r in rows)
 
 
 def test_mark_accepted_is_idempotent_and_owner_scoped(db_factory):
@@ -93,17 +105,15 @@ def test_mark_accepted_is_idempotent_and_owner_scoped(db_factory):
     other = _user(db, "u2", email="o@gmail.com")
     _history(db, u, ("김치찌개", 320, 18, 22, 16), [1, 3, 5])
     log, result = _expose(db, u.id)
-    key = result.items[0].key
+    name = result.items[0].name
 
-    assert mark_accepted(db, u.id, log.id, key, now=NOW, commit=False) is True
-    first = log.recommended_items[0]["accepted_at"]
+    assert mark_accepted(db, u.id, log.id, name, now=NOW, commit=False) is True
+    first = _rows(db, log.id)[0].accepted_at
     assert first is not None
+    assert mark_accepted(db, u.id, log.id, name, now=NOW + timedelta(minutes=5), commit=False) is True
+    assert _rows(db, log.id)[0].accepted_at == first  # 처음 시각 유지
 
-    later = NOW + timedelta(minutes=5)
-    assert mark_accepted(db, u.id, log.id, key, now=later, commit=False) is True
-    assert log.recommended_items[0]["accepted_at"] == first  # 처음 시각 유지
-
-    assert mark_accepted(db, other.id, log.id, key, commit=False) is False  # 남의 로그
+    assert mark_accepted(db, other.id, log.id, name, commit=False) is False  # 남의 로그
     assert mark_accepted(db, u.id, log.id, "없는음식", commit=False) is False
 
 
@@ -112,29 +122,45 @@ def test_mark_eaten_matches_within_window_only(db_factory):
     u = _user(db, "u1", email="u@gmail.com")
     _history(db, u, ("김치찌개", 320, 18, 22, 16), [1, 3, 5])
     log, result = _expose(db, u.id)
-    key = result.items[0].key
     name = result.items[0].name
+    food = (name, 320, 18, 22, 16)
 
-    # 3시간 뒤 그 음식을 기록 → 섭취 표시
-    assert mark_eaten(db, u.id, 999, [name], now=NOW + timedelta(hours=3)) == 1
-    marked = next(i for i in log.recommended_items if i["key"] == key)
-    assert marked["eaten_at"] is not None and marked["eaten_meal_record_id"] == 999
-    # 나머지 항목은 그대로
-    assert all(i["eaten_at"] is None for i in log.recommended_items if i["key"] != key)
-
+    r1 = _meal(db, u, "dinner", NOW + timedelta(hours=3), [food])
+    assert mark_eaten(db, u.id, r1.id, [name], now=NOW + timedelta(hours=3)) == 1
+    rows = _rows(db, log.id)
+    assert rows[0].eaten_at is not None and rows[0].eaten_meal_record_id == r1.id
+    assert all(r.eaten_at is None for r in rows[1:])
     # 이미 표시된 항목은 다시 세지 않는다
-    assert mark_eaten(db, u.id, 1000, [name], now=NOW + timedelta(hours=3)) == 0
+    r2 = _meal(db, u, "dinner", NOW + timedelta(hours=3), [food])
+    assert mark_eaten(db, u.id, r2.id, [name], now=NOW + timedelta(hours=3)) == 0
+    # 무관한 음식은 표시하지 않는다
+    r3 = _meal(db, u, "dinner", NOW + timedelta(hours=1), [("전혀다른음식", 100, 1, 1, 1)])
+    assert mark_eaten(db, u.id, r3.id, ["전혀다른음식"], now=NOW + timedelta(hours=1)) == 0
+    # 창(4시간) 밖의 기록은 표시하지 않는다
+    log2, result2 = _expose(db, u.id, NOW + timedelta(days=1))
+    late = NOW + timedelta(days=1, hours=5)
+    r4 = _meal(db, u, "dinner", late, [(result2.items[0].name, 320, 18, 22, 16)])
+    assert mark_eaten(db, u.id, r4.id, [result2.items[0].name], now=late) == 0
+    assert all(r.eaten_at is None for r in _rows(db, log2.id))
 
 
-def test_mark_eaten_ignores_old_and_unrelated(db_factory):
+def test_mark_eaten_matches_by_group_id_when_groups_exist(db_factory):
+    """군이 있으면 이름이 달라도 같은 군이면 섭취로 본다 (햄버거 추천 → '빅소불고기버거' 기록)."""
     db = db_factory()
+    g = FoodGroup(name="햄버거", family="버거·피자·샌드위치", role="meal", calories=480, carbs=40, protein=25, fat=22)
+    db.add(g)
+    db.flush()
     u = _user(db, "u1", email="u@gmail.com")
-    _history(db, u, ("김치찌개", 320, 18, 22, 16), [1, 3, 5])
-    log, result = _expose(db, u.id)
+    log = RecommendationLog(user_id=u.id, meal_context={"engine": "v2"}, recommended_items=[])
+    db.add(log)
+    db.flush()
+    log.created_at = NOW
+    db.add(RecommendationItem(log_id=log.id, food_group_id=g.id, name="햄버거", source="popular", rank=1))
+    db.flush()
 
-    assert mark_eaten(db, u.id, 1, ["전혀다른음식"], now=NOW + timedelta(hours=1)) == 0
-    assert mark_eaten(db, u.id, 2, [result.items[0].name], now=NOW + timedelta(hours=5)) == 0
-    assert all(i["eaten_at"] is None for i in log.recommended_items)
+    record = _meal(db, u, "lunch", NOW + timedelta(hours=1), [("빅소불고기버거", 500, 42, 26, 24)])
+    assert mark_eaten(db, u.id, record.id, ["빅소불고기버거"], food_group_ids=[g.id], now=NOW + timedelta(hours=1)) == 1
+    assert _rows(db, log.id)[0].eaten_meal_record_id == record.id
 
 
 def test_acceptance_rates_need_minimum_exposures(db_factory):
@@ -143,19 +169,16 @@ def test_acceptance_rates_need_minimum_exposures(db_factory):
     _history(db, u, ("김치찌개", 320, 18, 22, 16), [1, 3, 5])
 
     logs = [_expose(db, u.id, NOW - timedelta(days=d))[0] for d in (1, 2, 3)]
-    key = logs[0].recommended_items[0]["key"]
-    # 3회 노출 중 2회 섭취
-    for log in logs[:2]:
-        log.recommended_items[0]["eaten_at"] = NOW.isoformat()
-        log.recommended_items = list(log.recommended_items)
+    key_rows = [_rows(db, log.id)[0] for log in logs]
+    for row in key_rows[:2]:  # 3회 노출 중 2회 섭취
+        row.eaten_at = NOW
     db.flush()
 
     rates = acceptance_rates(db, u.id, now=NOW)
-    assert rates[key] == pytest.approx(2 / 3, abs=0.001)  # 소수 3자리 반올림
-    # 노출이 기준에 못 미치는 키는 빠진다 → 랭킹이 중립값 0.5 를 쓴다
+    from app.services.matching import normalize_name
+    assert rates[normalize_name(key_rows[0].name)] == pytest.approx(2 / 3, abs=0.001)
     assert acceptance_rates(db, u.id, now=NOW, min_exposures=4) == {}
-    # 구간 밖(60일 전 이전) 로그는 세지 않는다
-    assert acceptance_rates(db, u.id, now=NOW + timedelta(days=90)) == {}
+    assert acceptance_rates(db, u.id, now=NOW + timedelta(days=90)) == {}  # 구간 밖
 
 
 def test_acceptance_rates_scope_by_user(db_factory):
@@ -166,13 +189,11 @@ def test_acceptance_rates_scope_by_user(db_factory):
         _history(db, u, ("김치찌개", 320, 18, 22, 16), [1, 3, 5])
     for _ in range(3):
         log, _r = _expose(db, a.id)
-        log.recommended_items[0]["eaten_at"] = NOW.isoformat()
-        log.recommended_items = list(log.recommended_items)
+        _rows(db, log.id)[0].accepted_at = NOW
     for _ in range(3):
         _expose(db, b.id)
     db.flush()
-
-    assert acceptance_rates(db, a.id, now=NOW)  # a 는 먹은 이력이 있다
+    assert any(rate > 0 for rate in acceptance_rates(db, a.id, now=NOW).values())
     assert all(rate == 0.0 for rate in acceptance_rates(db, b.id, now=NOW).values())
 
 
@@ -180,51 +201,45 @@ def test_source_stats_counts_by_generator(db_factory):
     db = db_factory()
     u = _user(db, "u1", email="u@gmail.com")
     _history(db, u, ("김치찌개", 320, 18, 22, 16), [1, 3, 5])
-    log, _result = _expose(db, u.id)
-    log.recommended_items[0]["accepted_at"] = NOW.isoformat()
-    log.recommended_items = list(log.recommended_items)
+    log, result = _expose(db, u.id)
+    _rows(db, log.id)[0].accepted_at = NOW
     db.flush()
-
     stats = source_stats(db, now=NOW)
-    assert sum(s["shown"] for s in stats.values()) == len(log.recommended_items)
+    assert sum(s["shown"] for s in stats.values()) == len(result.items)
     assert sum(s["accepted"] for s in stats.values()) == 1
 
 
-def test_meal_save_marks_recommendation_as_eaten(client, auth_headers, db_factory):
-    """기록 저장 API 가 최근 추천에 섭취 표시를 남긴다 (create_meal 훅)."""
+def test_meal_save_fills_group_and_marks_recommendation_eaten(client, auth_headers, db_factory):
+    """기록 저장 API 가 (1) meal_items.food_group_id 를 채우고 (2) 최근 추천에 섭취 표시를 남긴다."""
+    db = db_factory()
+    stew = FoodGroup(name="김치찌개", family="국·탕·찌개류", role="meal", calories=320, carbs=18, protein=22, fat=16)
+    db.add(stew)
+    db.commit()
+
     res = client.post("/v1/foods/search", json={"query": "김치찌개"}, headers=auth_headers)
     item = res.json()["items"][0]
-
-    db = db_factory()
-    user_id = db.scalar(User.__table__.select().with_only_columns(User.id))
-    log = RecommendationLog(
-        user_id=user_id,
-        meal_context={"meal_type": "dinner", "engine": "v2"},
-        recommended_items=[
-            {"key": "김치찌개", "name": "김치찌개", "source": "personal",
-             "accepted_at": None, "eaten_at": None, "eaten_meal_record_id": None}
-        ],
-    )
+    user_id = db.scalar(select(User.id))
+    log = RecommendationLog(user_id=user_id, meal_context={"meal_type": "dinner", "engine": "v2"}, recommended_items=[])
     db.add(log)
+    db.flush()
+    db.add(RecommendationItem(log_id=log.id, food_group_id=stew.id, name="김치찌개", source="personal", rank=1))
     db.commit()
-    log_id = log.id
+    log_id, stew_id = log.id, stew.id
 
     payload = {
         "meal_type": "dinner",
         "eaten_at": "2026-08-28T19:00:00+09:00",
-        "items": [
-            {
-                "nutrition_item_id": item["nutrition_item_id"],
-                "food_name": item["name"],
-                "serving_amount": 1,
-                "calories": 320, "carbs": 18, "protein": 22, "fat": 16,
-            }
-        ],
+        "items": [{
+            "nutrition_item_id": item["nutrition_item_id"], "food_name": item["name"],
+            "serving_amount": 1, "calories": 320, "carbs": 18, "protein": 22, "fat": 16,
+        }],
     }
     created = client.post("/v1/meals", json=payload, headers=auth_headers)
     assert created.status_code == 201, created.text
+    meal_id = created.json()["meal_id"]
 
     db.expire_all()
-    saved = db.get(RecommendationLog, log_id)
-    assert saved.recommended_items[0]["eaten_at"] is not None
-    assert saved.recommended_items[0]["eaten_meal_record_id"] == created.json()["meal_id"]
+    saved_item = db.scalar(select(MealItem).where(MealItem.meal_record_id == meal_id))
+    assert saved_item.food_group_id == stew_id  # 이름 '김치찌개' → 군명 정확일치
+    row = db.scalar(select(RecommendationItem).where(RecommendationItem.log_id == log_id))
+    assert row.eaten_at is not None and row.eaten_meal_record_id == meal_id

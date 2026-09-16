@@ -31,6 +31,7 @@ from app.core.database import SessionLocal
 from app.models import FoodGroup, FoodGroupAlias, NutritionItem
 from scripts.food_group_taxonomy import (
     DEFAULT_COMPANION,
+    EXTRA_GROUPS,
     LOW_KCAL_MEAL_TO_EXCLUDE,
     ROLE_MEAL,
     SYNONYM_ALIASES,
@@ -111,6 +112,17 @@ def upsert_groups(db: Session, tax: Taxonomy) -> dict[str, FoodGroup]:
                 g.role = role
         g.member_count = tax.group_count[name]
         g.source_names = "|".join(sorted(tax.group_sources[name]))
+        groups[name] = g
+    # 식약처에 없는 우리 군 — 규칙표(EXTRA_GROUPS)가 정본. 대표값도 여기서 확정한다
+    for name, spec in EXTRA_GROUPS.items():
+        g = groups.get(name) or existing.get(name)
+        if g is None:
+            g = FoodGroup(name=name[:50])
+            db.add(g)
+        g.family, g.role, g.note = spec["family"], spec["role"], spec["note"]
+        g.calories, g.carbs, g.protein, g.fat = spec["calories"], spec["carbs"], spec["protein"], spec["fat"]
+        g.base_amount, g.base_unit = spec["base_amount"], spec["base_unit"]
+        g.source_names = g.source_names or "manual"
         groups[name] = g
     db.flush()
     # 기본 동반 — 쌀밥 군이 있어야 한다
@@ -261,19 +273,45 @@ def _trimmed_mean(values: list[float]) -> float:
     return statistics.fmean(s)
 
 
+def _member_tier(source: str | None, external_id: str | None) -> int:
+    """대표값 재료 우선순위 — 시드·총칭(0) → 음식편 큐레이션(1) → 가공식품 동명 대표(2) → 그 외(3).
+
+    가공식품 동명 대표(rep:)는 즉석 파우치라 1인분이 작다(즉석 김치찌개 150g ≈ 200kcal).
+    음식편(식당·가정식 1인분)과 섞어 평균하면 김치찌개 군이 207kcal 로 내려갔다(로컬 실측).
+    같은 군에 여러 계층이 있으면 **가장 앞 계층만** 쓴다.
+    """
+    ext = external_id or ""
+    if source == "seed" or ext.startswith("gen:"):
+        return 0
+    if ext.startswith("D"):
+        return 1
+    if ext.startswith("rep:"):
+        return 2
+    return 3
+
+
 def fill_group_macros(db: Session, groups: dict[str, FoodGroup]) -> Counter:
     stats: Counter = Counter()
     rows = db.execute(
         select(NutritionItem.food_group_id, NutritionItem.calories, NutritionItem.carbs,
                NutritionItem.protein, NutritionItem.fat, NutritionItem.base_amount,
-               NutritionItem.base_unit)
+               NutritionItem.base_unit, NutritionItem.source, NutritionItem.external_id)
         .where(NutritionItem.serving_basis == "per_serving", NutritionItem.food_group_id.isnot(None))
     ).all()
     by_group: dict[int, list] = defaultdict(list)
     for r in rows:
         by_group[r[0]].append(r)
     for g in groups.values():
-        members = by_group.get(g.id, [])
+        all_members = by_group.get(g.id, [])
+        if all_members:
+            best_tier = min(_member_tier(m[7], m[8]) for m in all_members)
+            members = [m for m in all_members if _member_tier(m[7], m[8]) == best_tier]
+        else:
+            members = []
+        if g.note and g.note.startswith("manual:"):  # EXTRA_GROUPS — 대표값은 규칙표가 정본
+            g.member_count = len(all_members)
+            stats["manual_kept"] += 1
+            continue
         if not members:
             g.calories = g.carbs = g.protein = g.fat = g.base_amount = None
             g.base_unit = None
@@ -285,6 +323,7 @@ def fill_group_macros(db: Session, groups: dict[str, FoodGroup]) -> Counter:
         g.fat = round(_trimmed_mean([float(m[4]) for m in members]), 2)
         g.base_amount = round(statistics.median([float(m[5]) for m in members]), 2)
         g.base_unit = Counter(m[6] for m in members).most_common(1)[0][0]
+        g.member_count = len(all_members)
         stats["filled"] += 1
         # 대표값이 반찬 수준이면 meal 이 아니다 (게조림 10kcal · 무국물 12kcal). 수동 조정(note) 행은 유지
         if g.role == ROLE_MEAL and g.calories < LOW_KCAL_MEAL_TO_EXCLUDE and not g.note:
