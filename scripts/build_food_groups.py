@@ -32,6 +32,7 @@ from app.models import FoodGroup, FoodGroupAlias, NutritionItem
 from scripts.food_group_taxonomy import (
     DEFAULT_COMPANION,
     EXTRA_GROUPS,
+    GROUP_ROLE_OVERRIDE,
     LOW_KCAL_MEAL_TO_EXCLUDE,
     ROLE_MEAL,
     SYNONYM_ALIASES,
@@ -106,10 +107,11 @@ def upsert_groups(db: Session, tax: Taxonomy) -> dict[str, FoodGroup]:
             g = FoodGroup(name=name[:50], family=family, role=role)
             db.add(g)
         else:
-            # 규칙이 바뀌었을 때만 갱신. note 가 있는 행(수동 조정)은 role 을 건드리지 않는다
+            # 규칙으로 다시 유도한다. 'manual:'(사람 조정) 만 남기고 'auto:'(저칼로리 강등) 는
+            # 대표값이 바뀌었을 수 있으니 매번 초기화 → G 단계가 필요하면 다시 붙인다
             g.family = family
-            if not g.note:
-                g.role = role
+            if not g.note or g.note.startswith("auto:"):
+                g.role, g.note = role, None
         g.member_count = tax.group_count[name]
         g.source_names = "|".join(sorted(tax.group_sources[name]))
         groups[name] = g
@@ -326,7 +328,10 @@ def fill_group_macros(db: Session, groups: dict[str, FoodGroup]) -> Counter:
         g.member_count = len(all_members)
         stats["filled"] += 1
         # 대표값이 반찬 수준이면 meal 이 아니다 (게조림 10kcal · 무국물 12kcal). 수동 조정(note) 행은 유지
-        if g.role == ROLE_MEAL and g.calories < LOW_KCAL_MEAL_TO_EXCLUDE and not g.note:
+        if (
+            g.role == ROLE_MEAL and g.calories < LOW_KCAL_MEAL_TO_EXCLUDE
+            and not g.note and g.name not in GROUP_ROLE_OVERRIDE  # 사람이 meal 로 못 박은 군은 유지
+        ):
             g.role = "exclude"
             g.note = f"auto: 대표값 {g.calories:.0f}kcal < {LOW_KCAL_MEAL_TO_EXCLUDE:.0f} (반찬)"
             stats["low_kcal_to_exclude"] += 1
