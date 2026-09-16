@@ -14,13 +14,14 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     Numeric,
+    SmallInteger,
     String,
     Text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
-from app.models._common import created_at_column, pk_column
+from app.models._common import TZDateTime, created_at_column, pk_column
 
 
 class AiCallLog(Base):
@@ -86,4 +87,34 @@ class RecommendationLog(Base):
     recommendation_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     recommended_items: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # 3 menus+reason
     caution_text: Mapped[str | None] = mapped_column(Text, nullable=True)  # FR-REC-003
+    created_at: Mapped[datetime] = created_at_column()
+
+
+class RecommendationItem(Base):
+    """추천 항목별 행동 로그 (docs/음식군-DB-계약.md §2.5).
+
+    recommendation_logs 한 행(한 번의 추천)에 카드 3장이 붙는다. 노출은 행 생성,
+    채택은 accepted_at(카드 탭), 거절은 rejected_at, 섭취는 eaten_at(4시간 내 같은 군 기록).
+    recommended_items JSON 에 임시로 담던 것을 행으로 옮겨 GROUP BY source 가 되게 한다.
+    """
+
+    __tablename__ = "recommendation_items"
+
+    id: Mapped[int] = pk_column()
+    log_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("recommendation_logs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    food_group_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("food_groups.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)  # 카드에 보인 이름
+    source: Mapped[str] = mapped_column(String(12), nullable=False)  # personal | popular | similar
+    rank: Mapped[int] = mapped_column(SmallInteger, nullable=False)  # 1~3
+    score: Mapped[float | None] = mapped_column(Numeric(6, 4), nullable=True)
+    accepted_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    rejected_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    eaten_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    eaten_meal_record_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("meal_records.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = created_at_column()

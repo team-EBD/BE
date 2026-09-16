@@ -88,6 +88,11 @@ class MealItem(Base):
     # AI 가 준 사진 속 위치 스냅샷 {x, y, width, height} (0.0~1.0). 직접 검색으로
     # 담은 음식이나 구버전 기록은 NULL — 확대 보기에서 오버레이만 생략된다.
     bbox: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # 음식군 스냅샷 (docs/음식군-DB-계약.md §3 H·I). 저장 시 nutrition_item → 군, 없으면 이름 → alias.
+    # NULL = 미분류 → 추천 개인 빈도 집계는 이름 키로 폴백한다.
+    food_group_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("food_groups.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = created_at_column()
 
 
