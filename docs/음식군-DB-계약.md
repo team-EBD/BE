@@ -255,6 +255,25 @@ ORDER BY g.role, g.calories;
 | `feedback.py` | `recommendation_logs.recommended_items` JSON | `recommendation_items` 행 |
 | 카드 표시명 | 후보 이름 | 사용자 이력의 상품명 있으면 그것, 없으면 `food_groups.name` |
 
+위 8곳은 2026-09-16 브랜치에 전부 반영됨 (`app/services/recommend/groups.py` 가 색인, 군이 없는 DB 에서는
+이름 키로 폴백해 같은 코드가 돈다). 추가로:
+
+- 기록 저장(`services/meals._insert_items`)이 `meal_items.food_group_id` 를 채운다 — 상품의 군 → alias → 군명
+  정확일치, 어미 추정 없음. 저장 직후 최근 4시간 노출 항목에 `eaten_at` 을 남긴다 (`feedback.mark_eaten`).
+- 동반 문구: 개인 동시기록에서 온 동반은 "함께 드시던 쌀밥", 군 기본 동반은 "보통 함께 먹는 쌀밥".
+- 식약처에 없는 우리 군은 `food_group_taxonomy.EXTRA_GROUPS` 가 정본(대표값 포함, `note='manual:'`).
+  현재 1개: 닭가슴살 (시드가 가공식품 '양념육'에 묻혀 290kcal 로 잡히던 것).
+
+### 8.1 API
+
+| 지점 | 내용 |
+|---|---|
+| `POST /recommendations/menu` | `settings.recommend_engine` = `legacy`(기본, AI) / `v2`(엔진). 응답 `engine` 필드로 구분 |
+| v2 요청 | `meal_type` 생략 가능(KST 시각으로 추정, `snack` 포함) · `mood` any/light/hearty |
+| v2 응답 | `recommendation_log_id` · `budget{meal_type, meal_budget, remaining_today, goal_calories, ratio_source, protein_gap}` · 카드에 `source/budget_label/total_calories/companion_name/companion_calories/group_id/group_name/family` · `ai_call_log_id` null · `alternative_menus` 항상 빈 목록(exceed 는 플래그로만) |
+| v2 부작용 | AI 호출 없음 → 일일 한도 미소모, `ai_call_logs` 미기록. 노출은 `recommendation_logs` 1행 + `recommendation_items` 카드 수 |
+| `POST /recommendations/{log_id}/accept` `{name}` | 카드 탭(명시 채택) → `accepted_at`. 재탭 200(처음 시각 유지), 남의 로그·없는 항목 404 |
+
 ---
 
 ## 9. 마이그레이션 순서 (alembic)
@@ -278,7 +297,7 @@ xxxx_05_nutrition_items_pruned      아카이브 테이블 (삭제 직전)
 |---|---|
 | 순수 밥 군 목록 (companion) | 쌀밥·잡곡밥·현미밥·흑미밥·보리밥·밥 |
 | 튀김류의 기본 동반 | 돈가스 → 쌀밥, 닭튀김·감자튀김 → 없음 |
-| `base_amount=100` 대표 1,365행 감사 실패 시 | `per_100g` 로 강등, `is_representative` 유지 |
+| `base_amount=100` 대표 1,365행 감사 실패 시 | `per_100g` 로 강등, `is_representative` 유지 — **감사 결과(2026-09-16): 전부 정상 1인분(100g 단위 상품), 강등 없이 `per_serving` 유지** |
 | 100g 유일 행 17,729 삭제 여부 | 유지 (검색 커버리지) |
 | `rejected_at` FE 노출 | 컬럼만, UI 는 다음 릴리스 |
 
