@@ -92,7 +92,15 @@ class AIClient(Protocol):
         image_url: str,
         eating_habits: dict | None = None,
         user_text: str | None = None,
+        candidate_depth: str | None = None,
     ) -> AnalyzeResult:
+        """`/internal/analyze` 의 candidate_depth 계약: "standard" | "clarifier".
+
+        "clarifier" 면 AI 서버가 음식당 대체 후보를 1개 더 주고
+        `ai_call_log.task_type` 을 "analyze_clarifier" 로 구분해 준다.
+        **"clarifier" 일 때만** 넘어온다 — 구버전 AI 서버가 모르는 필드를
+        기본 요청에 섞지 않기 위한 규약이다.
+        """
         ...
 
     def parse_text(

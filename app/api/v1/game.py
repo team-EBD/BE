@@ -67,6 +67,8 @@ from app.services.game_profile import (
     stage_placements,
 )
 from app.services.game_rewards import food_progress_by_code, next_unlock
+from app.services.game_skills import CLARIFIER_SKILL_CODE
+from app.services.game_skills import remaining_charges as clarifier_charges
 
 router = APIRouter(prefix="/game", tags=["game"])
 
@@ -125,6 +127,13 @@ def _active_pet(db: Session, profile: GameProfile) -> ActivePet | None:
     )
 
 
+def _charges(db: Session, user_id: int, code: str, stored: int) -> int:
+    """잔여 충전. '발견 돋보기'는 달력 기준이라 원장에서 계산한다 (game_skills 참고)."""
+    if code == CLARIFIER_SKILL_CODE:
+        return clarifier_charges(db, user_id, stored)
+    return stored
+
+
 def _equipped_skill(db: Session, profile: GameProfile) -> EquippedSkill | None:
     code = profile.equipped_skill_code
     if not code:
@@ -139,9 +148,9 @@ def _equipped_skill(db: Session, profile: GameProfile) -> EquippedSkill | None:
     return EquippedSkill(
         code=code,
         name=catalog.skill_name(code),
-        charges=skill.charge_count,
+        charges=_charges(db, profile.user_id, code, skill.charge_count),
         max_charges=catalog.skill_max_charges(code),
-        is_active=code in catalog.ACTIVE_SKILL_CODES,
+        is_active=catalog.is_active_skill(code),
     )
 
 
@@ -333,9 +342,9 @@ def game_skills(user: CurrentUser, db: DB) -> SkillsResponse:
                 description=catalog.skill_description(code),
                 source_pet_code=row.source_pet_code,
                 unlock_bond_level=int(spec.get("unlock_bond_level", 3)),
-                charges=row.charge_count,
+                charges=_charges(db, user.id, code, row.charge_count),
                 max_charges=catalog.skill_max_charges(code),
-                is_active=code in catalog.ACTIVE_SKILL_CODES,
+                is_active=catalog.is_active_skill(code),
                 equipped=profile.equipped_skill_code == code,
             )
         )

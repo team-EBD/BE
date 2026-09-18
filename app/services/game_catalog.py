@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+from app.core.config import settings
+
 _SEED_DIR = Path(__file__).resolve().parents[2] / "seed"
 _CATALOG_FILE = _SEED_DIR / "gamification_catalog_v2.json"
 _GROWTH_FILE = _SEED_DIR / "gamification_growth_v3.json"
@@ -31,8 +33,12 @@ DEFAULT_PET_CODE = "pet_cat"
 DEFAULT_BACKGROUND_CODE = "bg_sunny_kitchen"
 
 # 서버 판정이 구현된 스킬 — 장착하면 실제로 동작한다.
-# (발견 돋보기 `food_clarifier` 는 아직 판정이 없어 빠져 있다. 로드맵 v3 §4)
-ACTIVE_SKILL_CODES = frozenset({"streak_pause", "daily_xp_nudge", "daily_mission_swap"})
+# `food_clarifier` 는 판정이 붙었지만 feature flag(`game_food_clarifier`) 뒤에 있다.
+# 노출 판단은 이 집합이 아니라 `is_active_skill()` 로 한다 (플래그 off 면 FE 가
+# 계속 "준비 중"으로 표시해야 한다).
+ACTIVE_SKILL_CODES = frozenset(
+    {"streak_pause", "daily_xp_nudge", "daily_mission_swap", "food_clarifier"}
+)
 
 # 음식 해금 태그 어휘 — 카탈로그 unlock.food_tags 와 같은 4종으로 고정한다
 FOOD_TAGS = ("vegetable", "fruit", "fish", "soup")
@@ -339,6 +345,33 @@ def skill_max_charges(code: str) -> int:
 def skill_recharge_days(code: str) -> int | None:
     days = skills().get(code, {}).get("recharge_distinct_record_days")
     return int(days) if days else None
+
+
+def skill_calendar_recharge_days(code: str) -> int | None:
+    """달력 기준 재충전 주기(일). `recharge_distinct_record_days`(기록일 기준)와 다르다.
+
+    '발견 돋보기'는 함께 기록한 날이 아니라 **마지막 사용일로부터 N일**로 충전된다.
+    """
+    days = skills().get(code, {}).get("recharge_days")
+    return int(days) if days else None
+
+
+def skill_feature_flag(code: str) -> str | None:
+    """이 스킬이 숨어 있는 settings 플래그 이름 (시드의 `feature_flag`)."""
+    return skills().get(code, {}).get("feature_flag") or None
+
+
+def is_active_skill(code: str | None) -> bool:
+    """장착 시 서버 판정이 실제로 도는가 — FE 의 '준비 중' 표시 판단 근거.
+
+    feature flag 가 걸린 스킬은 플래그가 켜져 있을 때만 활성이다.
+    """
+    if not code or code not in ACTIVE_SKILL_CODES:
+        return False
+    flag = skill_feature_flag(code)
+    if flag is None:
+        return True
+    return bool(getattr(settings, flag, False))
 
 
 # --- 첫 친구 선택 ---
