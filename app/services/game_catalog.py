@@ -19,6 +19,9 @@ _GROWTH_FILE = _SEED_DIR / "gamification_growth_v3.json"
 # curated `nutrition_item_id → 음식 태그` 매핑. NutritionItem.category 는 한식/분식 같은
 # **요리 장르**라 여기서 vegetable/fruit/fish/soup 를 유도할 수 없어 손으로 태깅한다.
 _FOOD_TAGS_FILE = _SEED_DIR / "game_food_tags.json"
+# 미션·이벤트 카탈로그. 수치와 기간을 코드 배포 없이 조정하려고 시드를 단일 원천으로 둔다.
+_MISSIONS_FILE = _SEED_DIR / "game_missions.json"
+_EVENTS_FILE = _SEED_DIR / "game_events.json"
 
 # 카테고리별 동시 활성(무대 배치) 한도 — 서버가 강제한다
 DEFAULT_SLOT_LIMITS = {"pet": 1, "background": 1, "food": 5, "blaster": 3, "event_prop": 2}
@@ -27,9 +30,9 @@ DEFAULT_SLOT_LIMITS = {"pet": 1, "background": 1, "food": 5, "blaster": 3, "even
 DEFAULT_PET_CODE = "pet_cat"
 DEFAULT_BACKGROUND_CODE = "bg_sunny_kitchen"
 
-# 아직 서버 판정이 구현되지 않은 스킬 — 해금은 되지만 장착해도 효과가 없다.
-# (미션/음식 발견이 들어오는 다음 PR 에서 열린다. 로드맵 v3 §4)
-ACTIVE_SKILL_CODES = frozenset({"streak_pause", "daily_xp_nudge"})
+# 서버 판정이 구현된 스킬 — 장착하면 실제로 동작한다.
+# (발견 돋보기 `food_clarifier` 는 아직 판정이 없어 빠져 있다. 로드맵 v3 §4)
+ACTIVE_SKILL_CODES = frozenset({"streak_pause", "daily_xp_nudge", "daily_mission_swap"})
 
 # 음식 해금 태그 어휘 — 카탈로그 unlock.food_tags 와 같은 4종으로 고정한다
 FOOD_TAGS = ("vegetable", "fruit", "fish", "soup")
@@ -435,3 +438,143 @@ def apply_xp(level: int, xp: int, gained: int) -> tuple[int, int, int]:
 def level_up_points(level: int) -> int:
     """레벨업 보상 코인 — min(level × 10, 200)."""
     return min(level * 10, 200)
+
+
+# --- 미션 카탈로그 (seed/game_missions.json) ---
+
+# 판정 규칙 — 전부 논리 날짜(KST 06:00 경계) 기준이고 생략 기록은 세지 않는다
+MISSION_RULE_MEALS = "meals_recorded"        # 기간 안에 저장된 식단 건수
+MISSION_RULE_PHOTO = "photo_meals"           # 사진으로 만든 식단 건수
+MISSION_RULE_MEAL_SLOT = "meal_slot"         # 지정한 meal_type 식단 건수
+MISSION_RULE_NEW_MENU = "new_menu"           # 그 사용자가 처음 기록하는 nutrition_item_id
+MISSION_RULE_FOOD_TAG = "food_tag"           # 지정 태그가 붙은 음식을 포함한 식단 건수
+MISSION_RULE_DISTINCT_MENUS = "distinct_menus"  # 서로 다른 nutrition_item_id 가짓수
+MISSION_RULE_RECORD_DAYS = "record_days"     # 기록한 서로 다른 논리 날짜 수
+
+MISSION_SCOPE_DAILY = "daily"
+MISSION_SCOPE_WEEKLY = "weekly"
+
+
+@dataclass(frozen=True)
+class MissionSpec:
+    code: str
+    title: str
+    description: str
+    scope: str
+    tier: int
+    rule: str
+    params: dict
+    target: int
+    xp: int
+    points: int
+    sort_order: int
+
+
+@lru_cache(maxsize=1)
+def _mission_seed() -> dict:
+    return json.loads(_MISSIONS_FILE.read_text(encoding="utf-8"))
+
+
+@lru_cache(maxsize=1)
+def mission_specs() -> tuple[MissionSpec, ...]:
+    raw = _mission_seed()
+    result: list[MissionSpec] = []
+    for order, item in enumerate(raw.get("missions", [])):
+        reward = item.get("reward") or {}
+        result.append(
+            MissionSpec(
+                code=item["code"],
+                title=item["title"],
+                description=item.get("description", ""),
+                scope=item.get("scope", MISSION_SCOPE_DAILY),
+                tier=int(item.get("tier") or 1),
+                rule=item["rule"],
+                params=dict(item.get("params") or {}),
+                target=int(item["target"]),
+                xp=int(reward.get("xp") or 0),
+                points=int(reward.get("points") or 0),
+                sort_order=order,
+            )
+        )
+    return tuple(result)
+
+
+def mission_by_code() -> dict[str, MissionSpec]:
+    return {m.code: m for m in mission_specs()}
+
+
+def mission_spec(code: str) -> MissionSpec | None:
+    return mission_by_code().get(code)
+
+
+def daily_tiers() -> tuple[int, ...]:
+    """일일 미션을 뽑는 티어 목록 (티어당 1개)."""
+    raw = _mission_seed().get("daily_tiers")
+    if raw:
+        return tuple(int(t) for t in raw)
+    return tuple(sorted({m.tier for m in mission_specs() if m.scope == MISSION_SCOPE_DAILY}))
+
+
+def mission_pool(scope: str, tier: int | None = None) -> tuple[MissionSpec, ...]:
+    """출제 후보 — 정렬 순서 고정 (결정론적 출제의 전제)."""
+    return tuple(
+        m
+        for m in mission_specs()
+        if m.scope == scope and (tier is None or m.tier == tier)
+    )
+
+
+# --- 이벤트 카탈로그 (seed/game_events.json) ---
+
+EVENT_RULE_STAMP = "stamp"                 # 기간 중 기록한 서로 다른 논리 날짜 수
+EVENT_RULE_MISSION_COUNT = "mission_count" # 기간 중 완료한 미션 수
+
+
+@dataclass(frozen=True)
+class EventSpec:
+    code: str
+    name: str
+    description: str
+    rule: str
+    starts_on: str
+    ends_on: str
+    rewards: tuple[dict, ...]
+    sort_order: int
+
+    def threshold_key(self) -> str:
+        """보상 임계값이 담긴 키 — stamp 규칙은 `stamp`, 미션 규칙은 `count`."""
+        return "stamp" if self.rule == EVENT_RULE_STAMP else "count"
+
+
+@lru_cache(maxsize=1)
+def _event_seed() -> dict:
+    return json.loads(_EVENTS_FILE.read_text(encoding="utf-8"))
+
+
+@lru_cache(maxsize=1)
+def event_specs() -> tuple[EventSpec, ...]:
+    raw = _event_seed()
+    result: list[EventSpec] = []
+    for order, item in enumerate(raw.get("events", [])):
+        result.append(
+            EventSpec(
+                code=item["code"],
+                name=item["name"],
+                description=item.get("description", ""),
+                rule=item.get("rule", EVENT_RULE_STAMP),
+                starts_on=item["starts_on"],
+                ends_on=item["ends_on"],
+                rewards=tuple(dict(r) for r in item.get("rewards") or ()),
+                sort_order=order,
+            )
+        )
+    return tuple(result)
+
+
+def event_spec(code: str) -> EventSpec | None:
+    return {e.code: e for e in event_specs()}.get(code)
+
+
+def event_thresholds(spec: EventSpec) -> list[int]:
+    key = spec.threshold_key()
+    return sorted(int(r[key]) for r in spec.rewards if r.get(key) is not None)

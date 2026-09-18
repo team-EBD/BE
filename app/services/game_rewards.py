@@ -32,6 +32,13 @@ from app.models import (
     UserSkill,
 )
 from app.services import game_catalog as catalog
+from app.services.game_events import apply_event_stamps
+from app.services.game_ledger import apply_xp_gain as _apply_xp
+from app.services.game_ledger import forget as _forget
+from app.services.game_ledger import grant_item as _grant_item
+from app.services.game_ledger import ledger as _ledger
+from app.services.game_ledger import skill_usage as _skill_usage
+from app.services.game_missions import apply_mission_progress
 from app.services.game_profile import (
     ensure_catalog,
     ensure_game_profile,
@@ -44,65 +51,6 @@ from app.services.game_profile import (
 _STREAK_LOOKBACK_DAYS = 120
 # 하루 3끼 완주 판정에 쓰는 끼니
 _FULL_DAY_MEAL_TYPES = frozenset({"breakfast", "lunch", "dinner"})
-
-
-def _forget(db: Session, obj) -> None:
-    """savepoint 롤백으로 이미 빠졌을 수도 있는 객체를 안전하게 세션에서 뗀다."""
-    if obj in db:
-        db.expunge(obj)
-
-
-def _ledger(
-    db: Session,
-    user_id: int,
-    *,
-    key: str,
-    reason: str,
-    xp: int = 0,
-    points: int = 0,
-    ref_type: str | None = None,
-    ref_id: str | None = None,
-    logical_date: date | None = None,
-) -> bool:
-    """원장에 한 줄 기록한다. 같은 키가 이미 있으면 False (= 이미 지급됨)."""
-    row = RewardLedger(
-        user_id=user_id,
-        xp_delta=xp,
-        points_delta=points,
-        reason=reason,
-        ref_type=ref_type,
-        ref_id=ref_id,
-        logical_date=logical_date,
-        idempotency_key=key,
-    )
-    try:
-        with db.begin_nested():
-            db.add(row)
-            db.flush()
-    except IntegrityError:
-        _forget(db, row)
-        return False
-    return True
-
-
-def _skill_usage(
-    db: Session, user_id: int, *, key: str, skill_code: str, day: date, reason: str
-) -> bool:
-    row = SkillUsageLedger(
-        user_id=user_id,
-        skill_code=skill_code,
-        logical_date=day,
-        reason=reason,
-        idempotency_key=key,
-    )
-    try:
-        with db.begin_nested():
-            db.add(row)
-            db.flush()
-    except IntegrityError:
-        _forget(db, row)
-        return False
-    return True
 
 
 # --- 스트릭 ---
@@ -283,19 +231,6 @@ def _owned_codes(db: Session, user_id: int) -> set[str]:
     )
 
 
-def _grant_item(db: Session, user_id: int, catalog_item_id: int, source: str) -> bool:
-    """아이템 지급 1건. 이미 보유 중이면 False (unique 제약으로 멱등)."""
-    row = UserItem(user_id=user_id, catalog_item_id=catalog_item_id, source=source)
-    try:
-        with db.begin_nested():
-            db.add(row)
-            db.flush()
-    except IntegrityError:
-        _forget(db, row)
-        return False
-    return True
-
-
 def grant_streak_unlocks(db: Session, profile: GameProfile) -> list[str]:
     """스트릭 조건을 채운 음식을 지급한다 (멱등)."""
     items = ensure_catalog(db)
@@ -390,18 +325,17 @@ def _food_progress_keys(
 
 
 def _apply_food_progress(
-    db: Session, profile: GameProfile, meal: MealRecord, day: date
+    db: Session,
+    profile: GameProfile,
+    meal: MealRecord,
+    day: date,
+    *,
+    item_ids: list[int],
+    tags: frozenset[str],
 ) -> tuple[list[dict], list[str]]:
     """확정된 음식으로 음식 해금 진행도를 올린다. (progress_updates, 새로 해금된 코드)."""
-    foods = _confirmed_foods(db, meal)
-    if not foods:
+    if not item_ids:
         return [], []
-
-    item_ids = [nid for nid, _name in foods]
-    found: set[str] = set()
-    for nid, name in foods:
-        found |= catalog.food_tags_for(nid, name)
-    tags = frozenset(found)
 
     items = ensure_catalog(db)
     owned = _owned_codes(db, profile.user_id)
@@ -535,35 +469,6 @@ def next_unlock(db: Session, profile: GameProfile) -> dict | None:
     return best[3] if best is not None else None
 
 
-# --- 레벨 ---
-
-def _apply_xp(db: Session, profile: GameProfile, gained: int, day: date) -> dict | None:
-    if gained <= 0:
-        return None
-    before_level = profile.level
-    level, xp, ups = catalog.apply_xp(profile.level, profile.xp, gained)
-    profile.level, profile.xp = level, xp
-    if ups <= 0:
-        return None
-    # 레벨업 보상 코인은 레벨당 1회 (원장 키 `level:<n>`)
-    bonus = 0
-    for lv in range(before_level + 1, level + 1):
-        points = catalog.level_up_points(lv)
-        if _ledger(
-            db,
-            profile.user_id,
-            key=f"level:{lv}",
-            reason="level_up",
-            points=points,
-            ref_type="level",
-            ref_id=str(lv),
-            logical_date=day,
-        ):
-            profile.points += points
-            bonus += points
-    return {"level_before": before_level, "level_after": level, "points": bonus}
-
-
 # --- 진입점 ---
 
 def apply_meal_rewards(db: Session, user: User, meal: MealRecord) -> dict | None:
@@ -671,8 +576,25 @@ def apply_meal_rewards(db: Session, user: User, meal: MealRecord) -> dict | None
     pet_code = profile.active_pet_code or catalog.DEFAULT_PET_CODE
     pet_growth = apply_pet_bond_day(db, profile, pet_code, day)
 
-    # 7) 음식 태그 해금 진행도 — 확정된 음식만, 같은 날/같은 메뉴는 한 번만 센다
-    progress_updates, food_unlocks = _apply_food_progress(db, profile, meal, day)
+    # 7) 확정된 음식 1회 조회 — 해금 진행도와 미션 판정이 같은 결과를 쓴다
+    foods = _confirmed_foods(db, meal)
+    item_ids = [nid for nid, _name in foods]
+    found: set[str] = set()
+    for nid, name in foods:
+        found |= catalog.food_tags_for(nid, name)
+    tags = frozenset(found)
+
+    # 7-1) 음식 태그 해금 진행도 — 확정된 음식만, 같은 날/같은 메뉴는 한 번만 센다
+    progress_updates, food_unlocks = _apply_food_progress(
+        db, profile, meal, day, item_ids=item_ids, tags=tags
+    )
+
+    # 7-2) 미션 진행도 — 완료해도 자동 지급하지 않는다 (홈의 claimable 로 간다).
+    #      완료된 미션은 `mission_count` 이벤트 진행도도 함께 올린다.
+    apply_mission_progress(db, profile, meal, day, item_ids=item_ids, tags=tags)
+
+    # 7-3) 이벤트 스탬프 — 기간 중 기록한 서로 다른 논리 날짜 수 (하루 1장)
+    apply_event_stamps(db, profile, day)
 
     # 8) 레벨업 → 해금
     level_up = _apply_xp(db, profile, gained_xp, day)
