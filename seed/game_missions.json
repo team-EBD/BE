@@ -1,0 +1,150 @@
+{
+  "schema_version": 1,
+  "_comment": "미션 카탈로그. 코드 배포 없이 수치를 조정할 수 있도록 여기만 고친다. 문구는 비판단 말투를 지킨다 (체중·다이어트·칼로리 초과 언어 금지).",
+  "daily_tiers": [1, 2, 3],
+  "missions": [
+    {
+      "code": "daily_record_one",
+      "scope": "daily",
+      "tier": 1,
+      "title": "오늘 한 끼 기록하기",
+      "description": "오늘 한 끼를 기록해 보세요.",
+      "rule": "meals_recorded",
+      "params": {},
+      "target": 1,
+      "reward": {"xp": 10, "points": 10}
+    },
+    {
+      "code": "daily_record_two",
+      "scope": "daily",
+      "tier": 1,
+      "title": "오늘 두 끼 기록하기",
+      "description": "오늘 두 끼를 기록해 보세요.",
+      "rule": "meals_recorded",
+      "params": {},
+      "target": 2,
+      "reward": {"xp": 15, "points": 15}
+    },
+    {
+      "code": "daily_photo_record",
+      "scope": "daily",
+      "tier": 1,
+      "title": "사진으로 기록하기",
+      "description": "사진으로 한 끼를 남겨 보세요.",
+      "rule": "photo_meals",
+      "params": {},
+      "target": 1,
+      "reward": {"xp": 15, "points": 15}
+    },
+    {
+      "code": "daily_breakfast",
+      "scope": "daily",
+      "tier": 2,
+      "title": "아침 기록하기",
+      "description": "아침 식사를 기록해 보세요.",
+      "rule": "meal_slot",
+      "params": {"meal_type": "breakfast"},
+      "target": 1,
+      "reward": {"xp": 20, "points": 20}
+    },
+    {
+      "code": "daily_new_menu",
+      "scope": "daily",
+      "tier": 2,
+      "title": "새로운 메뉴 기록하기",
+      "description": "아직 기록한 적 없는 메뉴를 남겨 보세요.",
+      "rule": "new_menu",
+      "params": {},
+      "target": 1,
+      "reward": {"xp": 20, "points": 20}
+    },
+    {
+      "code": "daily_vegetable",
+      "scope": "daily",
+      "tier": 2,
+      "title": "채소가 든 식사 기록하기",
+      "description": "채소가 든 식사를 기록해 보세요.",
+      "rule": "food_tag",
+      "params": {"food_tag": "vegetable"},
+      "target": 1,
+      "reward": {"xp": 20, "points": 20}
+    },
+    {
+      "code": "daily_fruit",
+      "scope": "daily",
+      "tier": 2,
+      "title": "과일 기록하기",
+      "description": "과일을 기록해 보세요.",
+      "rule": "food_tag",
+      "params": {"food_tag": "fruit"},
+      "target": 1,
+      "reward": {"xp": 20, "points": 20}
+    },
+    {
+      "code": "daily_soup",
+      "scope": "daily",
+      "tier": 2,
+      "title": "국물 요리 기록하기",
+      "description": "국물 요리를 기록해 보세요.",
+      "rule": "food_tag",
+      "params": {"food_tag": "soup"},
+      "target": 1,
+      "reward": {"xp": 20, "points": 20}
+    },
+    {
+      "code": "daily_three_meals",
+      "scope": "daily",
+      "tier": 3,
+      "title": "하루 세 끼 채우기",
+      "description": "오늘 세 끼를 기록해 보세요.",
+      "rule": "meals_recorded",
+      "params": {},
+      "target": 3,
+      "reward": {"xp": 25, "points": 30}
+    },
+    {
+      "code": "daily_distinct_menu_two",
+      "scope": "daily",
+      "tier": 3,
+      "title": "서로 다른 메뉴 두 가지 기록하기",
+      "description": "서로 다른 메뉴 두 가지를 기록해 보세요.",
+      "rule": "distinct_menus",
+      "params": {},
+      "target": 2,
+      "reward": {"xp": 25, "points": 25}
+    },
+    {
+      "code": "weekly_record_days_5",
+      "scope": "weekly",
+      "tier": 1,
+      "title": "이번 주 5일 기록하기",
+      "description": "이번 주에 닷새를 기록해 보세요.",
+      "rule": "record_days",
+      "params": {},
+      "target": 5,
+      "reward": {"xp": 60, "points": 100}
+    },
+    {
+      "code": "weekly_distinct_menu_10",
+      "scope": "weekly",
+      "tier": 1,
+      "title": "서로 다른 메뉴 10가지 기록하기",
+      "description": "이번 주에 서로 다른 메뉴 열 가지를 기록해 보세요.",
+      "rule": "distinct_menus",
+      "params": {},
+      "target": 10,
+      "reward": {"xp": 60, "points": 100}
+    },
+    {
+      "code": "weekly_photo_5",
+      "scope": "weekly",
+      "tier": 1,
+      "title": "사진으로 5번 기록하기",
+      "description": "이번 주에 사진으로 다섯 번 기록해 보세요.",
+      "rule": "photo_meals",
+      "params": {},
+      "target": 5,
+      "reward": {"xp": 60, "points": 100}
+    }
+  ]
+}

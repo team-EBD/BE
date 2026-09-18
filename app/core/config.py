@@ -81,6 +81,12 @@ class Settings(BaseSettings):
     # 캘린더/요약(FE day_start_hour=6)과 사용량 리셋 기준을 일치시킨다.
     day_start_hour: int = 6
 
+    # --- 게이미피케이션 feature flag ---
+    # '발견 돋보기'(food_clarifier): 켜면 스킬 장착+충전이 남은 사용자의 사진 분석에
+    # candidate_depth="clarifier" 를 실어 보내 음식당 대체 후보를 1개 더 받는다.
+    # 기본 off — 꺼져 있으면 AI 요청에 필드 자체를 넣지 않아 구버전 AI 서버와도 동일 동작.
+    game_food_clarifier: bool = False
+
     # 요청 타이밍 로그(request_logs) 기록 여부 — 테스트에서는 끈다
     # (미들웨어는 dependency override 를 못 쓰므로 실제 SessionLocal 로 붙는다)
     request_log_enabled: bool = True

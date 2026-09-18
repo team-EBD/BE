@@ -25,6 +25,7 @@ from app.schemas.meal import (
     HabitAdjusted,
 )
 from app.services.correction import FACTORS, habit_factor
+from app.services.game_skills import DEPTH_CLARIFIER, candidate_depth
 from app.services.matching import (
     base_serving_text,
     db_candidates_for_text,
@@ -38,6 +39,9 @@ logger = logging.getLogger("eatlog.analyze")
 # AI 서버와 동일한 상한 (AI 서버가 이미 지키지만 방어적으로 재적용)
 MAX_FOODS = 5
 MAX_PREDICTIONS_PER_FOOD = 3
+# '발견 돋보기'(candidate_depth="clarifier")는 음식당 대체 후보를 1개 더 준다.
+# 여기 상한을 올려 주지 않으면 4번째 후보가 방어 컷에 잘려 스킬이 무효가 된다.
+MAX_PREDICTIONS_PER_FOOD_CLARIFIER = MAX_PREDICTIONS_PER_FOOD + 1
 
 # 유사도(fuzzy) 매칭은 확신도를 한 단계 감산해 내려보낸다 (SCRUM-246).
 # 별도 "유사 매칭" UI 를 만들지 않고 기존 confidence 채널로 불확실성을 전달
@@ -45,11 +49,13 @@ MAX_PREDICTIONS_PER_FOOD = 3
 FUZZY_CONFIDENCE_PENALTY = 0.2
 
 
-def _grouped_candidates(raw: list) -> list[tuple[int, object]]:
+def _grouped_candidates(
+    raw: list, max_per_food: int = MAX_PREDICTIONS_PER_FOOD
+) -> list[tuple[int, object]]:
     """(food_index, candidate) 목록으로 정규화한다.
 
     - food_index 는 등장 순서 기준으로 0부터 재부여
-    - 서로 다른 음식 최대 MAX_FOODS 개, 음식당 예측 최대 MAX_PREDICTIONS_PER_FOOD 개
+    - 서로 다른 음식 최대 MAX_FOODS 개, 음식당 예측 최대 max_per_food 개
     - 구버전 AI 서버(food_index 없음)는 전부 0 그룹 → 기존 상위 3개와 동일 동작
     """
     counts: dict[int, int] = {}
@@ -61,7 +67,7 @@ def _grouped_candidates(raw: list) -> list[tuple[int, object]]:
             if len(reindex) >= MAX_FOODS:
                 continue
             reindex[original] = len(reindex)
-        if counts.get(original, 0) >= MAX_PREDICTIONS_PER_FOOD:
+        if counts.get(original, 0) >= max_per_food:
             continue
         counts[original] = counts.get(original, 0) + 1
         grouped.append((reindex[original], cand))
@@ -152,14 +158,29 @@ def analyze_meal_image(
             "sauce_preference": habit.sauce_preference,
         }
 
+    # '발견 돋보기' 판정 — 켜져 있고 장착·충전이 맞으면 후보를 1개 더 받는다.
+    # 판정은 예외를 밖으로 내지 않으므로 여기서 분석이 막히지는 않는다.
+    depth = candidate_depth(db, user.id)
+
     # 사용자가 사진과 함께 적은 설명 — AI 가 식별·수량 힌트로 쓴다.
     # 설명이 있을 때만 키워드를 넘겨 구 시그니처 클라이언트와의 호환을 유지한다.
+    # candidate_depth 도 같은 이유로 **clarifier 일 때만** 넘긴다 — 기본값이면
+    # 구버전 AI 서버·테스트 더블이 모르는 필드를 받을 일이 없다.
     cleaned_text = (user_text or "").strip() or None
+    extra: dict = {}
     if cleaned_text:
-        result = ai.analyze(image.image_url, habits_payload, user_text=cleaned_text)
-    else:
-        result = ai.analyze(image.image_url, habits_payload)
-    return _postprocess(db, user, habit, result, meal_image_id, started)
+        extra["user_text"] = cleaned_text
+    if depth == DEPTH_CLARIFIER:
+        extra["candidate_depth"] = depth
+    result = ai.analyze(image.image_url, habits_payload, **extra)
+    return _postprocess(
+        db, user, habit, result, meal_image_id, started,
+        max_per_food=(
+            MAX_PREDICTIONS_PER_FOOD_CLARIFIER
+            if depth == DEPTH_CLARIFIER
+            else MAX_PREDICTIONS_PER_FOOD
+        ),
+    )
 
 
 def analyze_meal_text(
@@ -196,6 +217,7 @@ def _postprocess(
     result,
     meal_image_id: int | None,
     started: float,
+    max_per_food: int = MAX_PREDICTIONS_PER_FOOD,
 ) -> AnalyzeSuccessResponse | AnalyzeFailedResponse:
     """AI 결과 공통 후처리 — 로그 기록, 영양 매칭, 식습관 보정, 후보 저장."""
     call_log = _save_call_log(
@@ -213,7 +235,9 @@ def _postprocess(
 
     factor, applied = habit_factor(habit)
     candidates: list[AnalyzeCandidate] = []
-    for rank, (food_index, cand) in enumerate(_grouped_candidates(result.candidates), start=1):
+    for rank, (food_index, cand) in enumerate(
+        _grouped_candidates(result.candidates, max_per_food), start=1
+    ):
         matched, match_path = match_food_name(db, cand.food_name)
         # 경로별 비율(exact/substring/fuzzy/none)이 유사도 컷 튜닝의 근거 (SCRUM-246)
         logger.info(

@@ -1,0 +1,574 @@
+{
+  "_meta": {
+    "description": "게이미피케이션 음식 태그 해금 매핑. curated(확정) → keywords(이름 폴백) 2계층.",
+    "tiers": [
+      "1) curated: nutrition_item_id 가 여기 있으면 그 값을 그대로 쓴다. 빈 배열도 '태그 없음'이라는 명시적 판단이므로 폴백으로 넘어가지 않는다.",
+      "2) keywords: curated 에 **없는** id 만 NutritionItem.name 부분 문자열로 태깅한다. 식약처 가공식품 OpenAPI 적재분(scripts/import_mfds_api.py)처럼 id 가 46 을 넘는 항목이 대상이다."
+    ],
+    "vocabulary": [
+      "vegetable",
+      "fruit",
+      "fish",
+      "soup"
+    ],
+    "rules": [
+      "태그 어휘는 4종 고정. 카탈로그(gamification_catalog_v2.json)의 unlock.food_tags 와 같은 값이다.",
+      "판단이 애매하면 태그를 붙이지 않는다 — 잘못 붙은 태그는 '안 먹었는데 진행도가 올랐다'는 인상을 준다.",
+      "soup 는 실제로 국물을 먹는 요리만 (라면=soup, 볶음밥/짜장면/비빔면=soup 아님).",
+      "vegetable 은 채소가 주재료로 눈에 보이는 요리만 (샐러드·비빔밥). 김치찌개처럼 김치가 들어가도 '채소를 먹었다'고 보기 어려운 것은 제외.",
+      "curated 는 태그가 없는 음식도 키를 남겨 둔다 (빈 배열) — 검토했다는 표시이자 폴백 차단이다.",
+      "keywords.exclude 가 하나라도 이름에 있으면 그 태그는 붙이지 않는다 (include 보다 우선). 가공품·음료·조미료(사과주스·귤차·라면스프)와 동음이의(탕수육·유부초밥·보쌈)를 막는다.",
+      "코드 배포 없이 고칠 수 있게 키워드는 반드시 이 파일에만 둔다."
+    ],
+    "updated_at": "2026-09-18"
+  },
+  "curated": [
+    {
+      "nutrition_item_id": 1,
+      "name": "김치찌개",
+      "category": "한식",
+      "tags": [
+        "soup"
+      ]
+    },
+    {
+      "nutrition_item_id": 2,
+      "name": "된장찌개",
+      "category": "한식",
+      "tags": [
+        "soup"
+      ]
+    },
+    {
+      "nutrition_item_id": 3,
+      "name": "순두부찌개",
+      "category": "한식",
+      "tags": [
+        "soup"
+      ]
+    },
+    {
+      "nutrition_item_id": 4,
+      "name": "부대찌개",
+      "category": "한식",
+      "tags": [
+        "soup"
+      ]
+    },
+    {
+      "nutrition_item_id": 5,
+      "name": "제육볶음",
+      "category": "한식",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 6,
+      "name": "불고기",
+      "category": "한식",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 7,
+      "name": "비빔밥",
+      "category": "한식",
+      "tags": [
+        "vegetable"
+      ]
+    },
+    {
+      "nutrition_item_id": 8,
+      "name": "공기밥",
+      "category": "한식",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 9,
+      "name": "김치볶음밥",
+      "category": "한식",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 10,
+      "name": "삼겹살",
+      "category": "한식",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 11,
+      "name": "닭갈비",
+      "category": "한식",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 12,
+      "name": "갈비탕",
+      "category": "한식",
+      "tags": [
+        "soup"
+      ]
+    },
+    {
+      "nutrition_item_id": 13,
+      "name": "설렁탕",
+      "category": "한식",
+      "tags": [
+        "soup"
+      ]
+    },
+    {
+      "nutrition_item_id": 14,
+      "name": "육개장",
+      "category": "한식",
+      "tags": [
+        "soup"
+      ]
+    },
+    {
+      "nutrition_item_id": 15,
+      "name": "김밥",
+      "category": "분식",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 16,
+      "name": "떡볶이",
+      "category": "분식",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 17,
+      "name": "라면",
+      "category": "분식",
+      "tags": [
+        "soup"
+      ]
+    },
+    {
+      "nutrition_item_id": 18,
+      "name": "쫄면",
+      "category": "분식",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 19,
+      "name": "잔치국수",
+      "category": "면류",
+      "tags": [
+        "soup"
+      ]
+    },
+    {
+      "nutrition_item_id": 20,
+      "name": "비빔냉면",
+      "category": "면류",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 21,
+      "name": "물냉면",
+      "category": "면류",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 22,
+      "name": "칼국수",
+      "category": "면류",
+      "tags": [
+        "soup"
+      ]
+    },
+    {
+      "nutrition_item_id": 23,
+      "name": "짜장면",
+      "category": "중식",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 24,
+      "name": "짬뽕",
+      "category": "중식",
+      "tags": [
+        "soup"
+      ]
+    },
+    {
+      "nutrition_item_id": 25,
+      "name": "탕수육",
+      "category": "중식",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 26,
+      "name": "돈까스",
+      "category": "외식",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 27,
+      "name": "초밥",
+      "category": "외식",
+      "tags": [
+        "fish"
+      ]
+    },
+    {
+      "nutrition_item_id": 28,
+      "name": "규동",
+      "category": "외식",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 29,
+      "name": "후라이드치킨",
+      "category": "배달",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 30,
+      "name": "양념치킨",
+      "category": "배달",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 31,
+      "name": "피자",
+      "category": "배달",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 32,
+      "name": "족발",
+      "category": "배달",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 33,
+      "name": "보쌈",
+      "category": "배달",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 34,
+      "name": "삼각김밥",
+      "category": "편의점",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 35,
+      "name": "닭가슴살",
+      "category": "편의점",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 36,
+      "name": "그릭요거트",
+      "category": "편의점",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 37,
+      "name": "닭가슴살 샐러드",
+      "category": "샐러드",
+      "tags": [
+        "vegetable"
+      ]
+    },
+    {
+      "nutrition_item_id": 38,
+      "name": "고구마",
+      "category": "간식",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 39,
+      "name": "삶은 계란",
+      "category": "간식",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 40,
+      "name": "아메리카노",
+      "category": "음료",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 41,
+      "name": "계란",
+      "category": "간식",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 42,
+      "name": "커피",
+      "category": "음료",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 43,
+      "name": "샐러드",
+      "category": "샐러드",
+      "tags": [
+        "vegetable"
+      ]
+    },
+    {
+      "nutrition_item_id": 44,
+      "name": "컵라면",
+      "category": "편의점",
+      "tags": [
+        "soup"
+      ]
+    },
+    {
+      "nutrition_item_id": 45,
+      "name": "구운란",
+      "category": "편의점",
+      "tags": []
+    },
+    {
+      "nutrition_item_id": 46,
+      "name": "구운 계란",
+      "category": "편의점",
+      "tags": []
+    }
+  ],
+  "keywords": {
+    "vegetable": {
+      "include": [
+        "샐러드",
+        "브로콜리",
+        "시금치",
+        "나물",
+        "콩나물",
+        "쌈",
+        "야채",
+        "채소",
+        "상추",
+        "양배추",
+        "오이",
+        "당근",
+        "토마토",
+        "파프리카",
+        "아스파라거스",
+        "케일",
+        "깻잎",
+        "부추",
+        "미나리",
+        "무생채",
+        "겉절이"
+      ],
+      "exclude": [
+        "과일샐러드",
+        "과일 샐러드",
+        "감자샐러드",
+        "감자 샐러드",
+        "옥수수샐러드",
+        "마카로니",
+        "드레싱",
+        "소스",
+        "샐러드유",
+        "샐러드빵",
+        "보쌈",
+        "쌈장",
+        "쌈무",
+        "쌈소스",
+        "김치",
+        "콩나물국",
+        "육수",
+        "빵",
+        "주스",
+        "음료",
+        "차",
+        "즙",
+        "환",
+        "분말",
+        "칩",
+        "과자",
+        "스낵",
+        "케이크",
+        "케찹",
+        "케첩",
+        "스파게티",
+        "파스타",
+        "피클",
+        "튀김가루"
+      ]
+    },
+    "fruit": {
+      "include": [
+        "사과",
+        "딸기",
+        "바나나",
+        "귤",
+        "오렌지",
+        "포도",
+        "수박",
+        "참외",
+        "블루베리",
+        "키위",
+        "망고",
+        "복숭아",
+        "자몽",
+        "레몬",
+        "파인애플",
+        "체리",
+        "멜론",
+        "자두",
+        "석류",
+        "무화과",
+        "과일"
+      ],
+      "exclude": [
+        "주스",
+        "음료",
+        "차",
+        "티",
+        "잼",
+        "시럽",
+        "청",
+        "즙",
+        "식초",
+        "사탕",
+        "젤리",
+        "캔디",
+        "맛",
+        "향",
+        "파이",
+        "케이크",
+        "빵",
+        "타르트",
+        "요구르트",
+        "요거트",
+        "우유",
+        "라떼",
+        "에이드",
+        "스무디",
+        "아이스크림",
+        "빙수",
+        "술",
+        "와인",
+        "막걸리",
+        "소주",
+        "절임",
+        "통조림",
+        "말랭이",
+        "건조",
+        "칩",
+        "과자",
+        "스낵",
+        "푸딩",
+        "드레싱",
+        "소스",
+        "포도당",
+        "포도주",
+        "포도씨",
+        "수박바",
+        "체리토마토",
+        "바나나킥",
+        "샐러드",
+        "파우더",
+        "분말",
+        "농축",
+        "시리얼"
+      ]
+    },
+    "fish": {
+      "include": [
+        "연어",
+        "고등어",
+        "참치",
+        "갈치",
+        "명태",
+        "북어",
+        "황태",
+        "코다리",
+        "조기",
+        "삼치",
+        "꽁치",
+        "전어",
+        "가자미",
+        "광어",
+        "우럭",
+        "임연수",
+        "장어",
+        "멸치",
+        "생선",
+        "초밥",
+        "회덮밥",
+        "물회",
+        "생선회",
+        "모둠회"
+      ],
+      "exclude": [
+        "유부초밥",
+        "육수",
+        "다시",
+        "액젓",
+        "젓갈",
+        "참치액",
+        "맛살",
+        "과자",
+        "스낵",
+        "통조림스낵",
+        "사료"
+      ]
+    },
+    "soup": {
+      "include": [
+        "탕",
+        "찌개",
+        "전골",
+        "국밥",
+        "해장국",
+        "미역국",
+        "된장국",
+        "떡국",
+        "만둣국",
+        "북엇국",
+        "무국",
+        "시래기국",
+        "칼국수",
+        "잔치국수",
+        "쌀국수",
+        "짬뽕",
+        "라면",
+        "우동",
+        "수제비",
+        "수프",
+        "스프",
+        "육개장"
+      ],
+      "exclude": [
+        "탕수",
+        "설탕",
+        "사탕",
+        "탕후루",
+        "탕종",
+        "감탕",
+        "그라탕",
+        "그라탱",
+        "탕평채",
+        "쌍화탕",
+        "대보탕",
+        "탕약",
+        "떡국떡",
+        "볶음라면",
+        "짜장라면",
+        "비빔라면",
+        "라면땅",
+        "생라면",
+        "라면과자",
+        "라면스프",
+        "라면 스프",
+        "분말스프",
+        "스프믹스",
+        "스프분말",
+        "스프링",
+        "스프레드",
+        "볶음우동",
+        "야끼우동",
+        "우동면"
+      ]
+    }
+  }
+}

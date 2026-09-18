@@ -70,6 +70,21 @@ class NextUnlock(BaseModel):
     label: str
 
 
+class ClaimableReward(BaseModel):
+    """홈에서 '받기'를 누를 수 있는 것 (§6.3).
+
+    1.8.0 은 `claimable` 을 **읽고 쓰지 않으므로**(mock 에만 등장) list[str] 에서
+    객체 배열로 바꿔도 안전하다.
+    """
+
+    # mission | event
+    type: Literal["mission", "event"]
+    code: str
+    label: str
+    # 미션은 {"xp":15,"points":15}, 이벤트는 {"item_code":"event_chest","stamp":3}
+    reward: dict = Field(default_factory=dict)
+
+
 class FirstFriendOffer(BaseModel):
     """3일차 무료 펫 선택권. 만료되지 않는다."""
 
@@ -88,7 +103,7 @@ class GameHomeResponse(BaseModel):
     stage: StageOut
     next_unlock: NextUnlock | None = None
     first_friend: FirstFriendOffer
-    claimable: list[str] = Field(default_factory=list)
+    claimable: list[ClaimableReward] = Field(default_factory=list)
 
 
 # --- GET /v1/game/collection · /v1/game/shop ---
@@ -110,6 +125,9 @@ class CollectionItem(BaseModel):
     signature_skill_name: str | None = None
     # 구매 불가 사유 (LOCKED_LEVEL / INSUFFICIENT_POINTS / NOT_FOR_SALE)
     locked_reason: str | None = None
+    # 음식 해금 진행도 {"current":3,"target":5,"unit":"day"|"menu"}.
+    # 이미 보유했거나 진행도 개념이 없는 아이템은 None (구버전 앱은 무시한다)
+    progress: dict | None = None
 
 
 class CollectionResponse(BaseModel):
@@ -249,3 +267,90 @@ class MealRewards(BaseModel):
     progress_updates: list[dict] = Field(default_factory=list)
     pet_growth: PetGrowthReward | None = None
     skill_effect: dict | None = None
+
+
+# --- GET /v1/game/missions ---
+
+class MissionReward(BaseModel):
+    xp: int
+    points: int
+
+
+class MissionOut(BaseModel):
+    code: str
+    title: str
+    description: str
+    # daily | weekly
+    scope: str
+    tier: int
+    target: int
+    progress: int
+    completed: bool
+    claimed: bool
+    reward: MissionReward
+    # 일일 = 논리 날짜, 주간 = 그 주 월요일의 논리 날짜
+    period_key: str
+
+
+class MissionsResponse(BaseModel):
+    missions: list[MissionOut] = Field(default_factory=list)
+    # '오늘의 바꾸기'를 지금 쓸 수 있는가 (스킬 장착 + 오늘 미사용 + 시작 전 미션 존재)
+    swap_available: bool = False
+    swap_skill_equipped: bool = False
+
+
+class MissionClaimResponse(BaseModel):
+    code: str
+    period_key: str
+    reward: MissionReward
+    # 수령 후 잔액
+    points: int
+    level: int
+    level_up: LevelUpReward | None = None
+
+
+# --- GET /v1/game/events ---
+
+class EventRewardOut(BaseModel):
+    # stamp 규칙은 stamp, mission_count 규칙은 count 에 임계값이 담긴다
+    stamp: int | None = None
+    count: int | None = None
+    item_code: str
+    preview_key: str | None = None
+    name: str
+    reached: bool
+    claimed: bool
+
+
+class EventOut(BaseModel):
+    code: str
+    name: str
+    description: str
+    # stamp | mission_count
+    rule: str
+    progress: int
+    target: int
+    starts_on: str
+    ends_on: str
+    rewards: list[EventRewardOut] = Field(default_factory=list)
+
+
+class EventsResponse(BaseModel):
+    events: list[EventOut] = Field(default_factory=list)
+
+
+class EventClaimRequest(BaseModel):
+    """스탬프 이벤트는 {"stamp": 3}, 미션 이벤트는 {"count": 7}."""
+
+    stamp: int | None = Field(default=None, ge=1, le=999)
+    count: int | None = Field(default=None, ge=1, le=999)
+
+    def threshold(self) -> int | None:
+        return self.stamp if self.stamp is not None else self.count
+
+
+class EventClaimResponse(BaseModel):
+    event_code: str
+    item_code: str
+    name: str
+    progress: int

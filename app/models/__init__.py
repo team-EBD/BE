@@ -10,13 +10,17 @@ from app.models.ai import AiCallLog, FoodCandidate, RecommendationItem, Recommen
 from app.models.billing import Subscription
 from app.models.game import (
     CatalogItem,
+    GameEvent,
+    GameMission,
     GameProfile,
     PetBond,
     RewardLedger,
     SkillUsageLedger,
     StagePlacement,
     UnlockProgress,
+    UserEvent,
     UserItem,
+    UserMission,
     UserSkill,
 )
 from app.models.meal import CorrectionLog, MealImage, MealItem, MealRecord
@@ -84,4 +88,8 @@ __all__ = [
     "PetBond",
     "UserSkill",
     "SkillUsageLedger",
+    "GameMission",
+    "UserMission",
+    "GameEvent",
+    "UserEvent",
 ]

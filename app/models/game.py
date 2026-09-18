@@ -34,7 +34,9 @@ from app.models._common import (
 ITEM_CATEGORIES = ("pet", "background", "food", "blaster", "event_prop")
 
 # 획득 경로 — 기본 지급 / 첫 친구 무료 선택 / 코인 구매 / 스트릭 / 이벤트
-ITEM_SOURCES = ("default", "first_friend", "purchase", "streak", "event", "backfill")
+ITEM_SOURCES = (
+    "default", "first_friend", "purchase", "streak", "food", "event", "backfill"
+)
 
 
 class GameProfile(Base):
@@ -141,7 +143,9 @@ class UnlockProgress(Base):
     """조건부 해금(음식 발견 등)의 진행도. (user_id, catalog_item_id) 유일.
 
     스트릭 기반 해금은 game_profiles.current_streak 로 즉시 판정하므로 쓰지 않는다.
-    curated 음식 태그 매핑이 들어오는 다음 단계에서 사용한다 (핸드오프 §6 PR5).
+    음식 태그 해금(seed/game_food_tags.json)만 이 테이블을 쓴다 — 같은 날/같은 메뉴를
+    두 번 세지 않도록 증가는 reward_ledger(`food-progress:...`) 로 멱등 처리하고,
+    여기에는 누계와 마지막으로 센 논리 날짜만 남긴다.
     """
 
     __tablename__ = "unlock_progress"
@@ -262,3 +266,118 @@ class SkillUsageLedger(Base):
     ref_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     idempotency_key: Mapped[str] = mapped_column(String(100), nullable=False)
     created_at: Mapped[datetime] = created_at_column()
+
+
+class GameMission(Base):
+    """미션 카탈로그. seed/game_missions.json 에서 시드한다 (code 가 불변 키).
+
+    수치 조정을 코드 배포 없이 하기 위해 시드가 단일 원천이고, 이 테이블은 그 사본이다
+    (catalog_items 와 같은 패턴).
+    """
+
+    __tablename__ = "game_missions"
+
+    id: Mapped[int] = pk_column()
+    code: Mapped[str] = mapped_column(String(40), nullable=False, unique=True)
+    title: Mapped[str] = mapped_column(String(60), nullable=False)
+    description: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    # daily | weekly
+    scope: Mapped[str] = mapped_column(String(10), nullable=False, index=True)
+    # 일일 미션은 티어 1/2/3 에서 각 1개씩 뽑는다 (주간은 1)
+    tier: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    # meals_recorded / photo_meals / meal_slot / new_menu / food_tag / distinct_menus / record_days
+    rule: Mapped[str] = mapped_column(String(30), nullable=False)
+    # 규칙 인자 ({"meal_type":"breakfast"} / {"food_tag":"vegetable"})
+    params: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    target_value: Mapped[int] = mapped_column(Integer, nullable=False)
+    reward_xp: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    reward_points: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    created_at: Mapped[datetime] = created_at_column()
+    updated_at: Mapped[datetime] = updated_at_column()
+
+
+class UserMission(Base):
+    """출제된 미션 1건과 그 진행도. (user_id, mission_code, period_key) 유일.
+
+    `period_key` 는 일일이면 논리 날짜, 주간이면 그 주 **월요일**의 논리 날짜다.
+    진행도 증가는 reward_ledger(`mission-progress:...`) 멱등 키로 막고, 여기에는
+    누계만 남긴다 — 과거 날짜를 나중에 기록해도 두 번 세지 않게 하기 위해서다.
+    수령은 수동이며 지급 역시 기존 reward_ledger(`mission:<code>:<period_key>`)를 쓴다.
+    """
+
+    __tablename__ = "user_missions"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "mission_code", "period_key", name="uq_user_missions_user_code_period"
+        ),
+    )
+
+    id: Mapped[int] = pk_column()
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    mission_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    scope: Mapped[str] = mapped_column(String(10), nullable=False)
+    tier: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    period_key: Mapped[str] = mapped_column(String(10), nullable=False, index=True)
+    progress: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    target_value: Mapped[int] = mapped_column(Integer, nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    created_at: Mapped[datetime] = created_at_column()
+    updated_at: Mapped[datetime] = updated_at_column()
+
+
+class GameEvent(Base):
+    """이벤트 카탈로그. seed/game_events.json 에서 시드한다.
+
+    **기간은 시드가 단일 원천**이다 — 코드 배포 없이 켜고 끈다.
+    """
+
+    __tablename__ = "game_events"
+
+    id: Mapped[int] = pk_column()
+    code: Mapped[str] = mapped_column(String(40), nullable=False, unique=True)
+    name: Mapped[str] = mapped_column(String(60), nullable=False)
+    description: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    # stamp(기록한 서로 다른 논리 날짜 수) | mission_count(완료한 미션 수)
+    rule: Mapped[str] = mapped_column(String(20), nullable=False)
+    starts_on: Mapped[date] = mapped_column(Date, nullable=False)
+    ends_on: Mapped[date] = mapped_column(Date, nullable=False)
+    # [{"stamp":3,"item_code":"event_chest"}, ...] — 임계값 오름차순
+    rewards: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    created_at: Mapped[datetime] = created_at_column()
+    updated_at: Mapped[datetime] = updated_at_column()
+
+
+class UserEvent(Base):
+    """이벤트 진행도. (user_id, event_code) 유일.
+
+    증가는 reward_ledger(`event-progress:...`) 멱등 키로 막고 `last_counted_logical_date`
+    를 함께 갱신한다 (unlock_progress 와 같은 패턴). 수령한 임계값은 `claimed_thresholds`
+    JSON 배열에 남기지만, 실제 중복 방지는 원장 키 `event:<code>:stamp:<n>` 가 한다.
+    """
+
+    __tablename__ = "user_events"
+    __table_args__ = (
+        UniqueConstraint("user_id", "event_code", name="uq_user_events_user_event"),
+    )
+
+    id: Mapped[int] = pk_column()
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    event_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    progress: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    last_counted_logical_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    claimed_thresholds: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    created_at: Mapped[datetime] = created_at_column()
+    updated_at: Mapped[datetime] = updated_at_column()

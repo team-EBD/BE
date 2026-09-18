@@ -50,6 +50,11 @@ EXPECTED_TABLES = {
     "pet_bonds",
     "user_skills",
     "skill_usage_ledger",
+    # 게이미피케이션 (미션·이벤트)
+    "game_missions",
+    "user_missions",
+    "game_events",
+    "user_events",
 }
 
 

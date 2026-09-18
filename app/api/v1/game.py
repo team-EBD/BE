@@ -27,16 +27,23 @@ from app.models import (
 )
 from app.schemas.game import (
     ActivePet,
+    ClaimableReward,
     CollectionItem,
     CollectionResponse,
     EquipSkillRequest,
     EquippedSkill,
+    EventClaimRequest,
+    EventClaimResponse,
+    EventsResponse,
     FirstFriendOffer,
     FirstFriendRequest,
     FirstFriendResponse,
     GameHomeResponse,
     GameProfileBrief,
     GrowthStep,
+    MissionClaimResponse,
+    MissionOut,
+    MissionsResponse,
     NextUnlock,
     PetDetailResponse,
     PetNicknameRequest,
@@ -50,6 +57,7 @@ from app.schemas.game import (
     StageSaveRequest,
 )
 from app.services import game_catalog as catalog
+from app.services import game_events, game_missions
 from app.services.game_profile import (
     ensure_catalog,
     ensure_game_profile,
@@ -58,7 +66,9 @@ from app.services.game_profile import (
     owned_items,
     stage_placements,
 )
-from app.services.game_rewards import next_streak_unlock
+from app.services.game_rewards import food_progress_by_code, next_unlock
+from app.services.game_skills import CLARIFIER_SKILL_CODE
+from app.services.game_skills import remaining_charges as clarifier_charges
 
 router = APIRouter(prefix="/game", tags=["game"])
 
@@ -117,6 +127,13 @@ def _active_pet(db: Session, profile: GameProfile) -> ActivePet | None:
     )
 
 
+def _charges(db: Session, user_id: int, code: str, stored: int) -> int:
+    """잔여 충전. '발견 돋보기'는 달력 기준이라 원장에서 계산한다 (game_skills 참고)."""
+    if code == CLARIFIER_SKILL_CODE:
+        return clarifier_charges(db, user_id, stored)
+    return stored
+
+
 def _equipped_skill(db: Session, profile: GameProfile) -> EquippedSkill | None:
     code = profile.equipped_skill_code
     if not code:
@@ -131,9 +148,9 @@ def _equipped_skill(db: Session, profile: GameProfile) -> EquippedSkill | None:
     return EquippedSkill(
         code=code,
         name=catalog.skill_name(code),
-        charges=skill.charge_count,
+        charges=_charges(db, profile.user_id, code, skill.charge_count),
         max_charges=catalog.skill_max_charges(code),
-        is_active=code in catalog.ACTIVE_SKILL_CODES,
+        is_active=catalog.is_active_skill(code),
     )
 
 
@@ -186,7 +203,13 @@ def build_home(db: Session, user: User) -> GameHomeResponse:
     profile = ensure_game_profile(db, user)
     stage = _stage(db, user.id)
     stage.revision = profile.stage_revision
-    unlock = next_streak_unlock(db, profile)
+    unlock = next_unlock(db, profile)
+    today = logical_today()
+    # 완료했지만 아직 안 받은 것 — 미션이 먼저, 이벤트가 뒤 (§6.3)
+    claimable = [
+        *game_missions.claimable(db, user.id, today),
+        *game_events.claimable(db, user.id, today),
+    ]
     return GameHomeResponse(
         profile=_profile_brief(profile),
         active_pet=_active_pet(db, profile),
@@ -194,7 +217,7 @@ def build_home(db: Session, user: User) -> GameHomeResponse:
         stage=stage,
         next_unlock=NextUnlock(**unlock) if unlock else None,
         first_friend=_first_friend(profile),
-        claimable=[],
+        claimable=[ClaimableReward(**item) for item in claimable],
     )
 
 
@@ -208,6 +231,25 @@ def game_home(user: CurrentUser, db: DB) -> GameHomeResponse:
     return home
 
 
+def _unlock_progress(entry, rows: dict) -> dict | None:
+    """음식 해금의 진행도 — {"current":3,"target":5,"unit":"day"|"menu"}.
+
+    아직 진행이 없으면 0/target 으로 내려 카드가 목표를 보여줄 수 있게 한다.
+    보유 중인 아이템은 호출부에서 None 으로 둔다.
+    """
+    if entry.unlock.get("type") != "food":
+        return None
+    target = catalog.food_unlock_target(entry)
+    if target <= 0:
+        return None
+    row = rows.get(entry.code)
+    return {
+        "current": min(row.current_value, target) if row is not None else 0,
+        "target": target,
+        "unit": catalog.food_unlock_unit(entry),
+    }
+
+
 def _collection_items(
     db: Session, profile: GameProfile, *, shop_only: bool
 ) -> list[CollectionItem]:
@@ -215,6 +257,7 @@ def _collection_items(
     owned = owned_items(db, profile.user_id)
     active = {code for _placement, code in stage_placements(db, profile.user_id)}
     bonds = _bonds(db, profile.user_id)
+    progress_rows = food_progress_by_code(db, profile.user_id)
 
     items: list[CollectionItem] = []
     for entry in catalog.entries():
@@ -238,6 +281,7 @@ def _collection_items(
 
         bond = bonds.get(entry.code)
         skill = catalog.signature_skill(entry.code)
+        progress = _unlock_progress(entry, progress_rows) if not is_owned else None
         items.append(
             CollectionItem(
                 code=entry.code,
@@ -253,6 +297,7 @@ def _collection_items(
                 signature_skill=skill,
                 signature_skill_name=catalog.skill_name(skill) if skill else None,
                 locked_reason=locked_reason,
+                progress=progress,
             )
         )
     return items
@@ -297,13 +342,67 @@ def game_skills(user: CurrentUser, db: DB) -> SkillsResponse:
                 description=catalog.skill_description(code),
                 source_pet_code=row.source_pet_code,
                 unlock_bond_level=int(spec.get("unlock_bond_level", 3)),
-                charges=row.charge_count,
+                charges=_charges(db, user.id, code, row.charge_count),
                 max_charges=catalog.skill_max_charges(code),
-                is_active=code in catalog.ACTIVE_SKILL_CODES,
+                is_active=catalog.is_active_skill(code),
                 equipped=profile.equipped_skill_code == code,
             )
         )
     return SkillsResponse(equipped_skill_code=profile.equipped_skill_code, skills=out)
+
+
+# --- 미션 ---
+
+@router.get("/missions", response_model=MissionsResponse)
+def game_missions_list(user: CurrentUser, db: DB) -> MissionsResponse:
+    """오늘의 일일 3개(티어당 1) + 이번 주 1개. 같은 날 다시 조회해도 같은 미션이다."""
+    profile = ensure_game_profile(db, user)
+    data = game_missions.list_missions(db, profile, logical_today())
+    db.commit()
+    return MissionsResponse(**data)
+
+
+@router.post("/missions/{code}/claim", response_model=MissionClaimResponse)
+def claim_mission(code: str, user: CurrentUser, db: DB) -> MissionClaimResponse:
+    """완료된 미션의 보상을 수령한다 (자동 지급하지 않는다)."""
+    profile = ensure_game_profile(db, user)
+    result = game_missions.claim_mission(db, profile, code, logical_today())
+    db.commit()
+    return MissionClaimResponse(**result)
+
+
+@router.post("/missions/{code}/swap", response_model=MissionOut)
+def swap_mission(code: str, user: CurrentUser, db: DB) -> MissionOut:
+    """'오늘의 바꾸기' — 시작 전 일일 미션 하나를 같은 티어 안에서 바꾼다 (일 1회)."""
+    profile = ensure_game_profile(db, user)
+    result = game_missions.swap_mission(db, profile, code, logical_today())
+    db.commit()
+    return MissionOut(**result)
+
+
+# --- 이벤트 ---
+
+@router.get("/events", response_model=EventsResponse)
+def game_events_list(user: CurrentUser, db: DB) -> EventsResponse:
+    """기간 중인 이벤트 + 내 진행도 + 보상 도달/수령 여부."""
+    ensure_game_profile(db, user)
+    events = game_events.list_events(db, user.id, logical_today())
+    db.commit()
+    return EventsResponse(events=events)
+
+
+@router.post("/events/{code}/claim", response_model=EventClaimResponse)
+def claim_event_reward(
+    code: str, body: EventClaimRequest, user: CurrentUser, db: DB
+) -> EventClaimResponse:
+    """스탬프(또는 완료 미션 수) 보상 1건을 수령한다. 코인으로는 살 수 없다."""
+    profile = ensure_game_profile(db, user)
+    threshold = body.threshold()
+    if threshold is None:
+        raise APIError(409, "EVENT_REWARD_NOT_REACHED", "받을 보상을 지정해 주세요.")
+    result = game_events.claim_reward(db, profile, code, threshold, logical_today())
+    db.commit()
+    return EventClaimResponse(**result)
 
 
 # --- 무대 배치 ---

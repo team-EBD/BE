@@ -20,6 +20,38 @@ def meal_on(day: date, meal_type: str = "lunch", **extra) -> dict:
     return {**MEAL_PAYLOAD, "meal_type": meal_type, "eaten_at": eaten.isoformat(), **extra}
 
 
+# 음식 태그 해금 테스트용 nutrition_item_id (seed/game_food_tags.json 기준)
+VEGETABLE = 43  # 샐러드 → vegetable
+SOUP = 1  # 김치찌개 → soup
+PLAIN = 8  # 공기밥 → 태그 없음
+
+
+def food_item(nutrition_item_id: int | None, name: str = "음식") -> dict:
+    return {
+        "nutrition_item_id": nutrition_item_id,
+        "food_name": name,
+        "serving_amount": 1.0,
+        "calories": 100,
+        "carbs": 10.0,
+        "protein": 5.0,
+        "fat": 1.0,
+    }
+
+
+def meal_with(day: date, nutrition_item_ids: list, meal_type: str = "lunch") -> dict:
+    """그 논리 날짜에 지정한 nutrition item 만 담은 기록 payload."""
+    return meal_on(
+        day,
+        meal_type,
+        items=[food_item(nid, f"음식{nid}") for nid in nutrition_item_ids],
+    )
+
+
+def collection_item(client, headers, code: str) -> dict:
+    items = client.get("/v1/game/collection", headers=headers).json()["items"]
+    return next(i for i in items if i["code"] == code)
+
+
 def home(client, headers) -> dict:
     res = client.get("/v1/game/home", headers=headers)
     assert res.status_code == 200, res.text
@@ -242,11 +274,16 @@ def test_seven_day_streak_unlocks_food(client, auth_headers):
 
 
 def test_home_shows_next_unlock_goal(client, auth_headers):
-    create_meal(client, auth_headers, meal_on(_logical_today()))
+    """음식 목표보다 스트릭이 가까우면 스트릭 목표를 보여 준다."""
+    today = _logical_today()
+    for offset in (2, 1, 0):
+        # 태그가 없는 음식만 기록 — 음식 목표는 5일 그대로 남는다
+        create_meal(client, auth_headers, meal_with(today - timedelta(days=offset), [PLAIN]))
     goal = home(client, auth_headers)["next_unlock"]
     assert goal["item_code"] == "food_apple"
     assert goal["target"] == 7
-    assert goal["current"] == 1
+    assert goal["current"] == 3
+    assert goal["label"] == "4일 더 기록하면 빨간 사과"
 
 
 # --- 첫 친구 선택 ---
@@ -527,3 +564,645 @@ def test_bond_level_boundaries():
     assert [catalog.bond_level_for(d) for d in (0, 2, 3, 6, 7, 13, 14, 29, 30, 99)] == [
         1, 1, 2, 2, 3, 3, 4, 4, 5, 5
     ]
+
+
+# --- 음식 태그 해금 (curated 매핑 + unlock_progress) ---
+
+def test_vegetable_meals_on_five_days_unlock_broccoli(client, auth_headers):
+    today = _logical_today()
+    rewards = None
+    for offset in range(4, -1, -1):
+        rewards = create_meal(
+            client, auth_headers, meal_with(today - timedelta(days=offset), [VEGETABLE])
+        )["rewards"]
+
+    progress = {p["item_code"]: p for p in rewards["progress_updates"]}
+    assert progress["food_broccoli"] == {
+        "item_code": "food_broccoli", "current": 5, "target": 5, "unlocked": True
+    }
+    assert "food_broccoli" in rewards["unlocked_items"]
+    assert collection_item(client, auth_headers, "food_broccoli")["owned"] is True
+
+
+def test_same_day_vegetable_twice_counts_one_day(client, auth_headers):
+    today = _logical_today()
+    first = create_meal(client, auth_headers, meal_with(today, [VEGETABLE], "lunch"))["rewards"]
+    second = create_meal(client, auth_headers, meal_with(today, [VEGETABLE], "dinner"))["rewards"]
+
+    assert {p["item_code"]: p["current"] for p in first["progress_updates"]}["food_broccoli"] == 1
+    # 같은 논리 날짜는 다시 세지 않는다 → 진행도 변화가 없어 응답에도 실리지 않는다
+    assert "food_broccoli" not in {p["item_code"] for p in second["progress_updates"]}
+    assert collection_item(client, auth_headers, "food_broccoli")["progress"] == {
+        "current": 1, "target": 5, "unit": "day"
+    }
+
+
+def test_free_text_item_does_not_move_progress(client, auth_headers):
+    """nutrition_item_id 가 없는 자유 입력은 '확정한 음식'이 아니다."""
+    today = _logical_today()
+    rewards = create_meal(
+        client, auth_headers, meal_on(today, "lunch", items=[food_item(None, "집밥")])
+    )["rewards"]
+    assert rewards["progress_updates"] == []
+    assert collection_item(client, auth_headers, "food_taco")["progress"]["current"] == 0
+    assert collection_item(client, auth_headers, "food_broccoli")["progress"]["current"] == 0
+
+
+def test_five_breakfast_days_unlock_pancakes(client, auth_headers):
+    today = _logical_today()
+    rewards = None
+    for offset in range(4, -1, -1):
+        rewards = create_meal(
+            client,
+            auth_headers,
+            meal_with(today - timedelta(days=offset), [PLAIN], "breakfast"),
+        )["rewards"]
+    assert "food_pancakes" in rewards["unlocked_items"]
+    assert collection_item(client, auth_headers, "food_pancakes")["owned"] is True
+    # 아침을 5일 기록했다고 채소 목표가 오르지는 않는다
+    assert collection_item(client, auth_headers, "food_broccoli")["progress"]["current"] == 0
+
+
+def test_eight_distinct_menus_unlock_taco(client, auth_headers):
+    today = _logical_today()
+    menus = [5, 6, 8, 10, 11, 15, 16]  # 태그가 없는 서로 다른 메뉴 7종
+    for offset, nid in zip(range(9, 2, -1), menus):
+        create_meal(client, auth_headers, meal_with(today - timedelta(days=offset), [nid]))
+    assert collection_item(client, auth_headers, "food_taco")["progress"] == {
+        "current": 7, "target": 8, "unit": "menu"
+    }
+
+    # 같은 메뉴를 다시 먹어도 가짓수는 늘지 않는다
+    repeat = create_meal(
+        client, auth_headers, meal_with(today - timedelta(days=1), [menus[0]])
+    )["rewards"]
+    assert "food_taco" not in {p["item_code"] for p in repeat["progress_updates"]}
+
+    eighth = create_meal(client, auth_headers, meal_with(today, [20]))["rewards"]
+    assert "food_taco" in eighth["unlocked_items"]
+    assert {p["item_code"]: p for p in eighth["progress_updates"]}["food_taco"]["current"] == 8
+
+
+def test_unlocked_food_is_not_granted_again(client, auth_headers):
+    today = _logical_today()
+    for offset in range(4, -1, -1):
+        create_meal(client, auth_headers, meal_with(today - timedelta(days=offset), [VEGETABLE]))
+    owned_before = {
+        i["code"] for i in client.get("/v1/game/collection", headers=auth_headers).json()["items"]
+        if i["owned"]
+    }
+
+    later = create_meal(
+        client, auth_headers, meal_with(today + timedelta(days=1), [VEGETABLE])
+    )["rewards"]
+    assert "food_broccoli" not in later["unlocked_items"]
+    assert "food_broccoli" not in {p["item_code"] for p in later["progress_updates"]}
+
+    item = collection_item(client, auth_headers, "food_broccoli")
+    assert item["owned"] is True
+    assert item["progress"] is None  # 이미 보유한 아이템은 진행도를 내리지 않는다
+    owned_after = {
+        i["code"] for i in client.get("/v1/game/collection", headers=auth_headers).json()["items"]
+        if i["owned"]
+    }
+    assert owned_after == owned_before
+
+
+def test_next_unlock_prefers_closer_food_goal(client, auth_headers):
+    """스트릭(7일)보다 가까운 음식 목표가 있으면 그쪽을 보여 준다."""
+    today = _logical_today()
+    for offset in (1, 0):
+        create_meal(client, auth_headers, meal_with(today - timedelta(days=offset), [SOUP]))
+    goal = home(client, auth_headers)["next_unlock"]
+    assert goal["item_code"] == "food_soup"
+    assert (goal["current"], goal["target"]) == (2, 5)
+    assert goal["label"] == "국물 요리가 든 식사를 3일 더 기록하면 따뜻한 수프"
+
+
+def test_meal_response_carries_progress_updates(client, auth_headers):
+    rewards = create_meal(
+        client, auth_headers, meal_with(_logical_today(), [SOUP])
+    )["rewards"]
+    by_code = {p["item_code"]: p for p in rewards["progress_updates"]}
+    assert by_code["food_soup"] == {
+        "item_code": "food_soup", "current": 1, "target": 5, "unlocked": False
+    }
+    # 같은 기록의 메뉴 가짓수도 함께 오른다
+    assert by_code["food_taco"]["current"] == 1
+    assert by_code["food_taco"]["target"] == 8
+    assert "food_broccoli" not in by_code  # 채소는 없었다
+
+
+def test_collection_shows_food_progress_units(client, auth_headers):
+    create_meal(client, auth_headers, meal_with(_logical_today(), [SOUP]))
+    assert collection_item(client, auth_headers, "food_soup")["progress"] == {
+        "current": 1, "target": 5, "unit": "day"
+    }
+    assert collection_item(client, auth_headers, "food_taco")["progress"]["unit"] == "menu"
+    # 스트릭 해금과 펫에는 진행도를 붙이지 않는다 (필드는 항상 존재한다)
+    assert collection_item(client, auth_headers, "food_apple")["progress"] is None
+    assert collection_item(client, auth_headers, "pet_cat")["progress"] is None
+
+
+# --- 보상 실패 rollback (핸드오프 §6-B G) ---
+
+def test_meal_is_saved_when_rewards_fail(client, auth_headers, db_factory, monkeypatch):
+    """보상 계산이 터져도 ① 식단은 저장되고 ② rewards 는 null ③ 원장은 비어 있다."""
+    from sqlalchemy import func, select
+
+    import app.services.meals as meals_service
+    from app.models import RewardLedger, UnlockProgress
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("보상 계산 실패")
+
+    monkeypatch.setattr(meals_service, "apply_meal_rewards", boom)
+
+    res = client.post(
+        "/v1/meals", headers=auth_headers, json=meal_with(_logical_today(), [SOUP])
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["rewards"] is None
+
+    detail = client.get(f"/v1/meals/{body['meal_id']}", headers=auth_headers)
+    assert detail.status_code == 200
+    assert [i["food_name"] for i in detail.json()["items"]] == ["음식1"]
+
+    db = db_factory()
+    try:
+        assert db.scalar(select(func.count(RewardLedger.id))) == 0
+        assert db.scalar(select(func.count(UnlockProgress.id))) == 0
+    finally:
+        db.close()
+
+
+# --- 음식 태그 2계층 (curated → 이름 키워드 폴백) ---
+
+def _add_nutrition_item(db_factory, name: str) -> int:
+    """curated 46종 밖의 영양 항목 (식약처 OpenAPI 적재분과 같은 상황)."""
+    from app.models import NutritionItem
+
+    db = db_factory()
+    try:
+        row = NutritionItem(
+            name=name,
+            normalized_name=name.replace(" ", ""),
+            base_amount=100,
+            base_unit="g",
+            calories=200,
+            carbs=10,
+            protein=20,
+            fat=8,
+            category="외식",
+            source="public",
+        )
+        db.add(row)
+        db.commit()
+        assert row.id > 46  # 시드 46종 밖이어야 폴백을 탄다
+        return row.id
+    finally:
+        db.close()
+
+
+def test_curated_tags_beat_keyword_fallback():
+    """curated 의 빈 배열은 '태그 없음'이라는 판단이므로 키워드로 덮이지 않는다."""
+    # 8 = 공기밥 (curated 빈 배열) — 이름에 키워드가 있어도 무태그로 남는다
+    assert catalog.food_tags_for(8, "채소 듬뿍 샐러드") == frozenset()
+    assert catalog.food_tags_for(25, "탕수육") == frozenset()  # 25 = 탕수육
+    # curated 에 값이 있으면 그 값만 쓴다 (이름이 더 많은 태그를 암시해도)
+    assert catalog.food_tags_for(1, "김치찌개") == frozenset({"soup"})
+    assert catalog.food_tags_for(43, "샐러드") == frozenset({"vegetable"})
+
+
+def test_keyword_fallback_tags_unknown_nutrition_item():
+    """curated 에 없는 id 는 이름으로 태깅한다."""
+    assert catalog.food_tags_for(9001, "훈제 연어 샐러드") == frozenset({"fish", "vegetable"})
+    assert catalog.food_tags_for(9002, "황태해장국") == frozenset({"fish", "soup"})
+    assert catalog.food_tags_for(9003, "시금치나물") == frozenset({"vegetable"})
+    assert catalog.food_tags_for(9004, "블루베리") == frozenset({"fruit"})
+    assert catalog.food_tags_for(9005, "순대국밥") == frozenset({"soup"})
+
+
+def test_keyword_exclusions_block_false_positives():
+    """가공품·동음이의에 태그가 붙으면 '안 먹었는데 진행도가 올랐다'가 된다."""
+    for name in ("사과주스", "사과차", "딸기우유", "포도당", "수박바", "망고빙수"):
+        assert "fruit" not in catalog.food_tags_from_name(name), name
+    for name in ("유부초밥", "멸치육수", "참치액", "게맛살"):
+        assert "fish" not in catalog.food_tags_from_name(name), name
+    for name in ("보쌈", "야채빵", "배추김치", "과일샐러드", "옥수수샐러드", "당근케이크"):
+        assert "vegetable" not in catalog.food_tags_from_name(name), name
+    for name in ("탕수육", "그라탕", "설탕", "탕후루", "라면스프", "볶음라면", "스프링롤"):
+        assert "soup" not in catalog.food_tags_from_name(name), name
+
+
+def test_keyword_fallback_ignores_missing_name():
+    assert catalog.food_tags_for(9001, None) == frozenset()
+    assert catalog.food_tags_for(9001, "") == frozenset()
+    assert catalog.food_tags_for(9001, "   ") == frozenset()
+    assert catalog.food_tags_for(9001, "돈까스") == frozenset()
+    # 자유 입력(nutrition_item_id 없음)은 이름이 무엇이든 진행도를 올리지 않는다
+    assert catalog.food_tags_for(None, "연어 스테이크") == frozenset()
+
+
+def test_unknown_nutrition_item_progresses_by_name(client, auth_headers, db_factory):
+    """식약처 적재분처럼 curated 밖의 음식도 해금이 열린다."""
+    salmon = _add_nutrition_item(db_factory, "연어 스테이크")
+    juice = _add_nutrition_item(db_factory, "사과주스")
+    today = _logical_today()
+
+    rewards = None
+    for offset in range(4, -1, -1):
+        rewards = create_meal(
+            client, auth_headers, meal_with(today - timedelta(days=offset), [salmon])
+        )["rewards"]
+    assert "food_sushi_salmon" in rewards["unlocked_items"]
+    assert collection_item(client, auth_headers, "food_sushi_salmon")["owned"] is True
+
+    # 가공 음료는 과일 진행도를 올리지 않는다
+    create_meal(client, auth_headers, meal_with(today, [juice], "snack"))
+    assert collection_item(client, auth_headers, "food_strawberry")["progress"]["current"] == 0
+
+
+# --- 미션 (일일 3 + 주간 1) ---
+
+def missions(client, headers) -> dict:
+    res = client.get("/v1/game/missions", headers=headers)
+    assert res.status_code == 200, res.text
+    return res.json()
+
+
+def daily_missions(client, headers) -> list[dict]:
+    return [m for m in missions(client, headers)["missions"] if m["scope"] == "daily"]
+
+
+def _photo_id(client, headers) -> int:
+    res = client.post(
+        "/v1/meals/images",
+        headers=headers,
+        files={"image": ("a.jpg", b"\xff\xd8\xff", "image/jpeg")},
+        data={"source": "camera"},
+    )
+    return res.json()["meal_image_id"]
+
+
+def rich_meal(day: date, ids: list, meal_type: str, image_id: int) -> dict:
+    """모든 티어의 일일 미션을 한 번에 건드리는 기록 (사진 + 태그 + 여러 메뉴)."""
+    return {**meal_with(day, ids, meal_type), "meal_image_id": image_id}
+
+
+def _complete_daily_missions(client, headers, db_factory, day: date) -> list[dict]:
+    """그 논리 날짜의 일일 미션 3개를 모두 완료시킨다 (아침·점심·저녁 3건)."""
+    fruit = _add_nutrition_item(db_factory, "블루베리")
+    image = _photo_id(client, headers)
+    ids = [VEGETABLE, SOUP, fruit]
+    for meal_type in ("breakfast", "lunch", "dinner"):
+        create_meal(client, headers, rich_meal(day, ids, meal_type, image))
+    return daily_missions(client, headers)
+
+
+def test_daily_missions_are_stable_within_the_same_day(client, auth_headers):
+    first = missions(client, auth_headers)["missions"]
+    for _ in range(3):
+        again = missions(client, auth_headers)["missions"]
+    assert [m["code"] for m in again] == [m["code"] for m in first]
+    assert [m["period_key"] for m in again] == [m["period_key"] for m in first]
+
+
+def test_daily_missions_are_one_per_tier_plus_one_weekly(client, auth_headers):
+    data = missions(client, auth_headers)
+    daily = [m for m in data["missions"] if m["scope"] == "daily"]
+    weekly = [m for m in data["missions"] if m["scope"] == "weekly"]
+    assert sorted(m["tier"] for m in daily) == [1, 2, 3]
+    assert len({m["code"] for m in daily}) == 3
+    assert len(weekly) == 1
+    assert all(m["progress"] == 0 and m["completed"] is False for m in data["missions"])
+
+
+def test_weekly_period_key_is_that_weeks_monday(client, auth_headers):
+    today = _logical_today()
+    data = missions(client, auth_headers)
+    weekly = next(m for m in data["missions"] if m["scope"] == "weekly")
+    daily = next(m for m in data["missions"] if m["scope"] == "daily")
+    assert weekly["period_key"] == (today - timedelta(days=today.weekday())).isoformat()
+    assert daily["period_key"] == today.isoformat()
+
+
+def test_meal_save_raises_mission_progress(client, auth_headers, db_factory):
+    """사진 + 아침 + 채소·과일·국물 + 새 메뉴 = 출제된 미션이 한 칸 이상 오른다."""
+    fruit = _add_nutrition_item(db_factory, "블루베리")
+    image = _photo_id(client, auth_headers)
+    today = _logical_today()
+    assert all(m["progress"] == 0 for m in missions(client, auth_headers)["missions"])
+
+    create_meal(
+        client, auth_headers, rich_meal(today, [VEGETABLE, SOUP, fruit], "breakfast", image)
+    )
+    after = missions(client, auth_headers)["missions"]
+    assert after, "미션이 출제되지 않았다"
+    for mission in after:
+        assert mission["progress"] >= 1, mission
+
+
+def test_completed_mission_is_not_paid_until_claimed(client, auth_headers, db_factory):
+    today = _logical_today()
+    daily = _complete_daily_missions(client, auth_headers, db_factory, today)
+    assert all(m["completed"] and not m["claimed"] for m in daily), daily
+
+    claimable = home(client, auth_headers)["claimable"]
+    by_code = {c["code"]: c for c in claimable if c["type"] == "mission"}
+    assert {m["code"] for m in daily} <= set(by_code)
+    for mission in daily:
+        assert by_code[mission["code"]]["reward"] == mission["reward"]
+        assert by_code[mission["code"]]["label"] == mission["title"]
+
+
+def test_mission_claim_pays_once_and_second_claim_conflicts(client, auth_headers, db_factory):
+    today = _logical_today()
+    target = _complete_daily_missions(client, auth_headers, db_factory, today)[0]
+    before = home(client, auth_headers)["profile"]["points"]
+
+    res = client.post("/v1/game/missions/" + target["code"] + "/claim", headers=auth_headers)
+    assert res.status_code == 200, res.text
+    assert res.json()["reward"] == target["reward"]
+    assert home(client, auth_headers)["profile"]["points"] >= before + target["reward"]["points"]
+
+    again = client.post("/v1/game/missions/" + target["code"] + "/claim", headers=auth_headers)
+    assert again.status_code == 409
+    assert again.json()["error"]["code"] == "MISSION_ALREADY_CLAIMED"
+
+    # 수령한 미션은 더 이상 claimable 에 담기지 않는다
+    assert target["code"] not in {c["code"] for c in home(client, auth_headers)["claimable"]}
+    assert {m["code"]: m for m in daily_missions(client, auth_headers)}[target["code"]]["claimed"]
+
+
+def test_incomplete_or_unknown_mission_claim_is_rejected(client, auth_headers):
+    target = daily_missions(client, auth_headers)[0]
+    res = client.post("/v1/game/missions/" + target["code"] + "/claim", headers=auth_headers)
+    assert res.status_code == 409
+    assert res.json()["error"]["code"] == "MISSION_NOT_COMPLETED"
+
+    missing = client.post("/v1/game/missions/daily_nope/claim", headers=auth_headers)
+    assert missing.status_code == 404
+    assert missing.json()["error"]["code"] == "MISSION_NOT_FOUND"
+
+
+def test_new_period_issues_fresh_missions(client, auth_headers, monkeypatch):
+    today = _logical_today()
+    create_meal(client, auth_headers, meal_on(today, "breakfast"))
+    assert any(m["progress"] > 0 for m in daily_missions(client, auth_headers))
+
+    tomorrow = today + timedelta(days=1)
+    monkeypatch.setattr("app.api.v1.game.logical_today", lambda: tomorrow)
+    fresh = daily_missions(client, auth_headers)
+    assert [m["period_key"] for m in fresh] == [tomorrow.isoformat()] * 3
+    assert all(m["progress"] == 0 for m in fresh)
+    assert sorted(m["tier"] for m in fresh) == [1, 2, 3]
+
+
+# --- 오늘의 바꾸기 (daily_mission_swap) ---
+
+def _equip_swap_skill(client, headers, db_factory) -> None:
+    """유대 Lv.3 까지 기다리지 않고 '오늘의 바꾸기'를 장착시킨다."""
+    from sqlalchemy import select
+
+    from app.models import GameProfile, UserSkill
+
+    home(client, headers)
+    db = db_factory()
+    try:
+        profile = db.scalar(select(GameProfile))
+        db.add(
+            UserSkill(
+                user_id=profile.user_id,
+                skill_code="daily_mission_swap",
+                source_pet_code="pet_cat",
+                charge_count=1,
+            )
+        )
+        profile.equipped_skill_code = "daily_mission_swap"
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_swap_requires_the_equipped_skill(client, auth_headers):
+    target = daily_missions(client, auth_headers)[0]
+    res = client.post("/v1/game/missions/" + target["code"] + "/swap", headers=auth_headers)
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "SKILL_NOT_UNLOCKED"
+    assert missions(client, auth_headers)["swap_available"] is False
+
+
+def test_swap_replaces_within_the_same_tier_and_sticks(client, auth_headers, db_factory):
+    _equip_swap_skill(client, auth_headers, db_factory)
+    assert missions(client, auth_headers)["swap_available"] is True
+
+    target = daily_missions(client, auth_headers)[1]  # 티어 2
+    res = client.post("/v1/game/missions/" + target["code"] + "/swap", headers=auth_headers)
+    assert res.status_code == 200, res.text
+    replacement = res.json()
+    assert replacement["code"] != target["code"]
+    assert replacement["tier"] == target["tier"]
+    assert replacement["scope"] == "daily"
+    assert replacement["progress"] == 0
+
+    after = {m["code"]: m for m in daily_missions(client, auth_headers)}
+    assert replacement["code"] in after
+    assert target["code"] not in after
+    assert sorted(m["tier"] for m in after.values()) == [1, 2, 3]
+    # 같은 날 다시 조회해도 바꾼 미션이 유지된다
+    assert [m["code"] for m in daily_missions(client, auth_headers)] == list(after)
+
+
+def test_swap_is_once_a_day(client, auth_headers, db_factory):
+    _equip_swap_skill(client, auth_headers, db_factory)
+    first = daily_missions(client, auth_headers)[0]
+    swapped = client.post(
+        "/v1/game/missions/" + first["code"] + "/swap", headers=auth_headers
+    )
+    assert swapped.status_code == 200, swapped.text
+
+    second = daily_missions(client, auth_headers)[1]
+    res = client.post("/v1/game/missions/" + second["code"] + "/swap", headers=auth_headers)
+    assert res.status_code == 409
+    assert res.json()["error"]["code"] == "SKILL_CHARGE_EXHAUSTED"
+    assert missions(client, auth_headers)["swap_available"] is False
+
+
+def test_started_mission_cannot_be_swapped(client, auth_headers, db_factory):
+    _equip_swap_skill(client, auth_headers, db_factory)
+    today = _logical_today()
+    create_meal(client, auth_headers, meal_on(today, "breakfast"))
+
+    started = next(m for m in daily_missions(client, auth_headers) if m["progress"] > 0)
+    res = client.post("/v1/game/missions/" + started["code"] + "/swap", headers=auth_headers)
+    assert res.status_code == 409
+    assert res.json()["error"]["code"] == "MISSION_ALREADY_STARTED"
+    # 실패한 바꾸기는 오늘의 1회를 소모하지 않는다
+    assert missions(client, auth_headers)["swap_available"] is True
+
+
+# --- 이벤트 (스탬프 · 완료 미션 수) ---
+
+def events(client, headers) -> dict:
+    res = client.get("/v1/game/events", headers=headers)
+    assert res.status_code == 200, res.text
+    return {e["code"]: e for e in res.json()["events"]}
+
+
+def _activate_events(monkeypatch, today: date, codes=("treasure_picnic",), span: int = 10):
+    """시드의 기간만 바꿔 원하는 이벤트를 '지금' 열어 둔다.
+
+    기간은 시드가 단일 원천이라 테스트도 거기서만 손댄다 — 판정 코드는 건드리지 않는다.
+    나머지 이벤트는 멀리 밀어 '기간 밖'을 재현한다.
+    """
+    from dataclasses import replace
+
+    from app.services import game_catalog as gc
+
+    specs = []
+    for spec in gc.event_specs():
+        if spec.code in codes:
+            spec = replace(
+                spec,
+                starts_on=(today - timedelta(days=span)).isoformat(),
+                ends_on=(today + timedelta(days=span)).isoformat(),
+            )
+        else:
+            spec = replace(spec, starts_on="2099-01-01", ends_on="2099-12-31")
+        specs.append(spec)
+    monkeypatch.setattr(gc, "event_specs", lambda: tuple(specs))
+
+
+def test_event_stamp_counts_distinct_logical_days(client, auth_headers, monkeypatch):
+    today = _logical_today()
+    _activate_events(monkeypatch, today)
+    for offset in (2, 1, 0):
+        create_meal(client, auth_headers, meal_on(today - timedelta(days=offset), "lunch"))
+    assert events(client, auth_headers)["treasure_picnic"]["progress"] == 3
+
+    # 하루에 여러 번 기록해도 스탬프는 한 장이다
+    create_meal(client, auth_headers, meal_on(today, "dinner"))
+    assert events(client, auth_headers)["treasure_picnic"]["progress"] == 3
+
+
+def test_skipped_meal_does_not_stamp(client, auth_headers, monkeypatch):
+    today = _logical_today()
+    _activate_events(monkeypatch, today)
+    create_meal(
+        client,
+        auth_headers,
+        {
+            "meal_type": "dinner",
+            "eaten_at": meal_on(today)["eaten_at"],
+            "is_skipped": True,
+            "items": [],
+        },
+    )
+    assert events(client, auth_headers)["treasure_picnic"]["progress"] == 0
+
+
+def test_event_reward_claim_grants_item_once(client, auth_headers, monkeypatch):
+    today = _logical_today()
+    _activate_events(monkeypatch, today)
+    for offset in (2, 1, 0):
+        create_meal(client, auth_headers, meal_on(today - timedelta(days=offset), "lunch"))
+
+    res = client.post(
+        "/v1/game/events/treasure_picnic/claim", headers=auth_headers, json={"stamp": 3}
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["item_code"] == "event_chest"
+    assert collection_item(client, auth_headers, "event_chest")["owned"] is True
+
+    again = client.post(
+        "/v1/game/events/treasure_picnic/claim", headers=auth_headers, json={"stamp": 3}
+    )
+    assert again.status_code == 409
+    assert again.json()["error"]["code"] == "EVENT_REWARD_ALREADY_CLAIMED"
+
+    rewards = {r["stamp"]: r for r in events(client, auth_headers)["treasure_picnic"]["rewards"]}
+    assert rewards[1]["reached"] is True and rewards[1]["claimed"] is False
+    assert rewards[3]["reached"] is True and rewards[3]["claimed"] is True
+    assert rewards[5]["reached"] is False
+    assert rewards[5]["preview_key"]
+
+
+def test_unreached_event_reward_cannot_be_claimed(client, auth_headers, monkeypatch):
+    today = _logical_today()
+    _activate_events(monkeypatch, today)
+    create_meal(client, auth_headers, meal_on(today, "lunch"))
+
+    res = client.post(
+        "/v1/game/events/treasure_picnic/claim", headers=auth_headers, json={"stamp": 5}
+    )
+    assert res.status_code == 409
+    assert res.json()["error"]["code"] == "EVENT_REWARD_NOT_REACHED"
+    assert collection_item(client, auth_headers, "event_palm")["owned"] is False
+
+
+def test_out_of_period_events_are_hidden(client, auth_headers, monkeypatch):
+    today = _logical_today()
+    _activate_events(monkeypatch, today)
+    listed = events(client, auth_headers)
+    assert "treasure_picnic" in listed
+    assert "spring_bloom" not in listed
+
+    res = client.post(
+        "/v1/game/events/spring_bloom/claim", headers=auth_headers, json={"count": 7}
+    )
+    assert res.status_code == 404
+    assert res.json()["error"]["code"] == "EVENT_NOT_FOUND"
+
+    missing = client.post(
+        "/v1/game/events/nope/claim", headers=auth_headers, json={"stamp": 1}
+    )
+    assert missing.status_code == 404
+
+
+def test_granted_event_prop_is_not_sold_in_shop(client, auth_headers, monkeypatch):
+    today = _logical_today()
+    _activate_events(monkeypatch, today)
+    create_meal(client, auth_headers, meal_on(today, "lunch"))
+    res = client.post(
+        "/v1/game/events/treasure_picnic/claim", headers=auth_headers, json={"stamp": 1}
+    )
+    assert res.status_code == 200, res.text
+
+    assert collection_item(client, auth_headers, "event_bottle")["owned"] is True
+    shop = client.get("/v1/game/shop", headers=auth_headers).json()
+    assert not [i for i in shop["items"] if i["unlock"].get("type") == "event"]
+    assert "event_bottle" not in {i["code"] for i in shop["items"]}
+
+
+def test_event_reward_is_listed_in_claimable(client, auth_headers, monkeypatch):
+    today = _logical_today()
+    _activate_events(monkeypatch, today)
+    create_meal(client, auth_headers, meal_on(today, "lunch"))
+
+    entries = [c for c in home(client, auth_headers)["claimable"] if c["type"] == "event"]
+    assert [c["code"] for c in entries] == ["treasure_picnic"]
+    assert entries[0]["reward"] == {"item_code": "event_bottle", "stamp": 1}
+    assert entries[0]["label"] == "보물섬 피크닉 스탬프 1"
+
+    client.post(
+        "/v1/game/events/treasure_picnic/claim", headers=auth_headers, json={"stamp": 1}
+    )
+    assert not [c for c in home(client, auth_headers)["claimable"] if c["type"] == "event"]
+
+
+def test_mission_count_event_counts_completed_missions(
+    client, auth_headers, db_factory, monkeypatch
+):
+    today = _logical_today()
+    _activate_events(monkeypatch, today, codes=("harvest_festival",))
+    _complete_daily_missions(client, auth_headers, db_factory, today)
+
+    completed = [m for m in missions(client, auth_headers)["missions"] if m["completed"]]
+    assert len(completed) == 3  # 일일 3개 (주간은 아직)
+    event = events(client, auth_headers)["harvest_festival"]
+    assert event["rule"] == "mission_count"
+    assert event["progress"] == len(completed)
+    assert [r["count"] for r in event["rewards"]] == [7]
+    assert event["rewards"][0]["reached"] is False
