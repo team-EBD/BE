@@ -27,16 +27,23 @@ from app.models import (
 )
 from app.schemas.game import (
     ActivePet,
+    ClaimableReward,
     CollectionItem,
     CollectionResponse,
     EquipSkillRequest,
     EquippedSkill,
+    EventClaimRequest,
+    EventClaimResponse,
+    EventsResponse,
     FirstFriendOffer,
     FirstFriendRequest,
     FirstFriendResponse,
     GameHomeResponse,
     GameProfileBrief,
     GrowthStep,
+    MissionClaimResponse,
+    MissionOut,
+    MissionsResponse,
     NextUnlock,
     PetDetailResponse,
     PetNicknameRequest,
@@ -50,6 +57,7 @@ from app.schemas.game import (
     StageSaveRequest,
 )
 from app.services import game_catalog as catalog
+from app.services import game_events, game_missions
 from app.services.game_profile import (
     ensure_catalog,
     ensure_game_profile,
@@ -187,6 +195,12 @@ def build_home(db: Session, user: User) -> GameHomeResponse:
     stage = _stage(db, user.id)
     stage.revision = profile.stage_revision
     unlock = next_unlock(db, profile)
+    today = logical_today()
+    # 완료했지만 아직 안 받은 것 — 미션이 먼저, 이벤트가 뒤 (§6.3)
+    claimable = [
+        *game_missions.claimable(db, user.id, today),
+        *game_events.claimable(db, user.id, today),
+    ]
     return GameHomeResponse(
         profile=_profile_brief(profile),
         active_pet=_active_pet(db, profile),
@@ -194,7 +208,7 @@ def build_home(db: Session, user: User) -> GameHomeResponse:
         stage=stage,
         next_unlock=NextUnlock(**unlock) if unlock else None,
         first_friend=_first_friend(profile),
-        claimable=[],
+        claimable=[ClaimableReward(**item) for item in claimable],
     )
 
 
@@ -326,6 +340,60 @@ def game_skills(user: CurrentUser, db: DB) -> SkillsResponse:
             )
         )
     return SkillsResponse(equipped_skill_code=profile.equipped_skill_code, skills=out)
+
+
+# --- 미션 ---
+
+@router.get("/missions", response_model=MissionsResponse)
+def game_missions_list(user: CurrentUser, db: DB) -> MissionsResponse:
+    """오늘의 일일 3개(티어당 1) + 이번 주 1개. 같은 날 다시 조회해도 같은 미션이다."""
+    profile = ensure_game_profile(db, user)
+    data = game_missions.list_missions(db, profile, logical_today())
+    db.commit()
+    return MissionsResponse(**data)
+
+
+@router.post("/missions/{code}/claim", response_model=MissionClaimResponse)
+def claim_mission(code: str, user: CurrentUser, db: DB) -> MissionClaimResponse:
+    """완료된 미션의 보상을 수령한다 (자동 지급하지 않는다)."""
+    profile = ensure_game_profile(db, user)
+    result = game_missions.claim_mission(db, profile, code, logical_today())
+    db.commit()
+    return MissionClaimResponse(**result)
+
+
+@router.post("/missions/{code}/swap", response_model=MissionOut)
+def swap_mission(code: str, user: CurrentUser, db: DB) -> MissionOut:
+    """'오늘의 바꾸기' — 시작 전 일일 미션 하나를 같은 티어 안에서 바꾼다 (일 1회)."""
+    profile = ensure_game_profile(db, user)
+    result = game_missions.swap_mission(db, profile, code, logical_today())
+    db.commit()
+    return MissionOut(**result)
+
+
+# --- 이벤트 ---
+
+@router.get("/events", response_model=EventsResponse)
+def game_events_list(user: CurrentUser, db: DB) -> EventsResponse:
+    """기간 중인 이벤트 + 내 진행도 + 보상 도달/수령 여부."""
+    ensure_game_profile(db, user)
+    events = game_events.list_events(db, user.id, logical_today())
+    db.commit()
+    return EventsResponse(events=events)
+
+
+@router.post("/events/{code}/claim", response_model=EventClaimResponse)
+def claim_event_reward(
+    code: str, body: EventClaimRequest, user: CurrentUser, db: DB
+) -> EventClaimResponse:
+    """스탬프(또는 완료 미션 수) 보상 1건을 수령한다. 코인으로는 살 수 없다."""
+    profile = ensure_game_profile(db, user)
+    threshold = body.threshold()
+    if threshold is None:
+        raise APIError(409, "EVENT_REWARD_NOT_REACHED", "받을 보상을 지정해 주세요.")
+    result = game_events.claim_reward(db, profile, code, threshold, logical_today())
+    db.commit()
+    return EventClaimResponse(**result)
 
 
 # --- 무대 배치 ---
