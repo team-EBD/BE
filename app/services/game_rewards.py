@@ -20,10 +20,13 @@ from app.core.timeutil import kst_date_of, kst_day_bounds, now_utc
 from app.models import (
     CatalogItem,
     GameProfile,
+    MealItem,
     MealRecord,
+    NutritionItem,
     PetBond,
     RewardLedger,
     SkillUsageLedger,
+    UnlockProgress,
     User,
     UserItem,
     UserSkill,
@@ -270,67 +273,266 @@ def apply_pet_bond_day(
 
 # --- 해금 ---
 
-def grant_streak_unlocks(db: Session, profile: GameProfile) -> list[str]:
-    """스트릭 조건을 채운 음식을 지급한다 (멱등)."""
-    items = ensure_catalog(db)
-    owned = set(
+def _owned_codes(db: Session, user_id: int) -> set[str]:
+    return set(
         db.scalars(
             select(CatalogItem.code)
             .join(UserItem, UserItem.catalog_item_id == CatalogItem.id)
-            .where(UserItem.user_id == profile.user_id)
+            .where(UserItem.user_id == user_id)
         ).all()
     )
+
+
+def _grant_item(db: Session, user_id: int, catalog_item_id: int, source: str) -> bool:
+    """아이템 지급 1건. 이미 보유 중이면 False (unique 제약으로 멱등)."""
+    row = UserItem(user_id=user_id, catalog_item_id=catalog_item_id, source=source)
+    try:
+        with db.begin_nested():
+            db.add(row)
+            db.flush()
+    except IntegrityError:
+        _forget(db, row)
+        return False
+    return True
+
+
+def grant_streak_unlocks(db: Session, profile: GameProfile) -> list[str]:
+    """스트릭 조건을 채운 음식을 지급한다 (멱등)."""
+    items = ensure_catalog(db)
+    owned = _owned_codes(db, profile.user_id)
     granted: list[str] = []
     for entry in catalog.entries():
         if entry.unlock.get("type") != "streak" or entry.code in owned:
             continue
         if profile.current_streak < int(entry.unlock.get("days", 0)):
             continue
-        row = UserItem(
-            user_id=profile.user_id, catalog_item_id=items[entry.code].id, source="streak"
+        if _grant_item(db, profile.user_id, items[entry.code].id, "streak"):
+            granted.append(entry.code)
+    return granted
+
+
+# --- 음식 태그 해금 진행도 ---
+
+def _confirmed_foods(db: Session, meal: MealRecord) -> list[tuple[int, str | None]]:
+    """사용자가 **최종 확정한** 음식의 (nutrition_item_id, 영양DB 이름).
+
+    nutrition_item_id 가 없으면 자유 입력이라 세지 않는다. 이름은 curated 매핑에 없는
+    항목의 키워드 폴백에 쓴다 — **여기서 한 번에 조인해 가져와 N+1 을 만들지 않는다.**
+    (영양 항목은 운영 중 추가·수정되므로 이 결과는 캐시하지 않는다.)
+    """
+    rows = db.execute(
+        select(MealItem.nutrition_item_id, NutritionItem.name)
+        .join(NutritionItem, NutritionItem.id == MealItem.nutrition_item_id, isouter=True)
+        .where(
+            MealItem.meal_record_id == meal.id,
+            MealItem.nutrition_item_id.is_not(None),
+        )
+    ).all()
+    return [(int(nid), name) for nid, name in rows]
+
+
+def _unlock_progress_row(
+    db: Session, user_id: int, catalog_item_id: int, target: int
+) -> UnlockProgress:
+    row = db.scalar(
+        select(UnlockProgress).where(
+            UnlockProgress.user_id == user_id,
+            UnlockProgress.catalog_item_id == catalog_item_id,
+        )
+    )
+    if row is None:
+        row = UnlockProgress(
+            user_id=user_id,
+            catalog_item_id=catalog_item_id,
+            current_value=0,
+            target_value=target,
         )
         try:
             with db.begin_nested():
                 db.add(row)
                 db.flush()
-        except IntegrityError:
+        except IntegrityError:  # pragma: no cover — 동시 요청
             _forget(db, row)
+            row = db.scalar(
+                select(UnlockProgress).where(
+                    UnlockProgress.user_id == user_id,
+                    UnlockProgress.catalog_item_id == catalog_item_id,
+                )
+            )
+    elif row.target_value != target:
+        # 기획이 목표를 바꾸면 따라간다 (이미 지급된 아이템은 회수하지 않는다)
+        row.target_value = target
+    return row
+
+
+def _food_progress_keys(
+    entry, *, day: date, meal: MealRecord, tags: frozenset[str], item_ids: list[int]
+) -> list[str]:
+    """이번 기록이 이 해금에 기여하는 '세는 단위'의 멱등 키 목록.
+
+    `pet-bond:<pet>:<date>` 와 같은 원장 멱등 방식이다. 같은 논리 날짜(또는 같은
+    메뉴)는 몇 번을 기록해도 한 번만 센다 — 과거 날짜를 나중에 기록해도 안전하다.
+    """
+    rule = entry.unlock.get("rule")
+    if rule == catalog.FOOD_RULE_TAG_DAYS:
+        wanted = set(entry.unlock.get("food_tags") or [])
+        if wanted & tags:
+            return [f"food-progress:{entry.code}:{day.isoformat()}"]
+        return []
+    if rule == catalog.FOOD_RULE_MEAL_SLOT_DAYS:
+        if meal.meal_type == entry.unlock.get("meal_slot"):
+            return [f"food-progress:{entry.code}:{day.isoformat()}"]
+        return []
+    if rule == catalog.FOOD_RULE_MENU_COUNT:
+        # 날짜가 아니라 '서로 다른 메뉴' 가짓수를 센다
+        return [f"food-progress:{entry.code}:menu:{nid}" for nid in sorted(set(item_ids))]
+    return []
+
+
+def _apply_food_progress(
+    db: Session, profile: GameProfile, meal: MealRecord, day: date
+) -> tuple[list[dict], list[str]]:
+    """확정된 음식으로 음식 해금 진행도를 올린다. (progress_updates, 새로 해금된 코드)."""
+    foods = _confirmed_foods(db, meal)
+    if not foods:
+        return [], []
+
+    item_ids = [nid for nid, _name in foods]
+    found: set[str] = set()
+    for nid, name in foods:
+        found |= catalog.food_tags_for(nid, name)
+    tags = frozenset(found)
+
+    items = ensure_catalog(db)
+    owned = _owned_codes(db, profile.user_id)
+    updates: list[dict] = []
+    unlocked_codes: list[str] = []
+
+    for entry in catalog.food_unlock_entries():
+        target = catalog.food_unlock_target(entry)
+        if target <= 0 or entry.code in owned:
             continue
-        granted.append(entry.code)
-    return granted
+        keys = _food_progress_keys(
+            entry, day=day, meal=meal, tags=tags, item_ids=item_ids
+        )
+        if not keys:
+            continue
+
+        row = _unlock_progress_row(db, profile.user_id, items[entry.code].id, target)
+        gained = 0
+        for key in keys:
+            if _ledger(
+                db,
+                profile.user_id,
+                key=key,
+                reason="food_progress",
+                ref_type="catalog_item",
+                ref_id=entry.code,
+                logical_date=day,
+            ):
+                gained += 1
+        if gained == 0:
+            continue  # 이미 센 날짜/메뉴 — 진행도는 그대로다
+
+        row.current_value += gained
+        if row.last_counted_logical_date is None or day > row.last_counted_logical_date:
+            row.last_counted_logical_date = day
+
+        unlocked = row.current_value >= row.target_value
+        if unlocked and _grant_item(db, profile.user_id, items[entry.code].id, "food"):
+            unlocked_codes.append(entry.code)
+        updates.append(
+            {
+                "item_code": entry.code,
+                # 메뉴 규칙은 한 끼에 새 메뉴가 여러 개면 한 번에 여러 칸 오른다.
+                # 저장값은 그대로 두고 표시값만 목표에서 끊는다 ("9/8" 을 막는다).
+                "current": min(row.current_value, row.target_value),
+                "target": row.target_value,
+                "unlocked": unlocked,
+            }
+        )
+    return updates, unlocked_codes
 
 
-def next_streak_unlock(db: Session, profile: GameProfile) -> dict | None:
-    """다음으로 가까운 스트릭 해금 1개 — 홈의 '다음 목표' 카드."""
-    owned = set(
-        db.scalars(
-            select(CatalogItem.code)
-            .join(UserItem, UserItem.catalog_item_id == CatalogItem.id)
-            .where(UserItem.user_id == profile.user_id)
-        ).all()
+def food_progress_by_code(db: Session, user_id: int) -> dict[str, UnlockProgress]:
+    """아이템 코드 → 진행도 행 (컬렉션 응답·다음 목표 계산용)."""
+    rows = db.execute(
+        select(CatalogItem.code, UnlockProgress)
+        .join(UnlockProgress, UnlockProgress.catalog_item_id == CatalogItem.id)
+        .where(UnlockProgress.user_id == user_id)
+    ).all()
+    return {code: row for code, row in rows}
+
+
+def _food_goal_label(entry, remain: int) -> str:
+    """음식 목표 문구 — 비판단 말투 (v3 §2)."""
+    rule = entry.unlock.get("rule")
+    days = "하루" if remain == 1 else f"{remain}일"
+    if rule == catalog.FOOD_RULE_TAG_DAYS:
+        tags = entry.unlock.get("food_tags") or []
+        what = "·".join(catalog.food_tag_label(t) for t in tags)
+        return f"{what}가 든 식사를 {days} 더 기록하면 {entry.name}"
+    if rule == catalog.FOOD_RULE_MEAL_SLOT_DAYS:
+        slot = {"breakfast": "아침", "lunch": "점심", "dinner": "저녁", "snack": "간식"}.get(
+            entry.unlock.get("meal_slot"), "식사"
+        )
+        return f"{slot}을 {days} 더 기록하면 {entry.name}"
+    if rule == catalog.FOOD_RULE_MENU_COUNT:
+        count = "한 가지" if remain == 1 else f"{remain}가지"
+        return f"서로 다른 메뉴를 {count} 더 기록하면 {entry.name}"
+    return f"{days} 더 기록하면 {entry.name}"  # pragma: no cover — 규칙 추가 대비
+
+
+def _streak_goal_label(entry, remain: int) -> str:
+    return (
+        f"하루 더 기록하면 {entry.name}" if remain == 1
+        else f"{remain}일 더 기록하면 {entry.name}"
     )
-    best: tuple[int, object] | None = None
+
+
+def next_unlock(db: Session, profile: GameProfile) -> dict | None:
+    """다음으로 가까운 해금 1개 — 홈의 '다음 목표' 카드.
+
+    스트릭 해금과 음식 해금을 함께 보고 **남은 양이 가장 적은 1개**를 고른다.
+    (같으면 목표가 작은 쪽 → 카탈로그 정렬 순서. 매 조회에 같은 답이 나와야 한다)
+    """
+    owned = _owned_codes(db, profile.user_id)
+    progress = food_progress_by_code(db, profile.user_id)
+    best: tuple[int, int, int, dict] | None = None  # (남은 양, 목표, 정렬 순서, payload)
+
     for entry in catalog.entries():
-        if entry.unlock.get("type") != "streak" or entry.code in owned:
+        unlock_type = entry.unlock.get("type")
+        if unlock_type not in ("streak", "food") or entry.code in owned:
             continue
-        target = int(entry.unlock.get("days", 0))
+        if unlock_type == "streak":
+            target = int(entry.unlock.get("days", 0))
+            current = profile.current_streak
+        else:
+            target = catalog.food_unlock_target(entry)
+            row = progress.get(entry.code)
+            current = row.current_value if row is not None else 0
         if target <= 0:
             continue
-        if best is None or target < best[0]:
-            best = (target, entry)
-    if best is None:
-        return None
-    target, entry = best
-    remain = max(target - profile.current_streak, 0)
-    return {
-        "item_code": entry.code,
-        "current": profile.current_streak,
-        "target": target,
-        "label": (
-            f"하루 더 기록하면 {entry.name}" if remain == 1
-            else f"{remain}일 더 기록하면 {entry.name}"
-        ),
-    }
+        remain = max(target - current, 0)
+        label = (
+            _streak_goal_label(entry, remain)
+            if unlock_type == "streak"
+            else _food_goal_label(entry, remain)
+        )
+        candidate = (
+            remain,
+            target,
+            entry.sort_order,
+            {
+                "item_code": entry.code,
+                "current": current,
+                "target": target,
+                "label": label,
+            },
+        )
+        if best is None or candidate[:3] < best[:3]:
+            best = candidate
+    return best[3] if best is not None else None
 
 
 # --- 레벨 ---
@@ -469,9 +671,12 @@ def apply_meal_rewards(db: Session, user: User, meal: MealRecord) -> dict | None
     pet_code = profile.active_pet_code or catalog.DEFAULT_PET_CODE
     pet_growth = apply_pet_bond_day(db, profile, pet_code, day)
 
-    # 7) 레벨업 → 해금
+    # 7) 음식 태그 해금 진행도 — 확정된 음식만, 같은 날/같은 메뉴는 한 번만 센다
+    progress_updates, food_unlocks = _apply_food_progress(db, profile, meal, day)
+
+    # 8) 레벨업 → 해금
     level_up = _apply_xp(db, profile, gained_xp, day)
-    unlocked_items = grant_streak_unlocks(db, profile)
+    unlocked_items = grant_streak_unlocks(db, profile) + food_unlocks
 
     db.flush()
     return {
@@ -482,7 +687,7 @@ def apply_meal_rewards(db: Session, user: User, meal: MealRecord) -> dict | None
         "total_points": profile.points,
         "level_up": level_up,
         "unlocked_items": unlocked_items,
-        "progress_updates": [],
+        "progress_updates": progress_updates,
         "pet_growth": pet_growth,
         "skill_effect": skill_effect,
     }
