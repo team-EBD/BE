@@ -9,15 +9,17 @@ MEAL_LABEL = {"breakfast": "아침", "lunch": "점심", "dinner": "저녁", "sna
 _HEAD = {
     "personal": "{meal}에 자주 드시는 메뉴예요",
     "popular": "{meal}에 많이 기록되는 메뉴예요",
-    "catalog": "{meal} 예산을 고려한 기본 메뉴예요",
+    "catalog": "{meal}에 무난한 기본 메뉴예요",
     "collaborative": "비슷한 메뉴를 기록한 다른 이용자들이 먹은 음식이에요",
     "similar": "자주 드시는 {anchor}와 음식 특성이 비슷해요",
     "similar_type": "자주 드시는 {anchor} 같은 {kind}예요",
 }
+# 끼니 예산은 우리가 추정한 값이라 숫자로 보여주지 않는다 (사용자가 정한 예산이 아니다).
+# 예산 대비 가벼움/무거움만 말로 풀고, 칼로리·동반(밥) 합산은 카드의 kcal 줄이 보여준다.
 _LABEL_TAIL = {
     "fit": "",
     "light": " · 가볍게 드실 수 있어요",
-    "heavy": " · 예산보다 조금 무거워요",
+    "heavy": " · 양이 조금 많은 편이에요",
 }
 PROTEIN_MENTION_MIN = 0.5  # 단백질 부족분의 절반 이상 채우면 언급
 
@@ -37,15 +39,7 @@ def reason(ranked: Ranked, budget: Budget) -> str:
     else:
         head = _HEAD.get(cand.source, _HEAD["popular"]).format(meal=meal)
 
-    total = cand.total_calories
-    if cand.companion_name:
-        # 개인 동시기록에서 온 동반은 '함께 드시던', 군 기본 동반은 '보통 함께 먹는'
-        how = "함께 드시던" if cand.companion_personal else "보통 함께 먹는"
-        kcal = (f"{meal} 예산 {budget.meal_budget} 중 {round(total)}kcal "
-                f"({how} {cand.companion_name} {round(cand.companion_kcal)} 포함)")
-    else:
-        kcal = f"{meal} 예산 {budget.meal_budget} 중 {round(total)}kcal"
-    tail = _LABEL_TAIL[budget_label(total, budget.meal_budget)]
+    tail = _LABEL_TAIL[budget_label(cand.total_calories, budget.meal_budget)]
     if ranked.parts.get("protein", 0.0) >= PROTEIN_MENTION_MIN:
         tail += " · 단백질 보충에 좋아요"
-    return f"{head} · {kcal}{tail}"
+    return f"{head}{tail}"

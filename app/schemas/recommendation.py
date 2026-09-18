@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from app.schemas.food import FoodSearchItem
+
 Category = Literal["convenience_store", "delivery", "home_meal", "eating_out"]
 
 
@@ -60,6 +62,10 @@ class MenuItem(BaseModel):
     group_name: str | None = None
     family: str | None = None
     recommendation_item_id: int | None = None  # 화면 노출·피드백·실제 식사 연결용 카드 id
+    # 기록 초안 프리필용 상품 — 검색 결과와 같은 모양. FE 는 이 둘을 장바구니에 담고 보정 화면으로 간다.
+    # 못 찾으면 None(FE 는 이름으로 검색 화면 폴백)
+    food: FoodSearchItem | None = None
+    companion_food: FoodSearchItem | None = None
 
 
 class MenuBudget(BaseModel):

@@ -155,7 +155,7 @@ def test_default_companion_attached_and_budget_uses_total(db, taxonomy):
     assert card.source == "popular" and card.name == "김치찌개"
     assert card.companion_name == "쌀밥" and card.companion_kcal == 300
     assert card.total_calories == 620 and card.calories == 320
-    assert "보통 함께 먹는 쌀밥 300 포함" in card.reason  # 기본 동반 문구
+    assert card.companion_key == "쌀밥" and "예산" not in card.reason  # 합산은 kcal 줄이, 문구엔 숫자 없음
     # 예산 700(기본 0.35×2000) 에 620 → fit. 메인 320 만 보면 light 였을 것
     assert card.budget_label == "fit"
 
@@ -177,7 +177,7 @@ def test_personal_companion_overrides_default(db, taxonomy):
     assert stats["김치찌개"].companion_key == "쌀밥"
     card = next(i for i in recommend(db, with_rice.id, meal_type="dinner", now=NOW).items if i.group_name == "김치찌개")
     assert card.companion_name == "쌀밥" and card.total_calories == 620
-    assert "함께 드시던 쌀밥 300 포함" in card.reason  # 개인 동시기록 문구
+    assert card.companion_key == "쌀밥"
 
 
 def test_companion_needs_two_meals_before_trusting_personal(db, taxonomy):

@@ -236,3 +236,30 @@ def test_old_frontend_can_accept_and_save_without_item_id(client, auth_headers, 
         row = db.get(RecommendationItem, picked["recommendation_item_id"])
         assert row.shown_at is not None and row.accepted_at is not None
         assert row.eaten_at is None and row.eaten_meal_record_id is None
+
+
+def test_v2_cards_carry_prefill_foods_for_main_and_companion(client, auth_headers, db_factory, v2_engine):
+    """카드에 메인·동반 상품(검색 결과 모양)이 실려 FE 가 장바구니에 바로 담는다."""
+    from app.models import FoodGroup, NutritionItem
+
+    db = db_factory()
+    rice = FoodGroup(name="쌀밥", family="밥류", role="companion", calories=300, carbs=66, protein=5.5, fat=0.5)
+    db.add(rice)
+    db.flush()
+    stew = FoodGroup(name="김치찌개", family="국·탕·찌개류", role="meal", calories=320, carbs=18, protein=22, fat=16,
+                     companion_group_id=rice.id)
+    db.add(stew)
+    db.flush()
+    # 시드 1(김치찌개)·8(공기밥) 을 군에 붙인다
+    db.get(NutritionItem, 1).food_group_id = stew.id
+    db.get(NutritionItem, 8).food_group_id = rice.id
+    db.commit()
+    # 한 번만 먹어 본 메뉴 → 개인 동반 판단(2끼 이상) 대신 군 기본 동반(쌀밥)이 붙는다
+    _history(db, _user_id(db), [("김치찌개", 320, 18, 22, 16)], days=(1,), meal_type="dinner")
+
+    body = client.post("/v1/recommendations/menu", headers=auth_headers, json={"meal_type": "dinner"}).json()
+    card = next(m for m in body["recommended_menus"] if m["group_name"] == "김치찌개")
+    assert card["food"]["nutrition_item_id"] == 1 and card["food"]["name"] == "김치찌개"
+    assert set(card["food"]) >= {"base_serving", "calories", "carbs", "protein", "fat"}
+    assert card["companion_name"] == "쌀밥" and card["companion_food"]["nutrition_item_id"] == 8
+    assert "예산" not in card["reason"]

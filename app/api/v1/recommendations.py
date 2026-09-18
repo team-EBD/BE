@@ -52,6 +52,8 @@ from app.schemas.recommendation import (
 )
 from app.services.recommend import recommend as recommend_v2
 from app.services.recommend.feedback import log_exposure, mark_accepted, record_feedback
+from app.services.recommend.foods import food_item_payload, representative_item
+from app.services.recommend.groups import load_group_index
 from app.services.summary import aggregate_day, get_goals
 from app.services.usage_limit import enforce_daily_limit
 
@@ -227,6 +229,16 @@ def _menu_v2(db: Session, user: User, body: MenuRequest) -> MenuResponse:
     b = result.budget
     remaining = body.remaining_calories if body.remaining_calories is not None else b.remaining_today
     category = body.preferred_category or DEFAULT_CATEGORY
+    index = load_group_index(db)
+
+    def companion_food(item):
+        if not item.companion_name:
+            return None
+        group = index.by_key.get(item.companion_key) if item.companion_key else None
+        return food_item_payload(
+            representative_item(db, group_id=group.id if group else None, name=item.companion_name)
+        )
+
     menus = [
         MenuItem(
             name=item.name,
@@ -243,6 +255,8 @@ def _menu_v2(db: Session, user: User, body: MenuRequest) -> MenuResponse:
             group_name=item.group_name,
             family=item.family,
             recommendation_item_id=row.id,
+            food=food_item_payload(representative_item(db, group_id=item.group_id, name=item.name)),
+            companion_food=companion_food(item),
         )
         for item, row in zip(result.items, rows)
     ]

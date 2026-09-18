@@ -504,7 +504,7 @@ def test_engine_full_flow_sources_labels_and_reasons(db):
     assert sum(i.source == "personal" for i in result.items) <= 2
     for item in result.items:
         assert item.budget_label in ("fit", "light", "heavy")
-        assert "저녁 예산" in item.reason and f"{result.budget.meal_budget} 중" in item.reason
+        assert item.reason and "예산" not in item.reason  # 추정 예산 숫자는 문구에 내지 않는다
 
     # 같은 입력과 탐색 난수 → 같은 출력
     again = recommend(db, u.id, meal_type="dinner", now=NOW, rng=random.Random(7))

@@ -61,6 +61,7 @@ class RecommendedItem:
     group_name: str | None = None
     family: str | None = None
     companion_name: str | None = None  # "함께 드시던 쌀밥"
+    companion_key: str | None = None  # 동반 군 키 — 라우터가 프리필용 상품을 찾을 때 쓴다
     companion_kcal: float = 0.0
     total_calories: float = 0.0  # 메인 + 동반
     selection_probability: float = 1.0
@@ -198,6 +199,7 @@ def recommend(
             group_name=r.candidate.group_name,
             family=r.candidate.family,
             companion_name=r.candidate.companion_name,
+            companion_key=r.candidate.companion_key,
             companion_kcal=round(r.candidate.companion_kcal),
             total_calories=round(r.candidate.total_calories),
             selection_probability=decision["probabilities"][r.candidate.key],
