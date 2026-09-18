@@ -43,14 +43,7 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    section = config.get_section(config.config_ini_section, {})
-    section["sqlalchemy.url"] = _get_url()
-    connectable = engine_from_config(
-        section,
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
-    )
-    with connectable.connect() as connection:
+    def run_on_connection(connection) -> None:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
@@ -58,6 +51,28 @@ def run_migrations_online() -> None:
         )
         with context.begin_transaction():
             context.run_migrations()
+
+    # lifespan/시작 스크립트가 이미 잠근 앱 DB 연결을 그대로 사용한다.
+    # 새 연결을 만들면 ALEMBIC_DATABASE_URL과 앱 DB가 다를 때 다른 DB를 변경할 수 있다.
+    provided = config.attributes.get("connection")
+    if provided is not None:
+        run_on_connection(provided)
+        return
+
+    from app.core.migrations import migration_connection
+
+    section = config.get_section(config.config_ini_section, {})
+    section["sqlalchemy.url"] = _get_url()
+    connectable = engine_from_config(
+        section,
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+    )
+    try:
+        with migration_connection(connectable) as connection:
+            run_on_connection(connection)
+    finally:
+        connectable.dispose()
 
 
 if context.is_offline_mode():
