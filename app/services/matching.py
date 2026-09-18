@@ -11,6 +11,7 @@ import re
 
 from sqlalchemy import and_, func, literal, or_, select
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.core.pagination import PageParams
 from app.models import NutritionItem
@@ -51,7 +52,10 @@ def base_serving_text(item: NutritionItem) -> str:
     """기준 제공량 표기 (예: '1인분(400g)', 비대표 공공 항목은 '100g당')."""
     amount = float(item.base_amount)
     amount_text = f"{amount:g}"
-    if item.source == "public" and not item.is_representative and amount == 100:
+    if item.serving_basis == "per_100g" or (
+        item.serving_basis is None
+        and item.source == "public" and not item.is_representative and amount == 100
+    ):
         # 원본 기준량(100g/100ml) 그대로인 항목 — '1인분' 으로 표기하면 오해라 기준량 노출.
         # 브랜드 제품 중 1회섭취참고량으로 1인분 환산된 것(base_amount != 100)은
         # 아래 분기로 내려가 '1인분(30g)' 으로 표기된다 — 값이 이미 1인분이므로
@@ -63,6 +67,17 @@ def base_serving_text(item: NutritionItem) -> str:
     return f"{amount_text}{item.base_unit}"
 
 
+def per_serving_representatives() -> ColumnElement[bool]:
+    """1인분 영양값으로 쓸 대표 항목. NULL 은 기준량 도입 전 행의 호환용이다."""
+    return and_(
+        NutritionItem.is_representative.is_(True),
+        or_(
+            NutritionItem.serving_basis == "per_serving",
+            NutritionItem.serving_basis.is_(None),
+        ),
+    )
+
+
 def db_candidates_for_text(
     db: Session, text: str, limit: int = 12
 ) -> list[NutritionItem]:
@@ -72,7 +87,7 @@ def db_candidates_for_text(
     조사("김밥이랑")·띄어쓰기 문제를 SQL 한 번으로 피한다. 공백 제거한
     normalized_name 기준이며, 1글자 이름("밥")은 과다 매칭이라 제외한다.
 
-    **대표(is_representative) 항목만** 후보로 준다 — match_food_name 이 대표만
+    **대표(is_representative) 중 per_100g 로 판정되지 않은 항목만** 후보로 준다 — match_food_name 도 같은
     매칭하므로, 비대표 이름에 AI 를 정렬시키면 사후 매칭이 오히려 실패하고
     기준량(100g당)도 1인분 의미가 아니다. 동명 중복은 1건만 남기고,
     구체적(긴) 이름 우선 + 이름순으로 정렬을 고정한다(프롬프트 결정론).
@@ -81,7 +96,7 @@ def db_candidates_for_text(
     if not normalized_text:
         return []
     condition = and_(
-        NutritionItem.is_representative.is_(True),
+        per_serving_representatives(),
         func.length(NutritionItem.normalized_name) >= 2,
         literal(normalized_text).contains(NutritionItem.normalized_name),
     )
@@ -192,7 +207,7 @@ def match_food_name(db: Session, food_name: str) -> tuple[NutritionItem | None, 
     fuzzy 매칭은 호출부에서 confidence 를 감산해 내려보낸다 (SCRUM-246 —
     별도 "유사 매칭" UI 없이 기존 확신도 채널로 불확실성을 전달).
 
-    매칭 대상은 **대표(is_representative) 항목만**이다. 분석 흐름은 매칭값을
+    매칭 대상은 **대표(is_representative) 중 per_100g 로 판정되지 않은 항목만**이다. 분석 흐름은 매칭값을
     1인분 기준으로 간주해 AI 추정치를 대체하는데, 대표 항목(시드 + 큐레이션)만
     1인분 기준으로 환산돼 있다. 비대표 공공 항목은 100g/100ml 당 값이라
     그대로 쓰면 "김치찌개 19kcal" 같은 오답이 된다 — 검색 화면에서만 노출한다.
@@ -200,7 +215,7 @@ def match_food_name(db: Session, food_name: str) -> tuple[NutritionItem | None, 
     normalized = normalize_name(food_name)
     if not normalized:
         return None, "none"
-    representative_only = NutritionItem.is_representative.is_(True)
+    representative_only = per_serving_representatives()
     exact = db.scalar(
         select(NutritionItem)
         .where(NutritionItem.normalized_name == normalized, representative_only)

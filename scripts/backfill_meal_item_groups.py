@@ -66,7 +66,7 @@ def main() -> None:
             stats[how] += 1
             if gid is None:
                 unresolved[food_name] += 1
-            elif gid != current:
+            if gid != current:
                 updates.append({"id": item_id, "food_group_id": gid})
 
         total = len(rows)

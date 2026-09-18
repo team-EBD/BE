@@ -1,305 +1,271 @@
-# 음식군(food_groups) DB 계약 — 영양 DB 정리 × 추천 엔진 v2
+# 음식군 DB 계약 — 계열·군·상품과 추천 엔진
 
-이 문서는 **DB 정리(팀원)와 추천 엔진(feat/recommend-engine-v2)이 맞물리는 지점**을 고정한다.
-테이블·컬럼·NULL 의미·채움 순서·검증 질의를 여기서 합의하고, 양쪽 구현은 이 문서를 따른다.
-바뀌면 이 문서를 먼저 고친다.
+이 문서는 음식 분류, 적재, 추천 엔진이 공유하는 데이터 계약이다. 계열의 코드 정본은
+[`app/food_taxonomy.py`](../app/food_taxonomy.py), 원본 분류·병합·역할 규칙은
+[`scripts/food_group_taxonomy.py`](../scripts/food_group_taxonomy.py)다.
 
-근거 데이터 (2026-09-16 실측): 식약처 원본 음식편 19,495건(대분류 25 · 대표식품명 1,249),
-가공식품편 590,542건(대분류 24 · 대표식품명 270), 둘 다 결측 0%.
-우리 `nutrition_items` 42,036행 = 대표 15,680 (식약처 코드 있음 10,289 · `rep:` 5,367 · `gen:` 24) + 비대표 26,310 + 시드 46.
+2026-09-16에 확인한 **로컬 원본 스냅샷**은 음식편(D) 19,495행과 가공식품편(P) 590,542행,
+총 610,037행이다. 현재 규칙으로 원본 군 1,447개, 수동 군 `닭가슴살`·`불고기`를 포함하면 1,449개다.
+띄어쓰기만 다른 군 15쌍을 병합한다. 포괄 분류는 음식편의 맥락을 보존한 표시명과 정확히
+일치하는 경우에만 구체적인 군으로 재배정한다.
+이 수치는 운영 DB의 현재 행 수나 적용 완료를 뜻하지 않는다. 기존 참조를 보존한 퇴역 군이
+있으면 DB의 `food_groups` 행 수는 활성 원본 군 수보다 많을 수 있다.
 
----
+식약처는 음식 DB와 가공식품 DB를 구분하며, API의 영양성분 함량 기준량·1회섭취 참고량·식품중량도
+서로 다른 속성이다. 따라서 원본 식품유형을 그대로 추천 메뉴로 쓰거나 포장 중량을 1인분으로
+해석하지 않는다. [식약처 자료원](https://various.foodsafetykorea.go.kr/nutrient/intro/data/dataInfo.do),
+[공식 API 메타데이터](https://www.data.go.kr/catalog/15127578/openapi.json)
 
-## 0. 원칙 — 기존 기록에 영향 0
+## 0. 보존 원칙
 
-| 원칙 | 이유 |
-|---|---|
-| 새 컬럼은 전부 **NULL 허용** | 채워지기 전·못 채운 행도 유효해야 한다. NULL = "미분류" |
-| `nutrition_items.id` 는 **바뀌지 않는다** | `meal_items`·`favorite_foods`·`food_candidates` 가 FK 로 가리킨다 |
-| `is_representative` 의 **의미를 바꾸지 않는다** | AI 매칭(`match_food_name`)·검색 순위가 이 플래그를 본다. 추천용 판단은 `food_groups.role` 이 맡는다 |
-| 삭제는 **참조 재지정 → 아카이브 → 삭제** 순서로만 | 세 FK 모두 `ondelete=SET NULL` 이고 `meal_items` 는 스냅샷이라 삭제해도 화면·합계는 안 바뀌지만, 연결은 잃는다. 참조는 meal_items 56행·food_candidates 67행·favorites 0 (2026-09-16) |
-| 군 대표 영양값은 **삭제 전에** 계산 | 구성원이 사라지면 재계산 근거가 DB 에 없다 (원본 JSONL 로만 가능) |
-
----
+- 분류 재구축은 기존 `nutrition_items.id`를 유지한다. 상품명·열량 등 과거 `meal_items` 스냅샷은 변경하지 않는다.
+- `is_representative`는 검색·AI 매칭용 대표 여부다. 추천 역할은 `food_groups.role`, 영양값의 기준은 `serving_basis`로 판단한다.
+- 미분류는 NULL로 표현한다. 근거가 부족한 이름을 어미만 보고 분류하지 않는다.
+- 군 병합 시 기존 군을 이름 변경하여 ID를 유지하거나, 대상 군이 이미 있으면 상품·기록·추천항목·별칭·동반 FK를 먼저 옮긴 뒤 중복 군을 삭제한다.
+- 현재 원본에서 사라진 자동 군은 참조를 보존하고 `exclude`로 전환한다. 오래된 대표 영양값으로 계속 추천하지 않도록 값을 비운다.
+- `exclude`는 추천 제외다. 기록·검색 가치가 없다는 의미도, 상품 삭제 허가도 아니다.
 
 ## 1. 3층 구조
 
-```
-계열 (family)   16개      food_groups.family  ← 우리가 정한 이름. 식약처 대분류 두 체계(음식 25·가공 24)를 §4 표로 통합
-군   (group)    ~1,400개  food_groups         ← 식약처 대표식품명 기준, 중복 병합(버거=햄버거)
-상품 (item)     42k → 33k nutrition_items     ← 기존 행. 순수 중복 8,581 삭제 (§6)
-```
-
-사용자에게 보이는 이름: **그 군에서 사용자가 기록한 상품명이 있으면 상품명, 없으면 군명**
-(예: 이력에 "빅소불고기버거"가 있으면 그것, 없으면 "햄버거").
-
----
-
-## 2. 테이블 (DDL)
-
-```sql
--- 2.1 군
-CREATE TABLE food_groups (
-    id                  BIGSERIAL PRIMARY KEY,
-    name                VARCHAR(50)  NOT NULL UNIQUE,        -- 표시명. 식약처 대표식품명 or 병합 후 대표명
-    family              VARCHAR(30)  NOT NULL,               -- §4 계열 16개 중 하나
-    role                VARCHAR(12)  NOT NULL,               -- meal | companion | snack | exclude  (§5 규칙으로 유도)
-    companion_group_id  BIGINT REFERENCES food_groups(id),   -- 기본 동반 (찌개 → 쌀밥). NULL = 없음
-    calories            NUMERIC(8,2), carbs NUMERIC(8,2), protein NUMERIC(8,2), fat NUMERIC(8,2),  -- 1인분 대표값 (구성원 절사평균)
-    base_amount         NUMERIC(8,2), base_unit VARCHAR(20),                                        -- 대표값의 기준량
-    member_count        INTEGER NOT NULL DEFAULT 0,          -- 채움 시점 구성원 수 (검증용)
-    source_names        TEXT,                                -- 병합 전 식약처 대표식품명들 (예: "버거|햄버거")
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX ix_food_groups_family ON food_groups(family);
-CREATE INDEX ix_food_groups_role   ON food_groups(role);
-
--- 2.2 별칭 — 사용자 기록 이름·시드·동의어 → 군
-CREATE TABLE food_group_aliases (
-    alias           VARCHAR(100) PRIMARY KEY,                -- normalize_name() 적용된 키 (공백·온도·사이즈 제거)
-    group_id        BIGINT NOT NULL REFERENCES food_groups(id) ON DELETE CASCADE,
-    kind            VARCHAR(12)  NOT NULL,                   -- synonym | seed | manual | auto
-    note            TEXT
-);
-
--- 2.3 상품 — 기존 테이블에 컬럼 추가 (전부 NULL 허용)
-ALTER TABLE nutrition_items
-    ADD COLUMN food_group_id  BIGINT REFERENCES food_groups(id) ON DELETE SET NULL,
-    ADD COLUMN serving_basis  VARCHAR(12);                   -- per_serving | per_100g  (NULL = 미판정)
-CREATE INDEX ix_nutrition_items_food_group ON nutrition_items(food_group_id);
-
--- 2.4 사용자 기록 — 저장 시 채움 + 과거 backfill
-ALTER TABLE meal_items
-    ADD COLUMN food_group_id  BIGINT REFERENCES food_groups(id) ON DELETE SET NULL;
-CREATE INDEX ix_meal_items_food_group ON meal_items(food_group_id);
-
--- 2.5 추천 항목별 행동 로그 (현재 recommendation_logs.recommended_items JSON 을 대체)
-CREATE TABLE recommendation_items (
-    id                    BIGSERIAL PRIMARY KEY,
-    log_id                BIGINT NOT NULL REFERENCES recommendation_logs(id) ON DELETE CASCADE,
-    food_group_id         BIGINT REFERENCES food_groups(id) ON DELETE SET NULL,
-    name                  VARCHAR(100) NOT NULL,             -- 카드에 보인 이름
-    source                VARCHAR(12)  NOT NULL,             -- personal | popular | similar
-    rank                  SMALLINT     NOT NULL,             -- 1~3
-    score                 NUMERIC(6,4),
-    accepted_at           TIMESTAMPTZ,                       -- 카드 탭
-    rejected_at           TIMESTAMPTZ,                       -- "이건 별로" (FE 미구현 — 컬럼만)
-    eaten_at              TIMESTAMPTZ,                       -- 4시간 내 같은 군 기록 저장
-    eaten_meal_record_id  BIGINT REFERENCES meal_records(id) ON DELETE SET NULL
-);
-CREATE INDEX ix_recommendation_items_log    ON recommendation_items(log_id);
-CREATE INDEX ix_recommendation_items_group  ON recommendation_items(food_group_id);
-
--- 2.6 삭제 아카이브 (되돌리기용)
-CREATE TABLE nutrition_items_pruned (LIKE nutrition_items INCLUDING ALL);
-ALTER TABLE nutrition_items_pruned ADD COLUMN pruned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                                   ADD COLUMN survivor_id BIGINT;          -- 참조를 넘긴 대표 행
-```
-
-### NULL 의 의미 (엔진이 이렇게 해석한다)
-
-| 컬럼 | NULL 이면 |
-|---|---|
-| `nutrition_items.food_group_id` | 미분류. **추천 후보에서 제외**, 매칭·검색은 정상 |
-| `nutrition_items.serving_basis` | 미판정. 추천은 `per_serving` 만 쓰므로 제외 |
-| `meal_items.food_group_id` | 미분류. 개인 빈도 집계에서 이름 키(`normalize_name(food_name)`)로 폴백 |
-| `food_groups.companion_group_id` | 기본 동반 없음 (버거·면·김밥) |
-| `food_groups.calories …` | 대표값 없음 → 그 군은 유사 후보 풀에서 제외 |
-
----
-
-## 3. 채움 순서
-
-| 단계 | 작업 | 입력 | 담당 | 완료 기준 |
-|---|---|---|---|---|
-| **A** | `food_groups` 생성 | 식약처 대표식품명 1,249 + 270 → §4 계열 매핑 → 병합 규칙(`source_names`) → §5 로 role | DB | 군 수 1,300~1,500, role 분포 리포트 |
-| **B** | `food_group_aliases` 채움 | 동의어 6 + 시드 46 + 수동 ~25 (`잇로그-음식군-alias-초안.md` 참고) | DB + 나 | 사용자 기록 상위 200 이름 전부 매핑 |
-| **C** | `nutrition_items.food_group_id` — 식약처 코드 행 | 재적재 **갱신 모드**: `external_id` 로 찾아 `food_group_id`·`serving_basis` 만 UPDATE. INSERT 는 새 코드만 | DB | P/D 행 미분류 < 1% |
-| **D** | `nutrition_items.food_group_id` — `rep:` 행 5,367 | 큐레이션 스크립트(`curate_representative_foods`)가 구성원의 군을 **다수결**로 상속. 동률·소수는 NULL + 리포트 | DB | rep 행 미분류 < 5% |
-| **E** | `gen:` 24 · 시드 46 | alias 표로 | DB | 전부 매핑 |
-| **F** | `serving_basis` | 대표 = `per_serving`, 비대표 = `per_100g`. **단 대표 중 `base_amount=100` 1,365행은 감사** — `total_weight`·이름으로 1인분 확정, 못 하면 `per_100g` 로 강등(`is_representative` 는 유지) | DB | 감사 결과 표 |
-| **G** | 군 대표 영양값 | `serving_basis=per_serving` 구성원의 절사평균(상하위 10%) — `build_generic_foods` 로직 재사용. **§6 삭제 전에 실행** | DB | 대표값 NULL 인 군 목록 |
-| **H** | `meal_items.food_group_id` backfill | ① `nutrition_item_id` 있으면 조인 ② 없으면 `normalize_name(food_name)` → alias 정확일치 ③ 못 찾으면 **NULL 로 둔다** (어미 추정 금지 — 오탐이 개인 빈도를 오염) | 나 | 실사용자 기록 미분류 < 10% |
-| **I** | 저장 시 채움 | `create_meal`/`update_meal` 에서 H 와 같은 규칙으로 `food_group_id` 기록 | 나 | 신규 기록 미분류 비율 모니터 |
-| **J** | 피드백 이관 | `feedback.py` 를 JSON → `recommendation_items` 로. 과거 JSON 로그는 그대로 둔다 | 나 | 출처별 섭취율 질의 1줄 |
-
-A → B → (C, D, E 병렬) → F → G → **§6 삭제** → H → I → J
-
----
-
-## 4. 계열 16개 — 두 대분류 체계 통합표
-
-| 계열 (우리 이름) | 음식편 대분류 | 가공식품 대분류 | 기본 role |
-|---|---|---|---|
-| 밥류 | 밥류 | 즉석식품류 中 밥류·주먹밥/김밥/초밥·도시락 | meal (쌀밥·잡곡밥 등 순수 밥은 companion) |
-| 면류 | 면 및 만두류 (만두 제외) | 면류 | meal |
-| 분식류 | — (군 재배치: 만두·떡볶이·순대·핫도그·어묵) | 즉석식품류 中 만두 | meal |
-| 국·탕·찌개류 | 국 및 탕류 · 찌개 및 전골류 · 죽 및 스프류 | 즉석식품류 中 국/탕류 | meal |
-| 구이·볶음·조림류 | 구이류 · 볶음류 · 조림류 · 찜류 · 전·적 및 부침류 | 식육가공품 中 양념육 | meal |
-| 튀김류 | 튀김류 | 즉석식품류 中 튀김·닭튀김 | meal |
-| 버거·피자·샌드위치 | 빵 및 과자류 中 햄버거·버거·피자·샌드위치·토스트 (군 재배치) | 즉석식품류 中 버거·샌드위치 | meal |
-| 빵·과자·디저트 | 빵 및 과자류 (나머지) | 과자류·빵류 또는 떡류 · 코코아가공품류 · 빙과류 · 당류 · 잼류 | snack |
-| 음료 | 음료 및 차류 | 음료류 | snack |
-| 유제품 | 유제품류 및 빙과류 | 유가공품류 | snack |
-| 샐러드·채소·나물 | 생채·무침류 · 나물·숙채류 · 채소류 | 농산가공식품류 中 채소 | meal (샐러드) / exclude (나물·무침) |
-| 과일 | 과일류 | 농산가공식품류 中 과일 | snack |
-| 육·수산 가공 | 수·조·어·육류 | 식육가공품 및 포장육 · 수산가공식품류 · 알가공품류 · 두부류 또는 묵류 | meal |
-| 김치·절임 | 김치류 · 장아찌·절임류 · 젓갈류 | 절임류 또는 조림류 | **exclude** |
-| 소스·양념 | 장류, 양념류 | 조미식품 · 장류 · 식용유지류 | **exclude** |
-| 기타 | (해당 없음) | 특수영양식품 · 특수의료용도식품 · 주류 · 기타식품류 · 벌꿀 | exclude |
-
-**군 단위 재배치 (예외 — 이 표가 전부)**
-
-| 군 | 원본 대분류 | 우리 계열 | 이유 |
-|---|---|---|---|
-| 만두 | 면 및 만두류 | 분식류 | 대체 상황이 면이 아님 |
-| 떡볶이 · 순대 · 핫도그 · 어묵 | 흩어짐 | 분식류 | 분식집 상황 |
-| 햄버거(=버거) · 피자 · 샌드위치 · 토스트 | 빵 및 과자류 | 버거·피자·샌드위치 | 끼니 메뉴가 디저트와 섞임 |
-| 김밥 · 삼각김밥 | 밥류 | 밥류 (유지) | role 만 companion 아닌 meal |
-
-**병합 규칙**: 대표식품명이 같은 음식을 다르게 부르면 하나로 — `버거`+`햄버거` → 햄버거, `과ㆍ채주스`+`과·채주스` → 과채주스. 병합 전 이름은 `source_names` 에 남긴다.
-
----
-
-## 5. role 유도 규칙 (사람이 라벨링하지 않는다)
-
-순서대로 첫 번째 맞는 것:
-
-```
-1. family ∈ {김치·절임, 소스·양념, 기타}                                → exclude
-2. family = 샐러드·채소·나물 이고 군명이 샐러드 로 끝나지 않음              → exclude   (나물·무침)
-3. family = 밥류 이고 군명 ∈ {쌀밥, 잡곡밥, 현미밥, 흑미밥, 보리밥, 밥}     → companion
-4. family ∈ {빵·과자·디저트, 음료, 유제품, 과일}                          → snack
-5. 그 외                                                                → meal
-```
-
-`companion_group_id`: family ∈ {국·탕·찌개류, 구이·볶음·조림류, 튀김류(돈가스 제외)} → 쌀밥. 나머지 NULL.
-
-예외는 `food_groups.role` 을 직접 UPDATE 하고 `note` 에 이유를 남긴다 (예: 계란찜·계란말이 → exclude, 반찬).
-검수 범위: **사용자 기록에 등장한 군(~150개)** 만. 롱테일은 노출되지 않으므로 틀려도 영향 없음.
-
----
-
-## 6. 삭제 (쳐내기)
-
-| 대상 | 행 수 (실측) | 처리 |
+| 층 | 저장 위치 | 의미 |
 |---|---|---|
-| 비대표인데 같은 `normalized_name` 의 대표 행이 있음 | **8,581** | 삭제 |
-| `family ∈ {기타}` 이고 `role=exclude` 인 비대표 (식용유지·당류·잼·특수영양·주류) | 수천 (A 후 집계) | 삭제 — 기록 가치 없음 |
-| 비대표이고 대표 없음 (100g 유일 행) | 17,729 | **유지** — `serving_basis=per_100g`, 추천 제외, 검색 하위 노출 |
-| 대표 행 | 15,680 | 유지 (F 감사 대상 1,365 포함) |
+| 계열(family) | `food_groups.family` | 18개 추천용 상위 분류. 메뉴 형태와 섭취 상황을 기준으로 식약처의 두 대분류 체계를 통합 |
+| 군(group) | `food_groups` | 대표식품명 기반의 음식 종류. 동의어 병합, 출처별 동명이의어 분리, 포괄 군의 제한적 세분화 적용 |
+| 상품(item) | `nutrition_items` | 브랜드 상품·원본 식품·큐레이션 대표·총칭 대표·시드. `food_group_id`로 군에 연결 |
 
-절차 (트랜잭션 하나):
-```sql
--- 1) 참조 재지정: 지울 행 → 같은 normalized_name 의 대표 행(survivor)
-UPDATE meal_items      SET nutrition_item_id = s.id FROM prune p JOIN survivor s ON … WHERE meal_items.nutrition_item_id = p.id;
-UPDATE food_candidates SET nutrition_item_id = s.id … ;   UPDATE favorite_foods … ;
--- 2) 아카이브
-INSERT INTO nutrition_items_pruned SELECT ni.*, now(), s.id FROM nutrition_items ni JOIN … ;
--- 3) 삭제
-DELETE FROM nutrition_items WHERE id IN (SELECT id FROM prune);
-```
-**G(군 대표값 계산) 이후에만** 실행한다.
+계열은 법적 식품유형이나 영양학적 식품군을 대체하지 않는다. `양념육`처럼 여러 음식이 섞인 군도
+분류 근거 보존을 위해 저장하지만, 구체적인 메뉴로 확인되지 않으면 추천하지 않는다.
+사용자에게는 해당 군의 개인 기록 상품명이 있으면 그 이름을, 없으면 군명을 표시한다.
 
----
+## 2. 저장 구조와 NULL 의미
 
-## 7. 검증 질의 — 각 단계 끝에 실행, 전부 통과해야 다음 단계
+| 테이블 | 핵심 컬럼·제약 |
+|---|---|
+| `food_groups` | `id` PK, `name VARCHAR(50)` UNIQUE/NOT NULL, `family VARCHAR(30)` NOT NULL, `role VARCHAR(12)` NOT NULL, `companion_group_id` 자기참조 FK/NULL 허용, `calories/carbs/protein/fat/base_amount NUMERIC(8,2)` NULL 허용, `base_unit VARCHAR(20)`, `member_count INTEGER NOT NULL DEFAULT 0`, `source_names TEXT`, `note TEXT`, `created_at` |
+| `food_group_aliases` | 정규화한 `alias VARCHAR(100)` PK, `group_id` NOT NULL FK/ON DELETE CASCADE, `kind VARCHAR(12)` NOT NULL, `note TEXT` |
+| `nutrition_items` | `food_group_id` NULL 허용 FK/ON DELETE SET NULL, `serving_basis VARCHAR(12)` NULL 허용 |
+| `meal_items` | `food_group_id` NULL 허용 FK/ON DELETE SET NULL. 저장 시 판정하고 과거 기록은 backfill |
+| `recommendation_logs.decision` | 전체 후보·특성·정책/모델 버전·선택 확률 스냅샷 JSON |
+| `recommendation_items` | 추천 로그 FK, 군 FK, 표시명, 출처(20자), 순위, 점수, `shown_at/accepted_at/rejected_at/eaten_at`, 거절 사유, 섭취 기록 FK, 특성·조건부 확률·정책 버전. 표시명은 생성 당시 스냅샷 |
+| `nutrition_items_pruned` | 별도 PK, `original_id BIGINT`, `survivor_id BIGINT` NULL 허용, `reason VARCHAR(30)`, 원래 행 전체를 담는 `payload JSON`, `pruned_at`. 원본 테이블을 복제한 `LIKE` 구조가 아님 |
 
-```sql
--- V1 행 수·id 보존: 삭제 단계 전까지 nutrition_items 행 수와 max(id) 가 시작값과 같다
-SELECT count(*), max(id) FROM nutrition_items;
+`family`, `role`, `member_count`, 동반 관계, 별칭 종류, `serving_basis`에는 DB CHECK 제약을 둔다.
+계열은 공통 정본의 18개, 역할은 `meal/companion/snack/exclude`, 별칭 종류는
+`synonym/seed/manual/auto`, 기준량 구분은 NULL 또는 `per_serving/per_100g`만 허용한다.
+`member_count`는 음수가 될 수 없고, 동반 FK는 자기 자신을 가리킬 수 없으며 `meal`에만 허용한다.
+동반 대상이 `companion`인지는 애플리케이션과 검증 단계에서도 확인한다.
 
--- V2 FK 고아 0 (삭제 후)
-SELECT
-  (SELECT count(*) FROM meal_items      mi WHERE mi.nutrition_item_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM nutrition_items n WHERE n.id = mi.nutrition_item_id)) AS meal_orphans,
-  (SELECT count(*) FROM food_candidates fc WHERE fc.nutrition_item_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM nutrition_items n WHERE n.id = fc.nutrition_item_id)) AS cand_orphans,
-  (SELECT count(*) FROM favorite_foods  ff WHERE ff.nutrition_item_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM nutrition_items n WHERE n.id = ff.nutrition_item_id)) AS fav_orphans;
+| NULL인 값 | 해석 |
+|---|---|
+| `nutrition_items.food_group_id` | 미분류. 검색·기록은 가능하나 군 기반 추천 후보로 사용하지 않음 |
+| `nutrition_items.serving_basis` | 영양값 기준 미판정. 군 대표 영양값 계산에서 제외 |
+| `meal_items.food_group_id` | 미분류. 개인 이력은 정규화 이름 키로 폴백 |
+| `food_groups.companion_group_id` | 기본 동반 없음 |
+| `food_groups.calories` 등 | 사용 가능한 대표값 없음. 군 영양값을 요구하는 유사 추천 풀에서 제외 |
 
--- V3 미분류 비율 — 대표 행 기준 < 5%, 사용자 기록 기준 < 10%
-SELECT
-  round(100.0 * count(*) FILTER (WHERE food_group_id IS NULL) / count(*), 1) AS rep_unclassified_pct
-FROM nutrition_items WHERE is_representative;
-SELECT
-  round(100.0 * count(*) FILTER (WHERE mi.food_group_id IS NULL) / count(*), 1) AS meal_unclassified_pct
-FROM meal_items mi JOIN meal_records mr ON mr.id = mi.meal_record_id
-WHERE mr.deleted_at IS NULL AND NOT mr.is_skipped;
+`source_names`는 병합·세분화 전 대표식품명을 `|`로 보존한다. `member_count`는 **현재 해당 군을
+참조하는 nutrition_items 전체 행 수**다. 원본 JSONL 행 수도, 대표값 계산에 사용한 표본 수만도 아니다.
 
--- V4 사용자 기록 상위 200 이름 중 미분류 0 (조용한 소실 방지)
-SELECT mi.food_name, count(*) AS n
-FROM meal_items mi JOIN meal_records mr ON mr.id = mi.meal_record_id
-WHERE mr.deleted_at IS NULL AND mi.food_group_id IS NULL
-GROUP BY mi.food_name ORDER BY n DESC LIMIT 200;      -- 결과가 비어야 한다 (또는 전부 exclude 대상 이름)
+## 3. 구축과 재구축 순서
 
--- V5 role 경계 의심: meal 인데 1인분 < 100kcal / exclude 인데 > 300kcal
-SELECT g.name, g.role, g.calories FROM food_groups g
-WHERE (g.role = 'meal' AND g.calories < 100) OR (g.role = 'exclude' AND g.calories > 300)
-ORDER BY g.role, g.calories;
+스키마 마이그레이션 후 **음식편 import → curate → 가공식품 import → generic → build → backfill → verify** 순서로 실행한다.
+음식편 큐레이션을 먼저 해야 같은 이름의 가공식품 합성 대표가 음식편 대표를 가리지 않는다.
+원본을 재적재하면 100g 값·대표 여부·파생 군 연결이 갱신될 수 있으므로 뒤 단계까지 완료해야 한다.
+분류만 변경한 경우에는 기존 적재·큐레이션 데이터로 build부터 다시 실행한다.
 
--- V6 과거 기록 응답 불변: 임의 20건의 상세 응답(항목 이름·kcal·합계)이 변경 전 스냅샷과 같다
---    (SQL 이 아니라 API diff — scripts 에 before/after JSON 덤프 비교로 수행)
--- V7 매칭 회귀 0: 정확도평가 3차 세트(23장) 재실행 → top-1·MAPE 가 변경 전과 같다
-```
-
----
-
-## 8. 엔진 접점 (feat/recommend-engine-v2 에서 바뀌는 곳)
-
-| 지점 | 지금 | 계약 후 |
+| 단계 | 작업 | 판정·보존 규칙 |
 |---|---|---|
-| `signals.group_key` | `normalize_name(food_name)` | `meal_items.food_group_id` (NULL 이면 기존 키로 폴백) |
-| `candidates._similarity_pool` | 시드 46 + `gen:*` 42 | `food_groups WHERE role IN ('meal','snack') AND calories IS NOT NULL` — 군 단위 1행 |
-| `candidates.nutrient_similar` 종류군 | `dish_type` 어미 60개 | `food_groups.family` 일치 |
-| `candidates.meal_worthy` | kcal 하한/상한 휴리스틱 | `role` (휴리스틱은 2차 안전망으로 유지) |
-| 밥 동반 | 없음 | `companion_group_id` 기본 + 개인 동시기록(50%↑) 우선, 예산 적합은 메인+동반 합산 |
-| `signals._reference_by_name` (오기록 대조) | 이름 → 대표 항목 | `food_groups` 대표값 |
-| `feedback.py` | `recommendation_logs.recommended_items` JSON | `recommendation_items` 행 |
-| 카드 표시명 | 후보 이름 | 사용자 이력의 상품명 있으면 그것, 없으면 `food_groups.name` |
+| A | 원본 D를 먼저, P를 다음에 읽어 군 생성·갱신 | 출처별 정규 군명 결정. 포괄 P 군은 D의 정규화 표시명과 정확히 일치하고 목적 군이 하나일 때만 세분. `김치찌개_삼겹살`에서 재료명만 떼어내지 않음 |
+| B | 별칭 생성·정리 | 규칙 동의어 → 원본 병합명 → 시드 → 수동 JSON. 수동 별칭 우선, 다시 생성되지 않은 `synonym/seed` 별칭 제거 |
+| C | P/D 상품 군 배정 | 정확한 식품코드 우선 |
+| D·E | `rep:/gen:`·시드 등 배정 | 정규화 이름의 별칭 → 군명 정확일치 → 원본 이름 표본의 **과반수** 군. 동률·과반수 없음은 NULL. 어미 추정 없음 |
+| F | 영양값 기준량 판정 | 아래 §3.1. 상품의 실제 환산 상태와 원본 1회섭취참고량을 구분 |
+| G | 군 대표값 계산 | 아래 §3.2. 전체 연결 상품 수와 대표값 표본을 별도로 계산 |
+| H | 과거 기록 backfill | 연결 상품의 군 → 별칭 정확일치 → 군명 정확일치 → NULL. 규칙 변경 시 `--force`로 기존 배정도 재평가 |
+| I | 신규·수정 기록 저장 | H와 같은 순서. 저장된 음식명·영양값을 분류값으로 덮어쓰지 않음 |
+| J | 추천 노출·반응 기록 | `recommendation_items`에 기록. 과거 JSON 추천 로그는 유지 |
 
-위 8곳은 2026-09-16 브랜치에 전부 반영됨 (`app/services/recommend/groups.py` 가 색인, 군이 없는 DB 에서는
-이름 키로 폴백해 같은 코드가 돈다). 추가로:
+원본 소실·표본 부족·상위 대표 충돌 등으로 갱신되지 못한 `rep:/gen:`는 대표 자격과 군 연결을
+해제한다. ID와 저장된 영양값·기준량은 유지하며, 빌드는 이 비활성 행을 다시 군에 배정하지 않는다.
+재생성 근거가 복구되면 같은 ID를 다시 사용한다.
 
-- 기록 저장(`services/meals._insert_items`)이 `meal_items.food_group_id` 를 채운다 — 상품의 군 → alias → 군명
-  정확일치, 어미 추정 없음. 저장 직후 최근 4시간 노출 항목에 `eaten_at` 을 남긴다 (`feedback.mark_eaten`).
-- 동반 문구: 개인 동시기록에서 온 동반은 "함께 드시던 쌀밥", 군 기본 동반은 "보통 함께 먹는 쌀밥".
-- 식약처에 없는 우리 군은 `food_group_taxonomy.EXTRA_GROUPS` 가 정본(대표값 포함, `note='manual:'`).
-  현재 1개: 닭가슴살 (시드가 가공식품 '양념육'에 묻혀 290kcal 로 잡히던 것).
+### 3.1 `serving_basis`
 
-### 8.1 API
+- 실제 1인분으로 환산한 큐레이션·총칭·시드·동명 대표는 `per_serving`이다. `is_representative`만으로 비대표 상품 전체를 `per_100g`로 단정하지 않는다.
+- 비대표 상품도 저장 기준량이 원본 `servSize`와 일치하면 `per_serving`이다. 식약처 importer가 음료에 적용한 g/ml 단위 처리 계약도 반영한다.
+- 기존 비대표에 일괄 지정된 잘못된 `per_100g`는 위 원본 근거로 교정한다. `per_100g`인데 기준량이 100g/100ml가 아니고 근거도 없으면 NULL로 돌린다.
+- 모순이 없는 기존 판정은 보존한다. 특히 100g 대표를 감사 후 `per_100g`로 지정한 결과를 빌드가 다시 승격하지 않는다.
+- 신규 미판정 비대표는 100g/100ml일 때 `per_100g`, 그 외 근거가 없으면 NULL이다.
+- 100g 대표의 판정 결과는 `reports/serving_basis_audit.csv`에 출력한다. 포장 전체 무게 `foodSize/total_weight`가 있다는 이유만으로 1인분을 확정하지 않는다.
 
-| 지점 | 내용 |
+### 3.2 군 대표 영양값
+
+`per_serving`이며 기준량이 양수이고 열량·탄수화물·단백질·지방이 모두 유효한 구성원만 사용한다.
+다음 우선순위에서 표본이 있는 **가장 높은 한 계층**을 선택한다.
+
+1. 시드 및 `gen:` 총칭 대표
+2. 식품코드 `D` 음식편
+3. `rep:` 동명 대표
+4. 그 외 구성원
+
+선택한 표본에서 가장 많은 단위 하나만 사용한다. g와 ml를 섞어 평균하지 않는다.
+대표 기준량은 표본 기준량의 중앙값이며, 각 영양값은 `단위량당 영양값의 절사평균 × 대표 기준량`이다.
+표본이 5개 미만이면 절사평균 대신 중앙값, 5개 이상이면 양끝에서 각각 최소 1개·약 10%를 제외한다.
+
+`manual:` 대표값은 보존한다. 유효 표본이 없는 자동 군의 오래된 대표값은 비운다.
+명시적인 역할 예외가 없는 `meal`의 대표 열량과 유효한 기본 동반 열량 합계가 80kcal 미만이면 `exclude`로 전환하고 사유를
+`auto:` 메모에 남긴다. 역할이 바뀐 뒤 동반 FK도 다시 계산한다. 저열량 기준은 보조 규칙이며
+식품 계열이나 실제 영양성분의 옳고 그름을 판정하는 기준이 아니다.
+
+## 4. 계열 18개와 중간 군
+
+| 계열 | 주요 대상·경계 |
 |---|---|
-| `POST /recommendations/menu` | `settings.recommend_engine` = `legacy`(기본, AI) / `v2`(엔진). 응답 `engine` 필드로 구분 |
-| v2 요청 | `meal_type` 생략 가능(KST 시각으로 추정, `snack` 포함) · `mood` any/light/hearty |
-| v2 응답 | `recommendation_log_id` · `budget{meal_type, meal_budget, remaining_today, goal_calories, ratio_source, protein_gap}` · 카드에 `source/budget_label/total_calories/companion_name/companion_calories/group_id/group_name/family` · `ai_call_log_id` null · `alternative_menus` 항상 빈 목록(exceed 는 플래그로만) |
-| v2 부작용 | AI 호출 없음 → 일일 한도 미소모, `ai_call_logs` 미기록. 노출은 `recommendation_logs` 1행 + `recommendation_items` 카드 수 |
-| `POST /recommendations/{log_id}/accept` `{name}` | 카드 탭(명시 채택) → `accepted_at`. 재탭 200(처음 시각 유지), 남의 로그·없는 항목 404 |
+| 밥류 | 순수 밥, 비빔밥·덮밥·김밥·초밥·도시락. 순수 밥과 한 끼 메뉴의 역할을 구분 |
+| 면류 | 면 요리. 생면·당면 등 조리 재료는 별도 추천 제외 |
+| 분식류 | 만두·떡볶이·순대·핫도그·어묵 |
+| 국·탕·찌개류 | 국·탕·찌개·전골. 죽·스프 제외 |
+| 죽·스프류 | 죽·미음·스프. 기본 쌀밥 동반 없음 |
+| 구이·볶음·조림·찜·전류 | 구이·볶음·조림·찜·전·부침. 재료/반찬 예외는 역할로 분리 |
+| 튀김류 | 닭튀김·돈가스·감자튀김 등 |
+| 버거·피자·샌드위치 | 햄버거·피자·샌드위치·토스트 |
+| 빵·과자·디저트 | 빵·과자·떡·초콜릿·빙과. 생지·코코아 원료는 추천 제외 |
+| 음료 | 음료·차·커피. 원두·농축 베이스·인스턴트커피 원료는 추천 제외 |
+| 유제품 | 우유·요구르트·치즈 등. 빙과는 디저트, 버터·유크림·연유는 소스·양념 |
+| 샐러드·채소·나물 | 샐러드·채소·해조·나물. 단백질 샐러드와 반찬 구분 |
+| 과일 | 과일·건조과일·냉동과일. 내용이 불명확한 과일가공품은 추천 제외 |
+| 육류·수산물·달걀 | 육류·수산물·알 및 가공품. 재료가 기본이며 육회·모듬회·닭가슴살 등 명시 예외 적용 |
+| 두부·묵·콩·견과류 | 두부·묵·콩 가공품·견과·나토. 육류 계열과 구분 |
+| 김치·절임 | 김치·절임·장아찌·젓갈 |
+| 소스·양념 | 장·소스·식용유지·당류·잼·벌꿀·버터 등 |
+| 기타 | 위 계열로 확정할 수 없는 식품·특수용도 식품 등 |
 
----
+원본의 두부는 `두부류 또는 묵류`로 분류된다. 이를 육·수산 가공품으로 합치지 않는다.
+[식약처 두부 분류 예시](https://various.foodsafetykorea.go.kr/nutrient/general/food/detail.do?searchFoodCd=P106-001000100-0800)
 
-## 9. 마이그레이션 순서 (alembic)
+군명 병합은 동일한 음식에만 적용한다. 예: `버거→햄버거`, `즉석 피자→피자`,
+`크로켓/크로켓(고로케)→고로케`. `비스킷/쿠키/크래커`를 `쿠키`로,
+`밀크티/버블티`를 `밀크티`로 좁혀 병합하지 않는다. `치킨카츠→돈가스`,
+`쌈무→단무지/피클` 별칭도 사용하지 않는다.
 
-팀원의 `c4d8e21f7a95_add_meal_records_analytics_fields` 다음에 붙인다 (엔진 브랜치 rebase 선행).
+동명이라도 출처의 실제 식품이 다르면 군을 분리한다. D의 `코코아`는 조리한 초코 음료,
+P의 `코코아`는 분말·닙스·스프레드가 섞여 있으므로 `코코아가공품`으로 구분한다.
+인스턴트커피 원료와 액상커피도 같은 대표 영양값으로 합치지 않는다.
 
-```
-xxxx_01_food_groups                 food_groups · food_group_aliases
-xxxx_02_nutrition_items_group       nutrition_items.food_group_id · serving_basis (+ index)
-xxxx_03_meal_items_group            meal_items.food_group_id (+ index)
-xxxx_04_recommendation_items        recommendation_items
-xxxx_05_nutrition_items_pruned      아카이브 테이블 (삭제 직전)
-```
-전부 nullable 컬럼·신규 테이블이라 다운타임 없음. 롤백은 역순 DROP.
+수동 군 `불고기`는 기존 시드의 250g·400kcal·탄수화물 20g·단백질 32g·지방 20g을
+사용하는 총칭 음식이다. 식약처 실측값으로 표시하지 않는다. 이름이 `불고기`인 피자 상세상품과
+같은 군으로 묶이지 않도록 별도 군으로 유지한다.
 
----
+`밥류`, `주먹밥/김밥/초밥`, `국/탕류`, `양념육` 등 `BROAD_GROUPS`에 속한 포괄 군은
+명확한 D 식품명 근거가 있을 때만 세분한다. 원본 `식품중분류명`이 단순 식품유형인 경우가 많아
+이를 일괄 승격하지 않는다. 예를 들어 P `밥류` 14,018행의 중분류는 모두
+`즉석섭취·편의식품류`다. 남은 포괄 군은 보존하되 `exclude`로 두고 이름·구성원·대표값을 검수한다.
 
-## 10. 열린 결정
+## 5. 추천 역할과 동반
 
-| 항목 | 기본값 (합의 없으면 이대로) |
+역할은 식품 계열과 별도 속성이며 다음 순서로 판정한다.
+
+1. `GROUP_ROLE_OVERRIDE`의 명시 예외 적용: 포괄 군·원재료·반찬 제외, 견과·달걀 등 간식, 명확한 식사 예외.
+2. 김치·절임, 소스·양념, 기타, 육류·수산물·달걀, 두부·묵·콩·견과류의 기본 역할은 `exclude`.
+3. 샐러드·채소·나물 중 샐러드가 아닌 군은 기본 `exclude`. 감자샐러드 등 반찬 샐러드도 명시 제외.
+4. 밥류 중 쌀밥·현미밥·잡곡밥·콩밥 등 `COMPANION_GROUPS`의 순수 밥은 `companion`. 포괄 군 `밥류`는 여기에 포함하지 않음.
+5. 빵·과자·디저트, 음료, 유제품, 과일은 기본 `snack`.
+6. 나머지는 `meal`. 대표값 계산 후 §3.2의 저열량 보조 규칙 적용.
+
+`meal`인 국·탕·찌개 및 구이·볶음·조림·찜·전 계열과 돈가스의 기본 동반은 쌀밥이다.
+죽·스프·면·김밥·햄버거·닭튀김에는 자동으로 쌀밥을 붙이지 않는다.
+추천 예산과 `total_calories`는 동반을 포함해 평가한다. 개인 동시기록에 근거한 동반이 있으면
+엔진 규칙에 따라 기본 동반보다 우선한다.
+
+예외를 운영에서 직접 정할 때는 `note='manual: 이유'`를 남긴다. 예외·미분류 검수는 실제 노출군과
+빈도가 높은 기록을 우선하되, 전체 후보 풀에 들어오는 긴 꼬리 군도 검증 대상이다.
+
+## 6. 삭제·아카이브
+
+분류 재구축은 영양 상품을 삭제하지 않는다. 중복 정리는 별도 `prune_nutrition_items` 절차다.
+삭제가 필요한 경우 군 대표값과 참조 보존을 확인한 후 한 트랜잭션에서
+`생존 상품으로 참조 재지정 → 원래 행을 payload JSON으로 아카이브 → 삭제` 순서를 지킨다.
+`meal_items`, `food_candidates`, `favorite_foods`의 FK를 모두 확인한다.
+원재료·`exclude`·100g 기준이라는 이유만으로 일괄 삭제하지 않는다.
+
+## 7. 검증
+
+[`scripts/verify_food_groups.py`](../scripts/verify_food_groups.py)의 결과와 실제 DB 질의를 함께 확인한다.
+스크립트의 출력만 보고 운영 적용·전체 품질 검증 완료로 간주하지 않는다.
+
+| 검사 | 완료 기준 |
 |---|---|
-| 순수 밥 군 목록 (companion) | 쌀밥·잡곡밥·현미밥·흑미밥·보리밥·밥 |
-| 튀김류의 기본 동반 | 돈가스 → 쌀밥, 닭튀김·감자튀김 → 없음 |
-| `base_amount=100` 대표 1,365행 감사 실패 시 | `per_100g` 로 강등, `is_representative` 유지 — **감사 결과(2026-09-16): 전부 정상 1인분(100g 단위 상품), 강등 없이 `per_serving` 유지** |
-| 100g 유일 행 17,729 삭제 여부 | 유지 (검색 커버리지) |
-| `rejected_at` FE 노출 | 컬럼만, UI 는 다음 릴리스 |
+| 상품 보존 | 분류 재구축 전후 `nutrition_items` 행 수·ID 동일. import·별도 prune의 증감과 구분 |
+| 참조 무결성 | 상품 FK와 군 FK 고아 없음. 군 병합 후 별칭·동반·추천항목도 확인 |
+| 분류 커버리지 | 대표 상품 미분류 <5%, 삭제·건너뛴 기록을 제외한 사용자 기록 미분류 <10% 목표. 실패하면 근거를 보강 |
+| 이름 검수 | 빈도 높은 미분류 기록과 제거·변경된 별칭의 재배정 결과 확인 |
+| 역할·동반 | 원재료·포괄 군이 추천되지 않음. 죽에 쌀밥 없음. 비식사 군에 동반 없음 |
+| 영양값 | 기준량·단위·계산 표본 일치. 유효 표본 없는 군에 이전 대표값이 남지 않음 |
+| 구성원 수 | `member_count`와 실제 `nutrition_items.food_group_id` 집계 일치 |
+| 과거 기록 | 음식명·수량·영양값·일일 합계의 전후 스냅샷 불변 |
+| 추천 회귀 | 기록·상품이 같은 군으로 묶이고 출처별 반응 로그·동반 포함 예산 계산 정상 |
 
-관련 문서: `~/Documents/Software maestro/잇로그-음식군-alias-초안.md` (alias 자동 매핑 93%, 검수 목록),
-`scripts/report_mfds_taxonomy.py` (원본 분류 분포 리포트).
+`meal<100kcal` 또는 `exclude>300kcal`는 검수 신호다. 고열량 원재료가 제외된 것은 정상일 수 있으므로
+열량만으로 역할을 뒤집지 않는다. 검증기는 정규화 군명 충돌과 미판정 `serving_basis`도 구축 미완료로
+보고 종료 코드 1을 반환한다. 스키마 자체는 점진적 적재를 위해 NULL을 허용한다.
+원본 분류 검사와 SQLite 테스트는 운영 DB 검증을 대신하지 않는다.
+
+## 8. 추천 엔진 접점
+
+- `app/services/recommend/groups.py`에서 군·별칭 색인을 읽는다. 이력 빈도, 후보 중복 제거, 유사 음식 계열, 역할, 기본 동반, 기준 영양값이 같은 군을 사용한다.
+- 신규·수정 식사 저장은 상품 군을 우선하고 이름 별칭·군명 정확일치로 보완한다. 분류 변경 후 과거 기록은 backfill로 맞춘다.
+- 추천 카드의 `group_id/group_name/family`, 표시명, 동반 열량을 노출 로그와 함께 유지한다.
+- `recommendation_items`로 실제 노출·기록 시작·거절·식사 전환을 연결한다. 식사 저장의 명시 추천 ID, 소유권, 같은 군, 실제 노출 후 4시간 내 식사 시각을 검증한다. 일반 기록을 모든 최근 추천에 연결하지 않으며 수정·삭제 시 보상을 정정한다.
+- `recommend_engine` 기본값은 `v2`다. 외부 환경변수가 명시된 경우 그 값이 우선한다. v2는 AI 호출 없이 후보를 생성한다.
+- 유사 후보는 확정 음식군명의 구체적인 음식 형태를 우선 비교한다. 같은 계열이라는 이유만으로 버거와 피자를 유사 메뉴로 취급하지 않는다.
+- 후보 수 제한 전에 개인/기본 동반을 반영한다. 랭킹도 메인과 동반의 열량·단백질 합계를 사용한다.
+- 개인 빈도·인기·음식 유사도·조건부 협업의 근거를 합쳐 공통 점수로 평가한다. 유사도는 현재 영양 목표·최근 섭취와 분리한다. 이력이 부족하면 `catalog` 기본 후보를 보완한다. 홈 첫 카드/추천 탭 마지막 카드의 제한된 탐색과 관측 보상 학습은 밴딧이 맡는다.
+- 순수 밥과 멸치볶음·연근조림 등 대표 반찬 예외는 `app/food_taxonomy.py`에서 구축 경로와 군 미구축 폴백이 공유한다.
+- 세부 정책은 `app/services/recommend/`에 구현하고, 회귀 검증은 `tests/test_recommend_*.py`에서 관리한다.
+
+## 9. 마이그레이션과 실행 예시
+
+마이그레이션 계보:
+
+```text
+c4d8e21f7a95
+→ d7f3a9c21e40  food_groups / food_group_aliases
+→ d8b41c7e5f02  nutrition_items 군·기준량 컬럼
+→ d9c52d8f6a13  meal_items 군 컬럼
+→ e0d63e9a7b24  recommendation_items
+→ e1e74fab8c35  JSON 삭제 아카이브
+→ e2f85abc9d46  계열·역할·기준량 등 CHECK 제약과 이전 계열명 정리
+→ e3a96bcd0e57  실제 노출·피드백·밴딧 정책/확률/특성 스냅샷
+→ e4b07cde1f68  게임 미션 e7a3c95d18b4 가지와 합친 단일 head
+```
+
+분류 제약 마이그레이션은 `육·수산 가공`, `구이·볶음·조림류`의 이름을 갱신하고 잘못된 동반 FK를
+정리한다. 죽·두부 등 실제 소속 변경과 원본 세분화까지 수행하는 것은 build 단계다.
+
+아래 명령은 `BE`에서 실행하며 `<...>`는 실제 원본 파일 경로로 바꾼다. import·curate·generic은
+각자 커밋하므로 연결 대상과 입력 파일을 확인한 뒤 순서대로 실행한다.
+
+```bash
+python -m alembic upgrade head
+python -m scripts.import_public_nutrition <음식편.csv>
+python -m scripts.curate_representative_foods <음식편.csv>
+python -m scripts.import_mfds_api --jsonl <가공식품.jsonl>
+python -m scripts.build_generic_foods
+python -m scripts.build_food_groups --food <음식편.jsonl> --processed <가공식품.jsonl> --dry-run
+python -m scripts.build_food_groups --food <음식편.jsonl> --processed <가공식품.jsonl>
+python -m scripts.backfill_meal_item_groups --force
+python -m scripts.backfill_meal_item_groups --force --apply
+python -m scripts.verify_food_groups
+```
+
+build의 `--dry-run`은 DB에 접속해 변경 질의를 실행한 뒤 롤백한다. 영구 행 변경을 커밋하지 않지만
+감사 CSV는 생성하며 DB 시퀀스 값은 소비될 수 있다. DB 접속 없이 원본만 검사하려면
+`report_mfds_taxonomy` 또는 `Taxonomy.scan`을 사용한다. `--skip-macros`는 중간 점검용이며
+완전한 재구축에서는 대표값 계산을 생략하지 않는다.
+
+## 10. 이번 검증의 적용 범위
+
+로컬 원본 분류와 코드·테스트를 확인했다. 운영 DB 연결 승인 요청이 취소되어 운영 DB의 현재
+스키마·내용을 조회하거나 이번 변경을 적용·검증하지 않았다. 운영 완료 여부는 위 실행 순서와
+검증 결과를 별도로 남겨 확인한다. 과거 문서의 운영 행 수·전체 100g 대표 감사 완료 주장만으로
+현재 DB가 이 계약을 만족한다고 판단하지 않는다.

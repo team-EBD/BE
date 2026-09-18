@@ -1,0 +1,56 @@
+{
+  "description": "밥을 곁들이는 저열량 찌개의 음식군 재구축 회귀용 입력 2건. MFDS 분석 영양값과 테스트 섭취량이며 운영 음식군 대표값을 대체하지 않음.",
+  "source_file": "mfds_food.jsonl",
+  "source_basis": "100g",
+  "formula": "per_serving = original_per_100g * demo_serving_g / 100",
+  "items": [
+    {
+      "group_name": "쌀밥",
+      "demo_serving_g": 210,
+      "serving_note": "데모에서 한 끼 동반 쌀밥 210g을 가정",
+      "original": {
+        "foodCd": "D301-022000000-0001",
+        "foodNm": "쌀밥",
+        "dataCd": "D",
+        "foodOriginNm": "외식(분석함량)",
+        "foodLv3Nm": "밥류",
+        "foodLv4Nm": "쌀밥",
+        "nutConSrtrQua": "100g",
+        "enerc": "166",
+        "chocdf": "37.33",
+        "prot": "3.36",
+        "fatce": "0.32",
+        "servSize": "",
+        "foodSize": "100g",
+        "srcNm": "식품의약품안전처",
+        "dataProdNm": "분석",
+        "crtYmd": "2022-06-30",
+        "crtrYmd": "2026-04-29"
+      }
+    },
+    {
+      "group_name": "순두부찌개",
+      "demo_serving_g": 200.0,
+      "serving_note": "원본 foodSize와 같은 g 수를 데모 섭취량으로 채택; 공식 1회섭취참고량이라는 뜻은 아님",
+      "original": {
+        "foodCd": "D106-291030000-0001",
+        "foodNm": "순두부찌개_김치",
+        "dataCd": "D",
+        "foodOriginNm": "가정식(분석 함량)",
+        "foodLv3Nm": "찌개 및 전골류",
+        "foodLv4Nm": "순두부찌개",
+        "nutConSrtrQua": "100g",
+        "enerc": "35",
+        "chocdf": "2.17",
+        "prot": "2.98",
+        "fatce": "1.59",
+        "servSize": "",
+        "foodSize": "200g",
+        "srcNm": "식품의약품안전처",
+        "dataProdNm": "분석",
+        "crtYmd": "2017-12-31",
+        "crtrYmd": "2026-04-29"
+      }
+    }
+  ]
+}

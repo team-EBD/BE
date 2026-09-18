@@ -4,11 +4,10 @@
     python -m scripts.prune_nutrition_items --apply    # 참조 재지정 → 아카이브 → 삭제 (트랜잭션 1개)
 
 대상:
-  duplicate       비대표인데 같은 normalized_name 의 대표 행이 있음 → 그 대표 행(survivor)으로 참조를 넘기고 삭제
-  exclude_family  비대표이고 군의 계열이 '기타'·'소스·양념' 이면서 role=exclude → 기록 가치 없음, 삭제
-                  (김치·절임은 사용자가 기록하므로 남긴다)
+  duplicate       비대표인데 같은 normalized_name·food_group_id 의 대표 행이 있음 → 참조를 넘기고 삭제
 유지:
   100g 유일 행(비대표·대표 없음) — 검색 커버리지. serving_basis=per_100g 로 추천에서만 제외
+  exclude 역할의 음식 — 추천 제외는 기록·검색에서 불필요하다는 의미가 아니다
 
 전제: build_food_groups 가 먼저 돌아 군 대표값(G)이 채워져 있어야 한다 — 구성원이 사라지면 재계산 근거가 없다.
 세 FK(meal_items·food_candidates·favorite_foods)는 ondelete=SET NULL 이라 삭제 자체는 안전하지만,
@@ -33,9 +32,6 @@ from app.models import (
     NutritionItemPruned,
 )
 
-PRUNE_EXCLUDE_FAMILIES = ("기타", "소스·양념")
-
-
 def _payload(item: NutritionItem) -> dict:
     out = {}
     for col in NutritionItem.__table__.columns:
@@ -45,37 +41,27 @@ def _payload(item: NutritionItem) -> dict:
 
 
 def find_targets(db: Session) -> tuple[dict[int, int], list[int]]:
-    """(중복 행 id → survivor id, exclude_family 행 id 목록)"""
-    # 대표 행: normalized_name → 가장 낮은 id (시드 우선 — 시드 id 가 가장 작다)
-    rep_by_name: dict[str, int] = {}
-    for item_id, name in db.execute(
-        select(NutritionItem.id, NutritionItem.normalized_name)
+    """(중복 행 id → survivor id, 빈 목록). 기존 호출 형식을 유지한다."""
+    # 이름이 같아도 서로 다른 군(코코아 음료/분말 등)은 중복이 아니다.
+    rep_by_name: dict[tuple[str, int], int] = {}
+    for item_id, name, group_id in db.execute(
+        select(NutritionItem.id, NutritionItem.normalized_name, NutritionItem.food_group_id)
         .where(NutritionItem.is_representative.is_(True))
         .order_by(NutritionItem.id)
     ):
-        rep_by_name.setdefault(name, item_id)
+        if group_id is not None:
+            rep_by_name.setdefault((name, group_id), item_id)
 
     duplicates: dict[int, int] = {}
-    for item_id, name in db.execute(
-        select(NutritionItem.id, NutritionItem.normalized_name).where(NutritionItem.is_representative.is_(False))
+    for item_id, name, group_id in db.execute(
+        select(NutritionItem.id, NutritionItem.normalized_name, NutritionItem.food_group_id)
+        .where(NutritionItem.is_representative.is_(False))
     ):
-        if name in rep_by_name:
-            duplicates[item_id] = rep_by_name[name]
+        key = (name, group_id)
+        if key in rep_by_name:
+            duplicates[item_id] = rep_by_name[key]
 
-    exclude_ids = [
-        r[0]
-        for r in db.execute(
-            select(NutritionItem.id)
-            .join(FoodGroup, FoodGroup.id == NutritionItem.food_group_id)
-            .where(
-                NutritionItem.is_representative.is_(False),
-                FoodGroup.role == "exclude",
-                FoodGroup.family.in_(PRUNE_EXCLUDE_FAMILIES),
-            )
-        )
-        if r[0] not in duplicates
-    ]
-    return duplicates, exclude_ids
+    return duplicates, []
 
 
 def _repoint(db: Session, mapping: dict[int, int]) -> Counter:
@@ -104,25 +90,24 @@ def main() -> None:
         )
         duplicates, exclude_ids = find_targets(db)
         total = db.scalar(select(func.count()).select_from(NutritionItem))
-        print(f"전체 {total:,} · 중복(duplicate) {len(duplicates):,} · 기록 가치 없음(exclude_family) {len(exclude_ids):,}"
+        print(f"전체 {total:,} · 같은 군·이름의 중복(duplicate) {len(duplicates):,}"
               f" → 남는 행 {total - len(duplicates) - len(exclude_ids):,}")
-        # 삭제 대상은 전부 비대표(per_100g) 행이라 군 대표값(per_serving 구성원 절사평균)에는 영향이 없다.
-        # 미계산 군은 per_serving 구성원이 원래 없는 군 — 삭제와 무관하게 대표값을 못 만든다 (정보용).
-        print(f"군 대표값 미계산(meal/snack/companion) {macros_missing}개 — per_serving 구성원 없음, 삭제와 무관")
+        # 비대표 브랜드도 per_serving일 수 있다. 삭제 전 군 대표값을 계산하고 보존해야 한다.
+        print(f"군 대표값 미계산(meal/snack/companion) {macros_missing}개 — 삭제 전 build 결과 확인 필요")
 
         ref_counts = {}
         for model, label in ((MealItem, "meal_items"), (FoodCandidate, "food_candidates"), (FavoriteFood, "favorite_foods")):
             ref_counts[label] = db.scalar(
                 select(func.count()).where(model.nutrition_item_id.in_(list(duplicates) + exclude_ids))
             )
-        print(f"삭제 대상을 참조하는 행: {ref_counts} (중복은 survivor 로 재지정, exclude 는 SET NULL)")
+        print(f"삭제 대상을 참조하는 행: {ref_counts} (중복은 survivor 로 재지정)")
 
         if not args.apply:
             print("\n[dry-run] --apply 로 실행")
             return
         groups_exist = db.scalar(select(func.count()).select_from(FoodGroup))
         if not groups_exist:
-            print("\n[중단] food_groups 가 비어 있다 — build_food_groups 를 먼저 돌린다 (exclude_family 판정 불가)")
+            print("\n[중단] food_groups 가 비어 있다 — 같은 군의 중복만 정리하도록 build_food_groups 를 먼저 돌린다")
             return
 
         repointed = _repoint(db, duplicates)
@@ -142,6 +127,10 @@ def main() -> None:
                 archived += 1
             db.flush()
             db.execute(NutritionItem.__table__.delete().where(NutritionItem.id.in_(chunk)))
+        counts = dict(db.execute(select(NutritionItem.food_group_id, func.count())
+                                .group_by(NutritionItem.food_group_id)).all())
+        for group in db.scalars(select(FoodGroup)):
+            group.member_count = counts.get(group.id, 0)
         db.commit()
         remaining = db.scalar(select(func.count()).select_from(NutritionItem))
         print(f"\n[apply] 참조 재지정 {dict(repointed)} · 아카이브 {archived:,} · 삭제 후 {remaining:,}행")
