@@ -183,8 +183,15 @@ COMPANION_GROUPS_EXTRA = frozenset({"돈가스"})  # 튀김류 중 밥 동반
 DEFAULT_COMPANION = "쌀밥"
 
 
+# 이름에 이 말이 들어간 군은 계열·규칙과 무관하게 추천에 내지 않는다 (식약처 음식편에 실제로 있다 —
+# 운영 복제본 리허설에서 '수육'을 자주 먹는 사용자에게 '개고기 수육'이 유사 추천으로 나왔다).
+NEVER_RECOMMEND_KEYWORDS: tuple[str, ...] = ("개고기", "보신탕", "영양탕", "사철탕")
+
+
 def role_for(family: str, group: str) -> str:
     group = canonical_group(group)
+    if any(word in group for word in NEVER_RECOMMEND_KEYWORDS):
+        return ROLE_EXCLUDE
     if group in GROUP_ROLE_OVERRIDE:
         return GROUP_ROLE_OVERRIDE[group]
     if family in EXCLUDE_FAMILIES:

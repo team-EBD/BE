@@ -158,3 +158,14 @@ def test_typical_side_dishes_are_excluded_even_if_cooked_family(name):
     role = role_for(family, name)
     assert role == "exclude"
     assert companion_for(family, name, role) is None
+
+
+def test_never_recommend_keywords_force_exclude():
+    """개고기·보신탕류는 계열이 meal 이어도 추천 후보가 되지 않는다."""
+    from scripts.food_group_taxonomy import NEVER_RECOMMEND_KEYWORDS, role_for
+
+    assert "개고기" in NEVER_RECOMMEND_KEYWORDS
+    assert role_for("구이·볶음·조림·찜·전류", "개고기 수육") == "exclude"
+    assert role_for("국·탕·찌개류", "보신탕") == "exclude"
+    assert role_for("국·탕·찌개류", "개고기전골") == "exclude"
+    assert role_for("구이·볶음·조림·찜·전류", "수육") == "meal"  # 일반 수육은 그대로
