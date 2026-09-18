@@ -7,6 +7,7 @@ from datetime import date, datetime
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     ForeignKey,
     JSON,
@@ -20,6 +21,7 @@ from sqlalchemy import false as sa_false
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
+from app.food_taxonomy import FAMILIES
 from app.models._common import created_at_column, pk_column, updated_at_column
 
 
@@ -32,10 +34,17 @@ class FoodGroup(Base):
     """
 
     __tablename__ = "food_groups"
+    __table_args__ = (
+        CheckConstraint("family IN (" + ",".join(repr(f) for f in FAMILIES) + ")", name="ck_food_groups_family"),
+        CheckConstraint("role IN ('meal','companion','snack','exclude')", name="ck_food_groups_role"),
+        CheckConstraint("member_count >= 0", name="ck_food_groups_member_count"),
+        CheckConstraint("companion_group_id IS NULL OR (companion_group_id <> id AND role = 'meal')",
+                        name="ck_food_groups_companion"),
+    )
 
     id: Mapped[int] = pk_column()
     name: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
-    family: Mapped[str] = mapped_column(String(30), nullable=False, index=True)  # 계열 16개 (§4)
+    family: Mapped[str] = mapped_column(String(30), nullable=False, index=True)  # 계열 18개 (§4)
     role: Mapped[str] = mapped_column(String(12), nullable=False, index=True)  # meal|companion|snack|exclude
     # 기본 동반 군 (찌개 → 쌀밥). NULL = 없음 (버거·면·김밥)
     companion_group_id: Mapped[int | None] = mapped_column(
@@ -62,6 +71,9 @@ class FoodGroupAlias(Base):
     """
 
     __tablename__ = "food_group_aliases"
+    __table_args__ = (
+        CheckConstraint("kind IN ('synonym','seed','manual','auto')", name="ck_food_group_aliases_kind"),
+    )
 
     alias: Mapped[str] = mapped_column(String(100), primary_key=True)
     group_id: Mapped[int] = mapped_column(
@@ -90,6 +102,10 @@ class NutritionItemPruned(Base):
 
 class NutritionItem(Base):
     __tablename__ = "nutrition_items"
+    __table_args__ = (
+        CheckConstraint("serving_basis IS NULL OR serving_basis IN ('per_serving','per_100g')",
+                        name="ck_nutrition_items_serving_basis"),
+    )
 
     id: Mapped[int] = pk_column()
     name: Mapped[str] = mapped_column(String(100), nullable=False)

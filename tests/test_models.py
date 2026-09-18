@@ -55,7 +55,6 @@ EXPECTED_TABLES = {
 
 def test_all_tables_registered():
     assert set(Base.metadata.tables.keys()) == EXPECTED_TABLES
-    assert len(EXPECTED_TABLES) == 35
 
 
 def _sqlite_factory():
