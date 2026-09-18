@@ -12,13 +12,13 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.core.timeutil import from_db, kst_date_of
+from app.core.timeutil import from_db, kst_date_of, kst_day_bounds
 from app.models import MealItem, MealRecord, NutritionItem, User
-from app.services.matching import normalize_name
-from app.services.summary import aggregate_day, get_goals
+from app.services.matching import normalize_name, per_serving_representatives
+from app.services.summary import get_goals
 
 from .groups import ROLE_COMPANION, ROLE_MEAL, GroupIndex, GroupInfo, load_group_index
 
@@ -55,6 +55,7 @@ MISRECORD_MIN_RATIO = 0.25
 MISRECORD_MAX_RATIO = 4.0
 
 POPULARITY_WINDOW_DAYS = 60
+POPULARITY_HALF_LIFE_DAYS = 30
 
 # 질림(최근 섭취) 감점 — 그 음식의 재섭취 주기 대비 얼마나 지났나.
 # 3번 이상 먹었으면 개인 평균 간격을, 아니면 기본 5일을 주기로 본다.
@@ -101,7 +102,7 @@ class FoodStat:
 
     key: str
     name: str  # 표시용 — 기록에서 가장 많이 쓰인 원문 이름 (사용자 어휘)
-    score: float  # 감쇠 합(개인) 또는 건수(인기)
+    score: float  # 끼니별 감쇠 합(개인) 또는 사용자별 최근 1회 감쇠 합(인기)
     count: int
     last_eaten: datetime
     calories: float
@@ -112,6 +113,7 @@ class FoodStat:
     group_name: str | None = None
     family: str | None = None
     role: str | None = None
+    user_count: int = 0  # 해당 음식을 먹은 사용자 수 (같은 사용자의 반복 기록은 1명)
 
 
 @dataclass
@@ -124,6 +126,7 @@ class _Row:
     fat: float
     group: GroupInfo | None
     record_id: int
+    user_id: int
 
 
 _Macros = tuple[float, float, float, float]  # (kcal, 탄, 단, 지) 1인분
@@ -150,7 +153,7 @@ def _reference_by_name(db: Session, keys: set[str]) -> dict[str, _Macros]:
             NutritionItem.fat,
         )
         .where(
-            NutritionItem.is_representative.is_(True),
+            per_serving_representatives(),
             NutritionItem.normalized_name.in_(keys),
         )
         .order_by(NutritionItem.normalized_name, NutritionItem.id)
@@ -165,10 +168,12 @@ def _eaten_rows(
     db: Session,
     *,
     since: datetime,
+    until: datetime,
     index: GroupIndex,
     user_id: int | None = None,
     meal_type: str | None = None,
     exclude_test_users: bool = False,
+    exclude_user_id: int | None = None,
 ) -> list[_Row]:
     """실제로 먹은 기록 항목(삭제·생략 제외)을 군·1인분 영양값으로 정규화해 반환.
 
@@ -182,6 +187,7 @@ def _eaten_rows(
             MealItem.food_name,
             MealRecord.eaten_at,
             MealRecord.id,
+            MealRecord.user_id,
             MealItem.calories,
             MealItem.carbs,
             MealItem.protein,
@@ -190,6 +196,7 @@ def _eaten_rows(
             MealItem.food_group_id,
             NutritionItem.food_group_id,
             NutritionItem.is_representative,
+            NutritionItem.serving_basis,
             NutritionItem.calories,
             NutritionItem.carbs,
             NutritionItem.protein,
@@ -201,22 +208,25 @@ def _eaten_rows(
             MealRecord.deleted_at.is_(None),
             MealRecord.is_skipped.is_(False),
             MealRecord.eaten_at >= since,
+            MealRecord.eaten_at <= until,
         )
     )
     if user_id is not None:
         stmt = stmt.where(MealRecord.user_id == user_id)
+    if exclude_user_id is not None:
+        stmt = stmt.where(MealRecord.user_id != exclude_user_id)
     if meal_type is not None:
         stmt = stmt.where(MealRecord.meal_type == meal_type)
     if exclude_test_users:
         stmt = stmt.join(User, User.id == MealRecord.user_id)
         for suffix in EXCLUDED_EMAIL_SUFFIXES:
             # email 이 NULL 인 소셜 계정은 제외 대상이 아니다 (NOT LIKE 가 NULL 이 되지 않게)
-            stmt = stmt.where(or_(User.email.is_(None), ~User.email.like(f"%{suffix}")))
+            stmt = stmt.where(or_(User.email.is_(None), ~User.email.ilike(f"%{suffix}")))
 
-    raw: list[tuple[str, datetime, int, _Macros, _Macros | None, GroupInfo | None]] = []
+    raw: list[tuple[str, datetime, int, int, _Macros, _Macros | None, GroupInfo | None]] = []
     for (
-        name, eaten_at, record_id, cal, carbs, protein, fat, serving,
-        meal_gid, item_gid, item_rep, db_cal, db_carbs, db_protein, db_fat,
+        name, eaten_at, record_id, row_user_id, cal, carbs, protein, fat, serving,
+        meal_gid, item_gid, item_rep, item_basis, db_cal, db_carbs, db_protein, db_fat,
     ) in db.execute(stmt):
         divisor = float(serving or 0) or 1.0  # meal_items 값은 섭취량 반영값 → 1인분으로 되돌림
         recorded = (
@@ -229,17 +239,17 @@ def _eaten_rows(
         reference: _Macros | None = None
         if group is not None and group.has_macros:
             reference = (group.calories, group.carbs or 0.0, group.protein or 0.0, group.fat or 0.0)  # type: ignore[arg-type]
-        elif item_rep and db_cal is not None:
+        elif item_rep and item_basis in (None, "per_serving") and db_cal is not None:
             reference = (float(db_cal), float(db_carbs), float(db_protein), float(db_fat))
-        raw.append((name, from_db(eaten_at), record_id, recorded, reference, group))
+        raw.append((name, from_db(eaten_at), record_id, row_user_id, recorded, reference, group))
 
     # 군도 매칭도 없는 기록은 이름으로 대표값을 한 번 더 찾는다
     by_name = _reference_by_name(
-        db, {group_key(name) for name, _, _, _, ref, _ in raw if ref is None}
+        db, {group_key(name) for name, _, _, _, _, ref, _ in raw if ref is None}
     )
 
     rows: list[_Row] = []
-    for name, eaten_at, record_id, recorded, reference, group in raw:
+    for name, eaten_at, record_id, row_user_id, recorded, reference, group in raw:
         reference = reference or by_name.get(group_key(name))
         if reference is not None and not _plausible(recorded[0], reference[0]):
             continue
@@ -247,7 +257,7 @@ def _eaten_rows(
         rows.append(
             _Row(
                 name=name, eaten_at=eaten_at, calories=calories, carbs=carbs,
-                protein=protein, fat=fat, group=group, record_id=record_id,
+                protein=protein, fat=fat, group=group, record_id=record_id, user_id=row_user_id,
             )
         )
     return rows
@@ -257,7 +267,7 @@ def _key_of(row: _Row) -> str:
     return row.group.key if row.group else group_key(row.name)
 
 
-def _aggregate(rows: list[_Row], weight_of) -> list[FoodStat]:
+def _aggregate(rows: list[_Row], weight_of, *, per_user: bool = False) -> list[FoodStat]:
     groups: dict[str, list[_Row]] = defaultdict(list)
     for row in rows:
         key = _key_of(row)
@@ -266,23 +276,42 @@ def _aggregate(rows: list[_Row], weight_of) -> list[FoodStat]:
 
     stats: list[FoodStat] = []
     for key, group in groups.items():
-        n = len(group)
+        by_record: dict[int, list[_Row]] = defaultdict(list)
+        for row in group:
+            by_record[row.record_id].append(row)
+        # 같은 끼니의 상품·별칭 여러 행이 같은 음식군이면 섭취 1회로 센다.
+        meals = list(by_record.values())
+        n = len(meals)
+        weights = [weight_of(items[0]) for items in meals]
+        if per_user:
+            user_weights: dict[int, float] = {}
+            for items, weight in zip(meals, weights):
+                uid = items[0].user_id
+                user_weights[uid] = max(user_weights.get(uid, 0.0), weight)
+            score = sum(user_weights.values())
+        else:
+            score = sum(weights)
+
+        def mean_macro(field: str) -> float:
+            return sum(sum(getattr(r, field) for r in items) / len(items) for items in meals) / n
+
         info = next((r.group for r in group if r.group), None)
         stats.append(
             FoodStat(
                 key=key,
                 name=Counter(r.name for r in group).most_common(1)[0][0],
-                score=round(sum(weight_of(r) for r in group), 4),
+                score=round(score, 4),
                 count=n,
                 last_eaten=max(r.eaten_at for r in group),
-                calories=sum(r.calories for r in group) / n,
-                carbs=sum(r.carbs for r in group) / n,
-                protein=sum(r.protein for r in group) / n,
-                fat=sum(r.fat for r in group) / n,
+                calories=mean_macro("calories"),
+                carbs=mean_macro("carbs"),
+                protein=mean_macro("protein"),
+                fat=mean_macro("fat"),
                 group_id=info.id if info else None,
                 group_name=info.name if info else None,
                 family=info.family if info else None,
                 role=info.role if info else None,
+                user_count=len({r.user_id for r in group}),
             )
         )
     # 점수 내림차순, 동점은 키 순 — 같은 입력이면 같은 순서
@@ -310,10 +339,10 @@ def decayed_frequency(
     """
     index = index or load_group_index(db)
     since = now - timedelta(days=window_days)
-    rows = _eaten_rows(db, since=since, index=index, user_id=user_id, meal_type=meal_type)
+    rows = _eaten_rows(db, since=since, until=now, index=index, user_id=user_id, meal_type=meal_type)
     can_fall_back = meal_type is not None and meal_type not in NO_FALLBACK_MEAL_TYPES
-    if can_fall_back and len(rows) < min_items:
-        rows = _eaten_rows(db, since=since, index=index, user_id=user_id)
+    if can_fall_back and len({(row.record_id, _key_of(row)) for row in rows}) < min_items:
+        rows = _eaten_rows(db, since=since, until=now, index=index, user_id=user_id)
 
     def weight(row: _Row) -> float:
         days = max((now - row.eaten_at).total_seconds() / 86400, 0.0)
@@ -329,14 +358,23 @@ def global_popularity(
     now: datetime,
     index: GroupIndex | None = None,
     window_days: int = POPULARITY_WINDOW_DAYS,
+    exclude_user_id: int | None = None,
 ) -> list[FoodStat]:
-    """전체 사용자의 그 끼니 기록 건수 순 (내부 테스트 계정 제외). 콜드스타트·탐색용."""
+    """그 끼니에 먹은 사용자 수에 최근성을 반영한 인기 (테스트 계정 제외).
+
+    음식마다 사용자당 최근 섭취 1회만 기여한다. 한 사람의 반복 기록이 여러 사람의
+    선호보다 커지지 않으며, 마지막 섭취가 오래된 유행은 반감기 30일로 약해진다.
+    """
     index = index or load_group_index(db)
     rows = _eaten_rows(
-        db, since=now - timedelta(days=window_days), index=index, meal_type=meal_type,
-        exclude_test_users=True,
+        db, since=now - timedelta(days=window_days), until=now, index=index, meal_type=meal_type,
+        exclude_test_users=True, exclude_user_id=exclude_user_id,
     )
-    return _aggregate(rows, lambda _row: 1.0)
+    return _aggregate(
+        rows,
+        lambda row: 0.5 ** ((now - row.eaten_at).total_seconds() / 86400 / POPULARITY_HALF_LIFE_DAYS),
+        per_user=True,
+    )
 
 
 def recency_penalties(
@@ -355,12 +393,12 @@ def recency_penalties(
     주기를 넘긴 음식은 0 — 다시 먹을 때가 됐다.
     """
     index = index or load_group_index(db)
-    rows = _eaten_rows(db, since=now - timedelta(days=window_days), index=index, user_id=user_id)
+    rows = _eaten_rows(db, since=now - timedelta(days=window_days), until=now, index=index, user_id=user_id)
     eaten_days: dict[str, set] = defaultdict(set)
     for row in rows:
         key = _key_of(row)
         if key:
-            eaten_days[key].add(row.eaten_at.date())
+            eaten_days[key].add(kst_date_of(row.eaten_at))
 
     penalties: dict[str, float] = {}
     for key, days in eaten_days.items():
@@ -370,7 +408,7 @@ def recency_penalties(
             interval = max(sum(gaps) / len(gaps), MIN_REEAT_INTERVAL_DAYS)
         else:
             interval = default_interval_days
-        since_last = max((now.date() - ordered[-1]).days, 0)
+        since_last = max((kst_date_of(now) - ordered[-1]).days, 0)
         penalty = max(0.0, 1.0 - since_last / interval)
         if penalty > 0:
             penalties[key] = round(penalty, 3)
@@ -403,7 +441,7 @@ def companion_stats(
     index = index or load_group_index(db)
     if not index.enabled:
         return {}
-    rows = _eaten_rows(db, since=now - timedelta(days=window_days), index=index, user_id=user_id)
+    rows = _eaten_rows(db, since=now - timedelta(days=window_days), until=now, index=index, user_id=user_id)
     by_record: dict[int, list[_Row]] = defaultdict(list)
     for row in rows:
         by_record[row.record_id].append(row)
@@ -451,6 +489,7 @@ def _meal_ratios(db: Session, user_id: int, *, now: datetime) -> tuple[dict[str,
             MealRecord.deleted_at.is_(None),
             MealRecord.is_skipped.is_(False),
             MealRecord.eaten_at >= since,
+            MealRecord.eaten_at <= now,
         )
     ).all()
     total = sum(float(cal) for _, cal in rows)
@@ -486,12 +525,25 @@ def meal_budget(
     goals = get_goals(db, user_id)
     ratios, ratio_source = _meal_ratios(db, user_id, now=now)
     day = kst_date_of(now, day_start_hour)
-    today = aggregate_day(db, user_id, day, day_start_hour)
+    start, end = kst_day_bounds(day, day_start_hour)
+    today_calories, today_protein = db.execute(
+        select(
+            func.coalesce(func.sum(MealRecord.total_calories), 0),
+            func.coalesce(func.sum(MealRecord.total_protein), 0),
+        ).where(
+            MealRecord.user_id == user_id,
+            MealRecord.deleted_at.is_(None),
+            MealRecord.is_skipped.is_(False),
+            MealRecord.eaten_at >= start,
+            MealRecord.eaten_at < end,
+            MealRecord.eaten_at <= now,
+        )
+    ).one()
 
     goal = int(goals["calories"])
     ratio = ratios.get(meal_type, DEFAULT_MEAL_RATIOS["snack"])
     ratio_budget = round(goal * ratio)
-    remaining = round(goal - today["calories"])
+    remaining = round(goal - float(today_calories))
     base = ratio_budget if remaining >= ratio_budget else max(remaining, round(ratio_budget * BUDGET_FLOOR))
     budget = round(base * MOOD_FACTOR.get(mood, 1.0))
     return Budget(
@@ -502,7 +554,7 @@ def meal_budget(
         ratio_budget=ratio_budget,
         remaining_today=remaining,
         meal_budget=budget,
-        protein_gap=round(float(goals["protein"]) - today["protein"], 1),
+        protein_gap=round(float(goals["protein"]) - float(today_protein), 1),
         mood=mood,
     )
 

@@ -6,9 +6,9 @@
   AI 서버는 실패도 200 + status=failed 로 주므로, reason 을 서버 로그와
   error.details 에 남겨 5xx 의 원인(no_candidates/provider_error 등)을 추적 가능하게 한다.
 - 위치 기반(10.3)은 위치 동의 사용자만(403), 좌표는 Body 로만 받는다.
-- /menu 는 settings.recommend_engine 로 갈린다: legacy(AI) | v2(이력 기반 규칙 엔진,
-  app/services/recommend). v2 는 AI·일일 한도를 쓰지 않고 노출을 recommendation_items 에 남긴다.
-  카드 탭은 POST /recommendations/{log_id}/accept 로 신고한다 (채택률 → 랭킹 accept 항).
+- /menu 는 settings.recommend_engine 로 갈린다: legacy(AI) | v2(후보 생성·문맥 밴딧).
+  v2 는 AI·일일 한도를 쓰지 않고 정책·카드 생성 스냅샷을 저장한다. 실제 노출·기록 시작·
+  거절은 /items/{item_id}/feedback, 식사 전환은 저장 요청의 recommendation_item_id로 연결한다.
 """
 from __future__ import annotations
 
@@ -32,11 +32,14 @@ from app.models import (
     MealItem,
     MealRecord,
     RecommendationLog,
+    RecommendationItem as RecommendationItemRow,
     User,
 )
 from app.schemas.recommendation import (
     AcceptRequest,
     AcceptResponse,
+    ItemFeedbackRequest,
+    ItemFeedbackResponse,
     LocationMenuRequest,
     LocationMenuResponse,
     MenuBudget,
@@ -48,7 +51,7 @@ from app.schemas.recommendation import (
     RecommendationItem,
 )
 from app.services.recommend import recommend as recommend_v2
-from app.services.recommend.feedback import log_exposure, mark_accepted
+from app.services.recommend.feedback import log_exposure, mark_accepted, record_feedback
 from app.services.summary import aggregate_day, get_goals
 from app.services.usage_limit import enforce_daily_limit
 
@@ -209,14 +212,18 @@ def next_meal(
 
 
 def _menu_v2(db: Session, user: User, body: MenuRequest) -> MenuResponse:
-    """이력 기반 엔진 — AI 호출·일일 한도 없음. 노출을 기록하고 그 로그 id 를 돌려준다.
+    """이력 기반 엔진 — AI 호출·일일 한도 없음. 생성 로그와 카드별 피드백 id 를 돌려준다.
 
     exceed_flag 는 오늘 남은 칼로리 기준(동반 포함 합산)이지만 v2 에서는 카드를
     alternative 로 빼지 않는다 — 엔진이 예산의 2배까지 이미 잘랐고, 남은 칼로리가 거의
     없는 날 recommended 가 비어 버리면 FE 가 아무것도 못 보여 준다.
     """
-    result = recommend_v2(db, user.id, meal_type=body.meal_type, mood=body.mood)
+    result = recommend_v2(db, user.id, meal_type=body.meal_type, mood=body.mood, surface=body.surface)
     log = log_exposure(db, user.id, result)  # commit 포함
+    rows = db.scalars(
+        select(RecommendationItemRow).where(RecommendationItemRow.log_id == log.id)
+        .order_by(RecommendationItemRow.rank)
+    ).all()
     b = result.budget
     remaining = body.remaining_calories if body.remaining_calories is not None else b.remaining_today
     category = body.preferred_category or DEFAULT_CATEGORY
@@ -235,8 +242,9 @@ def _menu_v2(db: Session, user: User, body: MenuRequest) -> MenuResponse:
             group_id=item.group_id,
             group_name=item.group_name,
             family=item.family,
+            recommendation_item_id=row.id,
         )
-        for item in result.items
+        for item, row in zip(result.items, rows)
     ]
     return MenuResponse(
         recommended_menus=menus,
@@ -301,6 +309,15 @@ def menu(
         ai_call_log_id=call_log.id,
         engine="legacy",
     )
+
+
+@router.post("/items/{item_id}/feedback", response_model=ItemFeedbackResponse)
+def item_feedback(
+    item_id: int, body: ItemFeedbackRequest, user: CurrentUser, db: DB,
+) -> ItemFeedbackResponse:
+    if not record_feedback(db, user.id, item_id, body.action, reason=body.reason):
+        raise APIError(404, "NOT_FOUND", "해당 추천 항목을 찾을 수 없습니다.")
+    return ItemFeedbackResponse(recorded=True)
 
 
 @router.post("/{log_id}/accept", response_model=AcceptResponse)

@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import select
 
+from app.api.v1 import recommendations as recommendation_routes
 from app.core.config import settings
 from app.models import MealItem, MealRecord, RecommendationItem, RecommendationLog, User
 from tests.test_meals import MEAL_PAYLOAD
@@ -44,7 +45,8 @@ def _user_id(db) -> int:
     return db.scalar(select(User.id).order_by(User.id))
 
 
-def test_menu_defaults_to_legacy_engine(client, auth_headers):
+def test_menu_keeps_explicit_legacy_engine_compatible(client, auth_headers, monkeypatch):
+    monkeypatch.setattr(settings, "recommend_engine", "legacy")
     res = client.post("/v1/recommendations/menu", headers=auth_headers, json={"meal_type": "lunch"})
     assert res.status_code == 200
     body = res.json()
@@ -53,7 +55,8 @@ def test_menu_defaults_to_legacy_engine(client, auth_headers):
     assert body["recommended_menus"][0]["source"] is None  # v2 필드는 비어 있다
 
 
-def test_legacy_menu_accepts_omitted_meal_type(client, auth_headers):
+def test_legacy_menu_accepts_omitted_meal_type(client, auth_headers, monkeypatch):
+    monkeypatch.setattr(settings, "recommend_engine", "legacy")
     res = client.post("/v1/recommendations/menu", headers=auth_headers, json={})
     assert res.status_code == 200 and res.json()["engine"] == "legacy"
 
@@ -78,11 +81,14 @@ def test_v2_menu_response_shape_and_no_ai_call(client, auth_headers, db_factory,
     assert budget["ratio_source"] in ("personal", "default")
 
     menus = body["recommended_menus"]
-    assert menus, body
-    names = {m["name"] for m in menus}
-    assert names & {"김치찌개", "제육볶음"}
+    assert len(menus) == 3, body
+    # 최근 먹은 메뉴를 강제로 유지하지 않는다. 유사 음식도 개인 이력에 기반한 추천이다.
+    assert any(m["source"] in ("personal", "similar") for m in menus)
     for m in menus:
-        assert m["source"] in ("personal", "popular", "similar")
+        assert m["source"] in ("personal", "popular", "similar", "catalog", "collaborative")
+        assert m["recommendation_item_id"] > 0
+        if m["source"] == "similar":
+            assert any(anchor in m["reason"] for anchor in ("김치찌개", "제육볶음"))
         assert m["budget_label"] in ("fit", "light", "heavy")
         assert m["total_calories"] >= m["estimated_calories"]
         assert m["category"] == "home_meal" and m["reason"]
@@ -95,18 +101,47 @@ def test_v2_menu_response_shape_and_no_ai_call(client, auth_headers, db_factory,
         select(RecommendationItem).where(RecommendationItem.log_id == body["recommendation_log_id"])
     ).all()
     assert [r.name for r in rows] == [m["name"] for m in menus]
+    assert [r.id for r in rows] == [m["recommendation_item_id"] for m in menus]
+    assert all(r.shown_at is None for r in rows)
     log = db.get(RecommendationLog, body["recommendation_log_id"])
     assert log.user_id == uid and log.meal_context["engine"] == "v2" and log.ai_call_log_id is None
 
 
-def test_v2_menu_infers_meal_type_when_omitted(client, auth_headers, v2_engine):
+def test_v2_menu_infers_meal_type_and_logs_catalog_for_new_user(
+    client, auth_headers, db_factory, v2_engine, monkeypatch,
+):
+    # 실제 엔진을 실행하면서 결과를 보관해, API 응답과 DB 노출 점수가 일치하는지 확인한다.
+    run_engine = recommendation_routes.recommend_v2
+    engine_results = []
+
+    def capture_result(*args, **kwargs):
+        now = datetime.now(UTC).replace(hour=3, minute=0, second=0, microsecond=0)  # KST 점심
+        result = run_engine(*args, now=now, **kwargs)
+        engine_results.append(result)
+        return result
+
+    monkeypatch.setattr(recommendation_routes, "recommend_v2", capture_result)
     res = client.post("/v1/recommendations/menu", headers=auth_headers, json={})
     assert res.status_code == 200
     body = res.json()
-    assert body["engine"] == "v2"
-    assert body["budget"]["meal_type"] in ("breakfast", "lunch", "dinner", "snack")
-    # 이력이 전혀 없으면 카드가 비어도 200 — FE 는 빈 목록을 안내 문구로 처리한다
-    assert isinstance(body["recommended_menus"], list)
+    assert body["engine"] == "v2" and body["ai_call_log_id"] is None
+    assert body["budget"]["meal_type"] == "lunch"
+    menus = body["recommended_menus"]
+    assert len(menus) == 3
+    assert all(menu["source"] == "catalog" for menu in menus)
+    assert len({menu["name"] for menu in menus}) == 3
+    with db_factory() as db:
+        rows = db.scalars(
+            select(RecommendationItem)
+            .where(RecommendationItem.log_id == body["recommendation_log_id"])
+            .order_by(RecommendationItem.rank)
+        ).all()
+        assert [row.name for row in rows] == [menu["name"] for menu in menus]
+        assert [row.rank for row in rows] == [1, 2, 3]
+        assert all(row.source == "catalog" for row in rows)
+        assert [float(row.score) for row in rows] == pytest.approx(
+            [item.score for item in engine_results[0].items]
+        )
 
 
 def test_v2_menu_does_not_consume_daily_limit(client, auth_headers, db_factory, v2_engine):
@@ -151,12 +186,53 @@ def test_saving_recommended_food_marks_it_eaten(client, auth_headers, db_factory
     _history(db, _user_id(db), [("김치찌개", 320, 18, 22, 16), ("공기밥", 310, 68, 5, 0.5)])
     body = client.post("/v1/recommendations/menu", headers=auth_headers, json={"meal_type": "lunch"}).json()
     log_id = body["recommendation_log_id"]
-    picked = next(m for m in body["recommended_menus"] if m["name"] == "김치찌개")
+    picked = body["recommended_menus"][0]
+    impression = client.post(
+        f"/v1/recommendations/items/{picked['recommendation_item_id']}/feedback",
+        headers=auth_headers, json={"action": "impression"},
+    )
+    assert impression.status_code == 200
 
-    payload = {**MEAL_PAYLOAD, "items": [{**MEAL_PAYLOAD["items"][0], "food_name": picked["name"]}]}
+    payload = {
+        **MEAL_PAYLOAD,
+        "recommendation_item_id": picked["recommendation_item_id"],
+        "eaten_at": datetime.now(UTC).isoformat(),
+        "items": [{
+            **MEAL_PAYLOAD["items"][0],
+            "nutrition_item_id": None,
+            "food_name": picked["name"],
+            "calories": picked["estimated_calories"],
+        }],
+    }
     created = client.post("/v1/meals", headers=auth_headers, json=payload)
     assert created.status_code == 201, created.text
 
     db.expire_all()
-    row = db.scalar(select(RecommendationItem).where(RecommendationItem.log_id == log_id, RecommendationItem.name == "김치찌개"))
+    row = db.scalar(select(RecommendationItem).where(
+        RecommendationItem.log_id == log_id, RecommendationItem.name == picked["name"],
+    ))
     assert row.eaten_at is not None and row.eaten_meal_record_id == created.json()["meal_id"]
+
+
+def test_old_frontend_can_accept_and_save_without_item_id(client, auth_headers, db_factory, v2_engine):
+    """구 앱의 로그ID+이름 탭과 카드ID 없는 식사 저장을 계속 지원한다."""
+    response = client.post("/v1/recommendations/menu", headers=auth_headers, json={"meal_type": "lunch"})
+    assert response.status_code == 200
+    menu = response.json()
+    picked = menu["recommended_menus"][0]
+    accepted = client.post(
+        f"/v1/recommendations/{menu['recommendation_log_id']}/accept",
+        headers=auth_headers, json={"name": picked["name"]},
+    )
+    assert accepted.status_code == 200 and accepted.json() == {"accepted": True}
+    payload = {
+        **MEAL_PAYLOAD, "eaten_at": datetime.now(UTC).isoformat(),
+        "items": [{**MEAL_PAYLOAD["items"][0], "nutrition_item_id": None, "food_name": picked["name"]}],
+    }
+    assert "recommendation_item_id" not in payload
+    saved = client.post("/v1/meals", headers=auth_headers, json=payload)
+    assert saved.status_code == 201, saved.text
+    with db_factory() as db:
+        row = db.get(RecommendationItem, picked["recommendation_item_id"])
+        assert row.shown_at is not None and row.accepted_at is not None
+        assert row.eaten_at is None and row.eaten_meal_record_id is None

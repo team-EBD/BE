@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 Category = Literal["convenience_store", "delivery", "home_meal", "eating_out"]
 
@@ -33,6 +33,7 @@ Mood = Literal["any", "light", "hearty"]
 
 
 class MenuRequest(BaseModel):
+    surface: Literal["recommendation", "home"] = "recommendation"
     # 생략하면 서버가 KST 시각으로 끼니를 정한다 (legacy 는 breakfast/lunch/dinner 로만 AI 에 전달)
     meal_type: MealType | None = None
     preferred_category: Category | None = None
@@ -50,7 +51,7 @@ class MenuItem(BaseModel):
     exceed_flag: bool  # 오늘 남은 칼로리를 넘는가 (v2 는 동반 합산 기준)
     reason: str
     # --- v2(엔진) 전용. legacy 응답에서는 전부 None ---
-    source: str | None = None  # personal | popular | similar — 어느 생성기가 냈나
+    source: str | None = None  # personal | popular | similar | collaborative | catalog
     budget_label: str | None = None  # fit | light | heavy — 끼니 예산 대비
     total_calories: float | None = None  # 메인 + 동반(밥) 합산
     companion_name: str | None = None  # "쌀밥" — 함께 먹는 것으로 보고 예산을 계산했다
@@ -58,6 +59,7 @@ class MenuItem(BaseModel):
     group_id: int | None = None
     group_name: str | None = None
     family: str | None = None
+    recommendation_item_id: int | None = None  # 화면 노출·피드백·실제 식사 연결용 카드 id
 
 
 class MenuBudget(BaseModel):
@@ -77,7 +79,7 @@ class MenuResponse(BaseModel):
     caution_text: str
     ai_call_log_id: int | None = None  # legacy 만. v2 는 AI 를 부르지 않는다
     engine: Literal["legacy", "v2"] = "legacy"
-    # v2: 노출 로그 id — 카드 탭 시 POST /recommendations/{id}/accept 에 보낸다
+    # v2: 생성 로그 id. 새 FE는 카드별 recommendation_item_id로 실제 노출·피드백을 전송한다.
     recommendation_log_id: int | None = None
     budget: MenuBudget | None = None
 
@@ -88,6 +90,21 @@ class AcceptRequest(BaseModel):
 
 class AcceptResponse(BaseModel):
     accepted: bool
+
+
+class ItemFeedbackRequest(BaseModel):
+    action: Literal["impression", "accept", "reject"]
+    reason: Literal["not_now", "dislike"] | None = None
+
+    @model_validator(mode="after")
+    def _reason_for_rejection(self) -> "ItemFeedbackRequest":
+        if (self.action == "reject") != (self.reason is not None):
+            raise ValueError("reason 은 reject 동작에서만 필수입니다.")
+        return self
+
+
+class ItemFeedbackResponse(BaseModel):
+    recorded: bool
 
 
 class LocationMenuRequest(BaseModel):

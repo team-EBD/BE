@@ -28,6 +28,7 @@ from app.schemas.meal import MealCreateRequest, MealItemInput, MealUpdateRequest
 from app.services.game_profile import ensure_game_profile
 from app.services.game_rewards import apply_meal_rewards
 from app.services.recommend.feedback import mark_eaten as mark_recommendation_eaten
+from app.services.recommend.feedback import reconcile_meal_feedback
 from app.services.recommend.groups import load_group_index
 from app.services.summary import recompute_daily_summary
 
@@ -223,14 +224,13 @@ def create_meal(
     )
     db.add(meal)
     db.flush()
-    created_items = _insert_items(db, meal, body.items)
+    _insert_items(db, meal, body.items)
     _mark_selected_candidates(db, user, body.items)
 
-    # 최근 추천과 겹치면 "추천을 실제로 먹었다"고 표시한다 (실패해도 저장은 진행)
-    if not body.is_skipped:
+    # 추천 카드에서 시작한 기록만 연결한다. 다른 음식·과거 기록이면 연결은 무시한다.
+    if not body.is_skipped and body.recommendation_item_id is not None:
         mark_recommendation_eaten(
-            db, user.id, meal.id, [item.food_name for item in body.items],
-            food_group_ids=[row.food_group_id for row in created_items],
+            db, user.id, meal.id, recommendation_item_id=body.recommendation_item_id,
         )
 
     recompute_daily_summary(db, user.id, kst_date_of(eaten_at))
@@ -311,6 +311,7 @@ def update_meal(db: Session, user: User, meal_id: int, body: MealUpdateRequest) 
         meal.total_fat = totals["fat"]
 
     new_date = kst_date_of(meal.eaten_at)
+    reconcile_meal_feedback(db, meal)
     recompute_daily_summary(db, user.id, old_date)
     if new_date != old_date:
         recompute_daily_summary(db, user.id, new_date)
@@ -321,6 +322,7 @@ def update_meal(db: Session, user: User, meal_id: int, body: MealUpdateRequest) 
 def delete_meal(db: Session, user: User, meal_id: int) -> None:
     meal = get_owned_meal(db, user, meal_id)
     meal.deleted_at = now_utc()
+    reconcile_meal_feedback(db, meal)
     recompute_daily_summary(db, user.id, kst_date_of(meal.eaten_at))
     db.commit()
 

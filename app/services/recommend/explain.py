@@ -9,7 +9,9 @@ MEAL_LABEL = {"breakfast": "아침", "lunch": "점심", "dinner": "저녁", "sna
 _HEAD = {
     "personal": "{meal}에 자주 드시는 메뉴예요",
     "popular": "{meal}에 많이 기록되는 메뉴예요",
-    "similar": "자주 드시는 {anchor}와 영양 비율이 비슷해요",
+    "catalog": "{meal} 예산을 고려한 기본 메뉴예요",
+    "collaborative": "비슷한 메뉴를 기록한 다른 이용자들이 먹은 음식이에요",
+    "similar": "자주 드시는 {anchor}와 음식 특성이 비슷해요",
     "similar_type": "자주 드시는 {anchor} 같은 {kind}예요",
 }
 _LABEL_TAIL = {

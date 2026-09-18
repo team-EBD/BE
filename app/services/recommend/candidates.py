@@ -1,54 +1,49 @@
-"""후보 생성 — 넓게 모으는 단계(재현율 담당). 순서는 ranking 이 정한다.
+"""개인·인기·음식 유사 후보를 넓게 모으고 같은 음식군의 근거를 합친다.
 
-세 생성기는 서로의 구멍을 메운다:
-  personal  끼니별 개인 감쇠 빈도 상위 — 익숙한 것. 신규 사용자는 비어 있다
-  popular   전체 사용자의 그 끼니 인기 — 콜드스타트·탐색
-  similar   자주 먹는 음식(anchor)과 같은 계열이거나 탄단지 비율이 비슷한 군 — 비슷하지만 새로운 것
-각 후보는 source 를 달고 나가서, 나중에 출처별 섭취율로 생성기 가치를 측정한다.
-
-군(food_groups)이 있으면 role 로 반찬·주식을 거르고 계열(family)로 종류를 판정한다.
-군이 없는 DB 에서는 칼로리 휴리스틱·어미(dish_type)로 폴백한다 — 두 경로가 같은 코드다.
+역할 및 밥 포함 영양을 먼저 확인한 뒤 후보 수를 제한한다. 실제 순위는 ranking이 정한다.
+군이 없는 기존 DB는 알려진 음식 형태에 한해 역할을 보완한다.
 """
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from collections import deque
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models import NutritionItem
+from app.food_taxonomy import COMPANION_GROUPS, SIDE_DISH_GROUPS
+from app.services.matching import normalize_name, per_serving_representatives
 
-from .dish_type import dish_type
 from .groups import (
-    RECOMMENDABLE_ROLES,
-    ROLE_COMPANION,
-    ROLE_EXCLUDE,
-    GroupIndex,
-    GroupInfo,
-    load_group_index,
+    RECOMMENDABLE_ROLES, ROLE_COMPANION, ROLE_EXCLUDE, ROLE_MEAL, ROLE_SNACK,
+    GroupIndex, GroupInfo, load_group_index,
 )
 from .signals import FoodStat
+from .similarity import FoodProfile, compare_foods, food_profile
 
 PERSONAL_TOP = 8
 POPULAR_TOP = 5
 SIMILAR_TOP = 5
-
-# 칼로리 컷 — 군 role 이 1차 판정이고 이건 2차 안전망이다 (군이 없는 이름·미분류 기록용).
-# 김치(20kcal)·단무지·쌈무는 매 끼 함께 기록돼 '자주 먹는 음식' 상위를 차지하지만 메뉴가 아니다.
-# 절대 하한과 예산 비율 하한 중 큰 쪽 — 간식 예산(≈100)에서는 80kcal 하한이 작동한다.
 MIN_MEAL_KCAL = 80
 MIN_MEAL_BUDGET_SHARE = 0.15
-# 상한 — 예산의 2배를 넘는 건 아무리 자주 먹어도 이 끼니 후보가 아니다. 간식 기록이 적어
-# 전체 끼니로 폴백할 때 저녁 메뉴(김치찌개 320)가 간식 예산(72)에 올라오는 걸 막는다.
 MAX_MEAL_BUDGET_MULT = 2.0
+_PLAIN_RICE = {normalize_name(name) for name in COMPANION_GROUPS} | {"공기밥", "흰쌀밥", "흰밥"}
+_SIDE_DISHES = {normalize_name(name) for name in SIDE_DISH_GROUPS}
 
 
-def meal_worthy(calories: float, budget_kcal: int, role: str | None = None) -> bool:
-    """이 끼니 메뉴로 추천할 만한가 — role(반찬·주식 제외) → 칼로리 상·하한."""
-    if role in (ROLE_EXCLUDE, ROLE_COMPANION):
+def meal_worthy(
+    calories: float, budget_kcal: int, role: str | None = None, *, meal_type: str | None = None,
+) -> bool:
+    """역할과 끼니가 맞고, 동반을 포함한 1인분 열량이 허용 범위인지 확인한다."""
+    if not math.isfinite(calories) or role in (ROLE_EXCLUDE, ROLE_COMPANION):
         return False
+    if meal_type and role in RECOMMENDABLE_ROLES:
+        if (meal_type == "snack") != (role == ROLE_SNACK):
+            return False
     low = max(MIN_MEAL_KCAL, budget_kcal * MIN_MEAL_BUDGET_SHARE)
     high = budget_kcal * MAX_MEAL_BUDGET_MULT if budget_kcal > 0 else float("inf")
     return low <= calories <= high
@@ -58,235 +53,263 @@ def meal_worthy(calories: float, budget_kcal: int, role: str | None = None) -> b
 class Candidate:
     key: str
     name: str
-    calories: float  # 1인분
+    calories: float  # 메인 1인분
     carbs: float
     protein: float
     fat: float
-    source: str  # personal | popular | similar
-    freq: float = 0.0  # 개인 감쇠 빈도 (personal 만)
-    popularity: int = 0  # 기록 건수
-    similarity: float = 0.0  # anchor 와의 유사도 0~1 (similar 만)
-    similar_to: str | None = None  # 가장 비슷했던 anchor 표시명 (similar 만)
-    similar_type: str | None = None  # anchor 와 같은 계열/종류였으면 그 이름 (예: '국·탕·찌개류')
+    source: str  # personal | popular | similar | collaborative | catalog (주된 생성 경로)
+    freq: float = 0.0
+    popularity: float = 0.0  # 서로 다른 사용자의 시간 감쇠 지지 수
+    similarity: float = 0.0
+    similar_to: str | None = None
+    similar_type: str | None = None
     last_eaten: datetime | None = None
     group_id: int | None = None
     group_name: str | None = None
     family: str | None = None
     role: str | None = None
-    # 동반(밥) — 엔진이 붙인다. 예산 적합·라벨은 메인 + 동반 합산으로 계산한다
     companion_key: str | None = None
     companion_name: str | None = None
     companion_kcal: float = 0.0
-    companion_personal: bool = False  # True 면 사용자의 동시기록에서 온 동반, False 면 군 기본값
+    companion_protein: float = 0.0
+    companion_personal: bool = False
+    collaborative: float = 0.0  # 음식군 공동 섭취에 기반한 협업 점수 0~1
+    collaborative_support: int = 0  # 해당 협업 관계를 뒷받침한 다른 사용자 수
 
     @property
     def total_calories(self) -> float:
         return self.calories + self.companion_kcal
 
+    @property
+    def total_protein(self) -> float:
+        return self.protein + self.companion_protein
 
-def _from_stat(stat: FoodStat, source: str) -> Candidate:
-    return Candidate(
-        key=stat.key,
-        name=stat.name,
-        calories=round(stat.calories, 1),
-        carbs=round(stat.carbs, 1),
-        protein=round(stat.protein, 1),
-        fat=round(stat.fat, 1),
-        source=source,
-        freq=stat.score if source == "personal" else 0.0,
-        popularity=stat.count,
-        last_eaten=stat.last_eaten,
-        group_id=stat.group_id,
-        group_name=stat.group_name,
-        family=stat.family,
-        role=stat.role,
+
+Companions = Mapping[str, GroupInfo | None]
+
+
+def _profile(item: Candidate | FoodStat) -> FoodProfile:
+    return food_profile(
+        item.name, carbs=item.carbs, protein=item.protein, fat=item.fat,
+        group_name=item.group_name, family=item.family, role=item.role,
     )
 
 
-def personal_frequent(
-    stats: list[FoodStat], budget_kcal: int, top: int = PERSONAL_TOP
-) -> list[Candidate]:
-    picked = [s for s in stats if meal_worthy(s.calories, budget_kcal, s.role)]
-    return [_from_stat(s, "personal") for s in picked[:top]]
-
-
-def popular(stats: list[FoodStat], budget_kcal: int, top: int = POPULAR_TOP) -> list[Candidate]:
-    picked = [s for s in stats if meal_worthy(s.calories, budget_kcal, s.role)]
-    return [_from_stat(s, "popular") for s in picked[:top]]
-
-
-# --- 영양 유사 ---------------------------------------------------------------
-#
-# sim = 0.6 · 같은 종류 + 0.4 · 탄단지 에너지 비율의 코사인
-#   같은 종류 = 군이 있으면 **같은 계열(family)**, 없으면 이름 어미(dish_type) 일치
-#
-# 절대량(kcal·g) 벡터를 z-정규화해 비교하던 첫 버전은 "풀 평균 대비 치우친 방향"을 재는
-# 것이라 김치찌개·돈까스를 먹는 사람에게 양념치킨을 "비슷하다"고 냈다 (운영 미리보기).
-# 어미 60개만 쓰던 두 번째 버전은 종류 일치 5/20 — 칼국수(국수)와 비빔냉면(냉면)이 달랐다.
-# 계열은 그 둘을 '면류'로 묶는다. 종류가 다르면 후보로 내지 않는다 (억지로 채운 5개는 소음).
-
-SIM_W_TYPE = 0.6
-SIM_W_RATIO = 0.4
-
-_Ratio = tuple[float, float, float]  # (탄, 단, 지) 에너지 비율
-
-
-@dataclass(frozen=True)
-class PoolItem:
-    key: str
-    name: str
-    calories: float
-    carbs: float
-    protein: float
-    fat: float
-    family: str | None
-    group_id: int | None
-    role: str | None
-
-
-def _similarity_pool(db: Session, index: GroupIndex) -> list[PoolItem]:
-    """유사 후보 풀 — 군이 있으면 추천 가능 군(대표값 있는 것) 전체, 없으면 시드+총칭 대표 항목."""
-    if index.enabled:
-        return [
-            PoolItem(g.key, g.name, g.calories, g.carbs or 0.0, g.protein or 0.0, g.fat or 0.0,
-                     g.family, g.id, g.role)  # type: ignore[arg-type]
-            for g in index.by_id.values()
-            if g.has_macros and g.role in RECOMMENDABLE_ROLES
-        ]
-    stmt = select(NutritionItem).where(
-        NutritionItem.is_representative.is_(True),
-        or_(NutritionItem.source == "seed", NutritionItem.external_id.like("gen:%")),
-    )
-    return [
-        PoolItem(p.normalized_name, p.name, float(p.calories), float(p.carbs), float(p.protein),
-                 float(p.fat), None, None, None)
-        for p in db.scalars(stmt)
-    ]
-
-
-def macro_ratio(carbs: float, protein: float, fat: float) -> _Ratio:
-    """탄·단·지가 열량에서 차지하는 비율 (4·4·9 kcal/g). 열량 0이면 균등."""
-    energy = (max(carbs, 0.0) * 4, max(protein, 0.0) * 4, max(fat, 0.0) * 9)
-    total = sum(energy)
-    if total <= 0:
-        return (1 / 3, 1 / 3, 1 / 3)
-    return tuple(e / total for e in energy)  # type: ignore[return-value]
-
-
-def _cosine(a: _Ratio, b: _Ratio) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a))
-    nb = math.sqrt(sum(y * y for y in b))
-    if na == 0 or nb == 0:
-        return 0.0
-    return dot / (na * nb)
-
-
-def similarity(
-    anchor_type: str | None, anchor_ratio: _Ratio, item_type: str | None, item_ratio: _Ratio
-) -> tuple[float, bool]:
-    """(유사도 0~1, 같은 종류였는가)."""
-    same_type = anchor_type is not None and anchor_type == item_type
-    return SIM_W_TYPE * float(same_type) + SIM_W_RATIO * _cosine(anchor_ratio, item_ratio), same_type
-
-
-def _kind(family: str | None, name: str) -> str | None:
-    """종류 판정 키 — 계열이 있으면 계열, 없으면 어미."""
-    return family or dish_type(name)
-
-
-def nutrient_similar(
-    db: Session,
-    anchors: list[FoodStat],
-    budget_kcal: int,
-    *,
-    index: GroupIndex | None = None,
-    top: int = SIMILAR_TOP,
-    exclude_keys: frozenset[str] = frozenset(),
-    require_same_kind: bool = True,
-) -> list[Candidate]:
-    """자주 먹는 음식(anchor)과 같은 계열(종류)이면서 탄단지 비율이 비슷한 군.
-
-    anchor 자신과 이미 있는 후보는 제외. 각 풀 항목은 anchor 들 중 가장 비슷한 것과의
-    점수를 받고 **유사도 순**으로 top 개를 뽑는다. 예산은 동점일 때 가까운 쪽을 앞세우는
-    데만 쓴다 — 예산 적합은 랭킹이 점수로 다룬다. require_same_kind 면 종류가 다른 항목은
-    후보로 내지 않는다 (탄단지 비율만으로는 한식 대부분이 0.98~1.0 이라 변별력이 없다).
-    """
-    if not anchors:
-        return []
-    index = index or load_group_index(db)
-    skip = set(exclude_keys) | {a.key for a in anchors}
-    pool = [
-        p for p in _similarity_pool(db, index)
-        if p.key not in skip and meal_worthy(p.calories, budget_kcal, p.role)
-    ]
-    if not pool:
-        return []
-
-    anchor_profiles = [
-        (a, _kind(a.family, a.name), macro_ratio(a.carbs, a.protein, a.fat)) for a in anchors
-    ]
-    scored: list[tuple[float, PoolItem, FoodStat, bool]] = []
-    for p in pool:
-        p_kind = _kind(p.family, p.name)
-        p_ratio = macro_ratio(p.carbs, p.protein, p.fat)
-        best = max(
-            ((*similarity(a_kind, a_ratio, p_kind, p_ratio), a) for a, a_kind, a_ratio in anchor_profiles),
-            key=lambda t: t[0],
-        )
-        if require_same_kind and not best[1]:
-            continue
-        scored.append((best[0], p, best[2], best[1]))
-
-    def budget_distance(item: PoolItem) -> float:
-        return abs(item.calories - budget_kcal) if budget_kcal > 0 else 0.0
-
-    scored.sort(key=lambda row: (-row[0], budget_distance(row[1]), row[1].key))
-    return [
-        Candidate(
-            key=p.key,
-            name=p.name,
-            calories=p.calories,
-            carbs=p.carbs,
-            protein=p.protein,
-            fat=p.fat,
-            source="similar",
-            similarity=round(sim, 3),
-            similar_to=anchor.name,
-            similar_type=_kind(anchor.family, anchor.name) if same_kind else None,
-            group_id=p.group_id,
-            group_name=p.name if p.group_id else None,
-            family=p.family,
-            role=p.role,
-        )
-        for sim, p, anchor, same_kind in scored[:top]
-    ]
-
-
-def merge(*groups: list[Candidate]) -> list[Candidate]:
-    """합집합 — 같은 키는 먼저 등장한 것(personal → popular → similar 순)만 남긴다."""
-    seen: set[str] = set()
-    merged: list[Candidate] = []
-    for group in groups:
-        for cand in group:
-            if cand.key in seen:
-                continue
-            seen.add(cand.key)
-            merged.append(cand)
-    return merged
+def _legacy_role(name: str) -> str | None:
+    """군 미구축 경로의 보수적 보완. 임의 상품명의 역할은 추측하지 않는다."""
+    key = normalize_name(name)
+    if key in _PLAIN_RICE:
+        return ROLE_COMPANION
+    if key in _SIDE_DISHES:
+        return ROLE_EXCLUDE
+    if key in {"김치", "배추김치", "깍두기", "단무지", "쌈무", "콜라", "아메리카노"}:
+        return ROLE_EXCLUDE
+    if key in {"바나나", "사과", "삶은계란", "삶은달걀", "시리얼"}:
+        return ROLE_SNACK
+    kind = food_profile(name, carbs=0, protein=0, fat=0).kind
+    if kind in {"김치", "나물", "차", "커피", "에이드", "주스"}:
+        return ROLE_EXCLUDE
+    if kind in {"빵", "케이크", "도넛", "쿠키", "과자", "초콜릿", "아이스크림", "요거트",
+                "떡", "라떼", "우유", "두유", "스무디"}:
+        return ROLE_SNACK
+    return ROLE_MEAL if kind and kind not in {"밥", "두부"} else None
 
 
 def attach_companion(
-    cand: Candidate, companion: GroupInfo | None, *, personal: bool = False
+    cand: Candidate, companion: GroupInfo | None, *, personal: bool = False,
 ) -> Candidate:
-    """동반(밥) 붙이기 — 대표값이 있는 companion 군만. personal 은 문구('함께 드시던')에만 쓴다."""
-    if companion is None or not companion.has_macros:
+    """대표값이 완비된 동반 역할만 붙인다. 합산 열량과 단백질은 랭킹에도 사용한다."""
+    if companion is None or companion.role != ROLE_COMPANION or not companion.has_macros:
         cand.companion_key = cand.companion_name = None
-        cand.companion_kcal = 0.0
+        cand.companion_kcal = cand.companion_protein = 0.0
         cand.companion_personal = False
         return cand
     cand.companion_key = companion.key
     cand.companion_name = companion.name
     cand.companion_kcal = float(companion.calories or 0.0)
+    cand.companion_protein = float(companion.protein or 0.0)
     cand.companion_personal = personal
     return cand
+
+
+def _eligible(cand: Candidate, budget: int, meal_type: str | None, companions: Companions) -> bool:
+    if cand.role is None:
+        cand.role = _legacy_role(cand.group_name or cand.name)
+    if cand.role == ROLE_MEAL:
+        attach_companion(cand, companions.get(cand.key))
+    return all(math.isfinite(v) and v >= 0 for v in (cand.carbs, cand.protein, cand.fat)) and meal_worthy(
+        cand.total_calories, budget, cand.role, meal_type=meal_type,
+    )
+
+
+def _from_stat(stat: FoodStat, source: str) -> Candidate:
+    return Candidate(
+        key=stat.key, name=stat.name, calories=round(stat.calories, 1),
+        carbs=round(stat.carbs, 1), protein=round(stat.protein, 1), fat=round(stat.fat, 1),
+        source=source, freq=stat.score if source == "personal" else 0.0,
+        popularity=stat.score if source == "popular" else 0.0,
+        last_eaten=stat.last_eaten if source == "personal" else None,
+        group_id=stat.group_id, group_name=stat.group_name, family=stat.family, role=stat.role,
+    )
+
+
+def _from_stats(
+    stats: list[FoodStat], source: str, budget: int, top: int,
+    meal_type: str | None, companions: Companions,
+) -> list[Candidate]:
+    picked: list[Candidate] = []
+    for stat in stats:
+        cand = _from_stat(stat, source)
+        if _eligible(cand, budget, meal_type, companions):
+            picked.append(cand)
+    return picked[:max(0, top)]
+
+
+def personal_frequent(
+    stats: list[FoodStat], budget_kcal: int, top: int = PERSONAL_TOP, *,
+    meal_type: str | None = None, companions: Companions | None = None,
+) -> list[Candidate]:
+    return _from_stats(stats, "personal", budget_kcal, top, meal_type, companions or {})
+
+
+def popular(
+    stats: list[FoodStat], budget_kcal: int, top: int = POPULAR_TOP, *,
+    meal_type: str | None = None, companions: Companions | None = None,
+) -> list[Candidate]:
+    return _from_stats(stats, "popular", budget_kcal, top, meal_type, companions or {})
+
+
+def _similarity_pool(db: Session, index: GroupIndex) -> list[Candidate]:
+    if index.enabled:
+        return [
+            Candidate(g.key, g.name, float(g.calories), float(g.carbs), float(g.protein),
+                      float(g.fat), "catalog", group_id=g.id, group_name=g.name,
+                      family=g.family, role=g.role)
+            for g in sorted(index.by_id.values(), key=lambda g: g.key)
+            if g.has_macros and g.role in RECOMMENDABLE_ROLES
+        ]
+    stmt = select(NutritionItem).where(
+        per_serving_representatives(),
+        or_(NutritionItem.source == "seed", NutritionItem.external_id.like("gen:%")),
+    ).order_by(NutritionItem.id)
+    # 같은 정규화 이름의 시드·총칭이 함께 존재해도 후보 슬롯은 하나만 쓴다.
+    return merge([
+        Candidate(p.normalized_name, p.name, float(p.calories), float(p.carbs),
+                  float(p.protein), float(p.fat), "catalog", role=_legacy_role(p.name))
+        for p in db.scalars(stmt)
+    ])
+
+
+def enrich_similarity(candidates: list[Candidate], anchors: list[FoodStat]) -> None:
+    """다른 생성기가 먼저 찾은 메뉴도 자기 자신을 제외한 유사도 근거를 유지한다."""
+    profiles = [(anchor, _profile(anchor)) for anchor in anchors]
+    for cand in candidates:
+        profile = _profile(cand)
+        for anchor, anchor_profile in profiles:
+            if anchor.key == cand.key:
+                continue
+            score, kind = compare_foods(anchor_profile, profile)
+            if kind and score > cand.similarity:
+                cand.similarity = score
+                cand.similar_to = anchor.group_name or anchor.name
+                cand.similar_type = kind
+
+
+def nutrient_similar(
+    db: Session, anchors: list[FoodStat], budget_kcal: int, *,
+    index: GroupIndex | None = None, top: int = SIMILAR_TOP,
+    exclude_keys: frozenset[str] = frozenset(), meal_type: str | None = None,
+    companions: Companions | None = None,
+) -> list[Candidate]:
+    """음식 형태·명시된 재료·조리 방식을 비교하고, anchor별로 교대로 후보를 확보한다.
+
+    한 종류의 세부 변형이 다른 선호 메뉴의 후보를 모두 밀어내지 않도록 한다.
+    예산은 밥을 포함해 자격만 확인한다. 최종 영양 적합도와 개인 선호는 랭킹이 정한다.
+    """
+    if not anchors or top <= 0:
+        return []
+    index = index or load_group_index(db)
+    choices = companions if companions is not None else {
+        g.key: index.companion_of(g.key) for g in index.by_id.values()
+    }
+    skip = set(exclude_keys) | {a.key for a in anchors}
+    pool = [c for c in _similarity_pool(db, index)
+            if c.key not in skip and _eligible(c, budget_kcal, meal_type, choices)]
+    profiles = [(c, _profile(c)) for c in pool]
+    queues: list[list[Candidate]] = []
+    for anchor in anchors:
+        anchor_profile = _profile(anchor)
+        queue = []
+        for cand, profile in profiles:
+            sim, kind = compare_foods(anchor_profile, profile)
+            if kind:
+                queue.append(replace(cand, source="similar", similarity=sim,
+                                     similar_to=anchor.group_name or anchor.name, similar_type=kind))
+        queue.sort(key=lambda c: (-c.similarity, c.key))
+        queues.append(queue)
+    picked: list[Candidate] = []
+    seen: set[str] = set()
+    while len(picked) < top:
+        added = False
+        for queue in queues:
+            while queue and queue[0].key in seen:
+                queue.pop(0)
+            if queue and len(picked) < top:
+                cand = queue.pop(0)
+                seen.add(cand.key)
+                picked.append(cand)
+                added = True
+        if not added:
+            break
+    enrich_similarity(picked, anchors)  # 탐색 순서와 무관하게 설명·점수는 가장 가까운 anchor
+    return picked
+
+
+def catalog_fallback(
+    db: Session, budget_kcal: int, *, index: GroupIndex | None = None,
+    meal_type: str | None = None, companions: Companions | None = None,
+    exclude_keys: frozenset[str] = frozenset(), top: int = 15,
+) -> list[Candidate]:
+    """이력 근거가 부족할 때 사용할 분류·1인분 값이 있는 기본 메뉴. 인기를 만들지 않는다."""
+    index = index or load_group_index(db)
+    choices = companions if companions is not None else {
+        g.key: index.companion_of(g.key) for g in index.by_id.values()
+    }
+    pool = [c for c in _similarity_pool(db, index)
+            if c.key not in exclude_keys and c.role in RECOMMENDABLE_ROLES
+            and _eligible(c, budget_kcal, meal_type, choices)]
+    # 실제 랭킹과 같은 비대칭 열량 적합도를 사용하되 개인 근거를 꾸미지 않는다.
+    from .ranking import fit_score
+    pool.sort(key=lambda c: (-fit_score(c.total_calories, budget_kcal), c.key))
+    # 한 계열의 세부 메뉴가 처음 top개를 독점하면 랭킹에서 다양성을 회복할 수 없다.
+    # 적합도가 높은 계열부터 하나씩 확보하고, 남은 자리는 다음 회차에서 채운다.
+    queues: dict[str, deque[Candidate]] = {}
+    for cand in pool:
+        kind = cand.family or _profile(cand).kind or cand.key
+        queues.setdefault(kind, deque()).append(cand)
+    picked = []
+    while len(picked) < max(0, top) and any(queues.values()):
+        for queue in queues.values():
+            if queue and len(picked) < top:
+                picked.append(queue.popleft())
+    return picked
+
+
+def merge(*groups: list[Candidate]) -> list[Candidate]:
+    """주된 출처·표시는 첫 후보를 유지하고, 여러 생성기의 독립적인 근거는 보존한다."""
+    merged: dict[str, Candidate] = {}
+    for group in groups:
+        for cand in group:
+            if cand.key not in merged:
+                merged[cand.key] = replace(cand)
+                continue
+            existing = merged[cand.key]
+            existing.freq = max(existing.freq, cand.freq)
+            existing.popularity = max(existing.popularity, cand.popularity)
+            if (cand.collaborative, cand.collaborative_support) > (existing.collaborative, existing.collaborative_support):
+                existing.collaborative = cand.collaborative
+                existing.collaborative_support = cand.collaborative_support
+            if cand.similarity > existing.similarity:
+                existing.similarity = cand.similarity
+                existing.similar_to, existing.similar_type = cand.similar_to, cand.similar_type
+    return list(merged.values())

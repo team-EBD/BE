@@ -5,6 +5,7 @@ SQLite(create_all) 세션에 ORM 으로 직접 기록을 만든다. now 는 고�
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import random
 
 import pytest
 
@@ -12,13 +13,11 @@ from app.models import MealItem, MealRecord, NutritionItem, User
 from app.services.recommend import recommend
 from app.services.recommend.candidates import (
     Candidate,
-    macro_ratio,
     meal_worthy,
     merge,
     nutrient_similar,
     personal_frequent,
     popular,
-    similarity,
 )
 from app.services.recommend.dish_type import dish_type
 from app.services.recommend.ranking import RankContext, fit_score, rank
@@ -97,8 +96,35 @@ def _seed_item(db, name: str, kcal: float, carbs: float, protein: float, fat: fl
     return item
 
 
-def _days_ago(n: int, hour_kst: int = 19) -> datetime:
+def _days_ago(n: int, hour_kst: int = 17) -> datetime:
     return (NOW - timedelta(days=n)).replace(hour=hour_kst - 9, minute=0)
+
+
+@pytest.mark.parametrize("matched", [False, True])
+def test_per_100g_representative_does_not_replace_recorded_serving(db, matched):
+    """상품 id 와 이름 fallback 모두 100g 영양값을 1인분으로 오인하지 않는다."""
+    u = _user(db, "per100g")
+    item = _seed_item(db, "특제찌개", 100, 10, 8, 3)
+    item.serving_basis = "per_100g"
+    record = _meal(db, u, "dinner", _days_ago(1), [("특제찌개", 300, 30, 24, 9)])
+    if matched:
+        db.query(MealItem).filter(MealItem.meal_record_id == record.id).update({"nutrition_item_id": item.id})
+    db.flush()
+    stats = decayed_frequency(db, u.id, "dinner", now=NOW)
+    assert len(stats) == 1
+    assert stats[0].calories == 300
+    assert stats[0].protein == 24
+
+
+def test_legacy_similarity_pool_excludes_per_100g_representatives(db):
+    u = _user(db, "similar-basis")
+    _meal(db, u, "dinner", _days_ago(1), [("김치찌개", 320, 18, 22, 16)])
+    item = _seed_item(db, "특제찌개", 200, 10, 12, 7)
+    item.serving_basis = "per_100g"
+    db.flush()
+    anchors = decayed_frequency(db, u.id, "dinner", now=NOW)
+    candidates = nutrient_similar(db, anchors, 700, top=100)
+    assert "특제찌개" not in {candidate.name for candidate in candidates}
 
 
 # --- 신호 ------------------------------------------------------------------
@@ -335,15 +361,6 @@ def test_dish_type_head_final_rule():
     assert dish_type("아메리카노") is None
 
 
-def test_similarity_prefers_same_dish_type_then_macro_ratio():
-    stew = macro_ratio(18, 22, 16)  # 김치찌개
-    assert similarity("찌개", stew, "찌개", macro_ratio(14, 18, 12)) > similarity(
-        None, stew, "치킨", macro_ratio(40, 60, 50)
-    )
-    same_ratio_other_type = similarity("찌개", stew, "볶음", stew)
-    assert same_ratio_other_type[0] == pytest.approx(0.4) and not same_ratio_other_type[1]
-
-
 def test_nutrient_similar_uses_generic_pool_and_budget_tiers(db):
     # 풀: 시드 3 + 총칭 1 + 브랜드(비대상) 1  (+ 테스트 DB 기본 시드 46종)
     _seed_item(db, "된장찌개", 250, 14, 18, 12)
@@ -414,7 +431,7 @@ def test_fit_score_is_asymmetric_under_half_over_double():
     assert fit_score(900, 500) == 0.0
 
 
-def test_rank_is_deterministic_and_limits_personal_to_two():
+def test_rank_is_deterministic_and_keeps_stronger_personal_evidence():
     cands = [
         _cand("개인A", "personal", freq=3.0),
         _cand("개인B", "personal", freq=2.5),
@@ -426,7 +443,7 @@ def test_rank_is_deterministic_and_limits_personal_to_two():
     top = rank(cands, ctx)
     keys = [r.candidate.key for r in top]
     assert keys[:2] == ["개인A", "개인B"]
-    assert top[2].candidate.source != "personal"  # 3번째는 비개인으로 교체
+    assert top[2].candidate.key == "개인C"  # 출처만으로 근거 없는 후보를 강제 승격하지 않음
     assert rank(cands, ctx) == top  # 결정론
 
 
@@ -457,15 +474,17 @@ def test_rank_keeps_all_personal_when_no_alternative():
 
 # --- 엔진 조립 -----------------------------------------------------------------
 
-def test_engine_new_user_gets_popular_only(db):
+def test_engine_new_user_gets_popular_and_catalog_without_side_rice(db):
     other = _user(db, "other", email="o@gmail.com")
     for d in range(3):
         _meal(db, other, "dinner", _days_ago(d), [("보쌈", 600, 10, 40, 40), ("공기밥", 310, 68, 5, 0.5)])
     newbie = _user(db, "newbie")
     result = recommend(db, newbie.id, meal_type="dinner", now=NOW)
     assert result.anchors == []
-    assert result.items and all(i.source == "popular" for i in result.items)
-    assert {i.name for i in result.items} == {"보쌈", "공기밥"}
+    assert len(result.items) == 3
+    assert any(c.name == "보쌈" and c.source == "popular" for c in result.candidates)
+    assert any(c.source == "catalog" for c in result.candidates)
+    assert all(c.name != "공기밥" for c in result.candidates)
 
 
 def test_engine_full_flow_sources_labels_and_reasons(db):
@@ -476,7 +495,7 @@ def test_engine_full_flow_sources_labels_and_reasons(db):
         _meal(db, u, "dinner", _days_ago(d), [("김치찌개", 320, 18, 22, 16), ("공기밥", 310, 68, 5, 0.5)])
     _meal(db, u, "lunch", NOW - timedelta(hours=5), [("김밥", 350, 55, 10, 8)])  # 오늘 점심
 
-    result = recommend(db, u.id, meal_type="dinner", now=NOW)
+    result = recommend(db, u.id, meal_type="dinner", now=NOW, rng=random.Random(7))
     assert result.meal_type == "dinner"
     assert "김치찌개" in result.anchors
     sources = {c.source for c in result.candidates}
@@ -487,8 +506,8 @@ def test_engine_full_flow_sources_labels_and_reasons(db):
         assert item.budget_label in ("fit", "light", "heavy")
         assert "저녁 예산" in item.reason and f"{result.budget.meal_budget} 중" in item.reason
 
-    # 같은 입력 → 같은 출력
-    again = recommend(db, u.id, meal_type="dinner", now=NOW)
+    # 같은 입력과 탐색 난수 → 같은 출력
+    again = recommend(db, u.id, meal_type="dinner", now=NOW, rng=random.Random(7))
     assert [i.key for i in again.items] == [i.key for i in result.items]
 
 

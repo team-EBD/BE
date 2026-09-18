@@ -4,6 +4,7 @@ from __future__ import annotations
 from app.ai_client import get_ai_client
 from app.ai_client.base import failed_recommend
 from app.ai_client.mock import MockAIClient
+from app.core.config import settings
 from app.main import app
 from tests.test_meals import create_meal
 
@@ -79,8 +80,9 @@ def test_next_meal_provider_error_502(client, auth_headers):
     assert error["details"] == [{"field": "ai", "reason": "provider_error"}]
 
 
-def test_menu_no_candidates_502_with_reason(client, auth_headers):
+def test_menu_no_candidates_502_with_reason(client, auth_headers, monkeypatch):
     """AI 서버가 200 + status=failed(no_candidates) 를 줘도 502 에 사유가 남는다."""
+    monkeypatch.setattr(settings, "recommend_engine", "legacy")
     app.dependency_overrides[get_ai_client] = lambda: FailingAIClient("no_candidates")
     res = client.post(
         "/v1/recommendations/menu",
@@ -108,7 +110,8 @@ def test_failed_reason_visible_in_ai_call_logs(client, auth_headers):
     assert items[0]["error_message"] == "no_candidates"
 
 
-def test_menu_exceed_flag(client, auth_headers):
+def test_menu_exceed_flag(client, auth_headers, monkeypatch):
+    monkeypatch.setattr(settings, "recommend_engine", "legacy")
     res = client.post(
         "/v1/recommendations/menu",
         headers=auth_headers,

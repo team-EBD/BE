@@ -8,6 +8,7 @@ docs/음식군-DB-계약.md §8. 군이 아직 없는 DB(테스트 시드·마�
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -34,7 +35,10 @@ class GroupInfo:
 
     @property
     def has_macros(self) -> bool:
-        return self.calories is not None
+        return all(
+            value is not None and math.isfinite(value) and value >= 0
+            for value in (self.calories, self.carbs, self.protein, self.fat)
+        )
 
 
 class GroupIndex:

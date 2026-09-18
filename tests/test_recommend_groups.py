@@ -12,7 +12,7 @@ import pytest
 
 from app.models import FoodGroup, FoodGroupAlias, MealItem, MealRecord, NutritionItem, User
 from app.services.recommend import recommend
-from app.services.recommend.groups import GroupIndex, load_group_index
+from app.services.recommend.groups import GroupIndex, GroupInfo, load_group_index
 from app.services.recommend.signals import (
     MAX_RATIO_BY_MEAL,
     companion_stats,
@@ -53,7 +53,7 @@ def _user(db, social_id, email=None):
     return user
 
 
-def _days_ago(n, hour_kst=19):
+def _days_ago(n, hour_kst=17):
     return NOW.replace(hour=hour_kst - 9) - timedelta(days=n)  # KST hour → UTC
 
 
@@ -85,11 +85,11 @@ def taxonomy(db):
     rice = _group(db, "쌀밥", RICE_FAMILY, "companion", 300, 66, 5.5, 0.5)
     stew = _group(db, "김치찌개", STEW_FAMILY, "meal", 320, 18, 22, 16, companion=rice)
     soy = _group(db, "된장찌개", STEW_FAMILY, "meal", 250, 14, 22, 12, companion=rice)
-    kimchi = _group(db, "김치", "김치·절임류", "exclude", 30, 5, 2, 0.5)
+    kimchi = _group(db, "김치", "김치·절임", "exclude", 30, 5, 2, 0.5)
     burger = _group(db, "햄버거", BURGER_FAMILY, "meal", 480, 40, 25, 22)
-    cola = _group(db, "탄산음료", "음료류", "exclude", 140, 36, 0, 0)
+    cola = _group(db, "탄산음료", "음료", "exclude", 140, 36, 0, 0)
     _alias(db, "공기밥", rice)
-    _alias(db, "빅소불고기버거", burger, kind="product")
+    _alias(db, "빅소불고기버거", burger, kind="manual")
     _alias(db, "콜라", cola)
     return {"rice": rice, "stew": stew, "soy": soy, "kimchi": kimchi, "burger": burger, "cola": cola}
 
@@ -188,6 +188,16 @@ def test_companion_needs_two_meals_before_trusting_personal(db, taxonomy):
     assert card.companion_name == "쌀밥"
 
 
+def test_companion_total_must_stay_within_candidate_budget_limit(db, taxonomy):
+    main = _group(db, "갈비찜", "구이·볶음·조림·찜·전류", "meal", 1000, 70, 45, 60, companion=taxonomy["rice"])
+    u = _user(db, "light-budget", email="light@gmail.com")
+    _meal(db, u, "dinner", _days_ago(1), [(main.name, 1000, 70, 45, 60)])
+    result = recommend(db, u.id, meal_type="dinner", mood="light", now=NOW)
+    assert 1000 <= result.budget.meal_budget * 2 < 1300
+    assert main.id not in {c.group_id for c in result.candidates}
+    assert all(c.total_calories <= result.budget.meal_budget * 2 for c in result.candidates)
+
+
 # --- 계열 유사 -------------------------------------------------------------------
 
 
@@ -213,6 +223,25 @@ def test_similar_pool_skips_groups_without_macros(db, taxonomy):
         _meal(db, u, "dinner", _days_ago(d), [("김치찌개", 320, 18, 22, 16)])
     similar = [c.group_name for c in recommend(db, u.id, meal_type="dinner", now=NOW).candidates if c.source == "similar"]
     assert "순두부찌개" not in similar and "된장찌개" in similar
+
+
+@pytest.mark.parametrize("missing", ["calories", "carbs", "protein", "fat"])
+def test_similar_pool_requires_all_four_macros(db, taxonomy, missing):
+    from app.services.recommend.candidates import _similarity_pool
+
+    macros = {"kcal": 320, "carbs": 18, "protein": 22, "fat": 16}
+    macros["kcal" if missing == "calories" else missing] = None
+    incomplete = _group(db, "순두부찌개", STEW_FAMILY, "meal", **macros)
+    assert incomplete.id not in {p.group_id for p in _similarity_pool(db, load_group_index(db))}
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), -1.0])
+def test_group_macro_validation_rejects_nonfinite_and_negative_values(invalid):
+    group = GroupInfo(
+        id=1, name="김치찌개", key="김치찌개", family=STEW_FAMILY, role="meal", companion_id=None,
+        calories=320, carbs=18, protein=invalid, fat=16,
+    )
+    assert not group.has_macros
 
 
 # --- 표시명 · 이름 통합 ------------------------------------------------------------

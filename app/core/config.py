@@ -5,7 +5,7 @@
 """
 from functools import lru_cache
 
-from pydantic import computed_field
+from pydantic import Field, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -71,10 +71,12 @@ class Settings(BaseSettings):
     recommend_daily_limit_premium: int = 0
 
     # --- 추천 엔진 (POST /recommendations/menu) ---
-    # legacy: AI 서버(Gemini) 추천 (현행) / v2: 이력 기반 규칙 엔진 (app/services/recommend).
-    # v2 는 AI 를 부르지 않아 지연이 없고 일일 한도(recommend_daily_limit)도 소모하지 않는다.
+    # v2: 개인·음식 유사·협업·인기 후보 + 피드백 밴딧. legacy: AI 서버 추천.
+    # v2 는 AI 호출·AI 일일 한도를 사용하지 않는다.
     # 응답의 engine 필드로 어느 쪽이 답했는지 알 수 있다. next-meal·location 은 이 값과 무관(항상 AI).
-    recommend_engine: str = "legacy"
+    recommend_engine: str = "v2"
+    # 홈은 첫 카드, 추천 탭은 마지막 카드를 탐색한다. 0은 탐색만 끄고 학습은 유지한다.
+    recommend_bandit_epsilon: float = Field(default=0.1, ge=0, le=0.3)
     # 하루 경계 시각 (KST). 6이면 06:00~다음날 06:00 를 '하루'로 취급 —
     # 캘린더/요약(FE day_start_hour=6)과 사용량 리셋 기준을 일치시킨다.
     day_start_hour: int = 6
