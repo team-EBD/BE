@@ -30,6 +30,8 @@ if TYPE_CHECKING:  # 순환 import 방지 — 타입 힌트에만 쓴다
 EATEN_WINDOW_HOURS = 4
 # DB 시각과 앱 시각의 허용 오차 — 이보다 앞선 created_at 만 '미래 로그'로 본다
 CLOCK_SKEW_TOLERANCE = timedelta(minutes=5)
+# 노출 시각보다 이만큼 앞선 eaten_at 까지는 '추천 보고 먹은 것'으로 귀속한다 (분 단위 반올림·단말 시계 오차)
+ATTRIBUTION_GRACE = timedelta(minutes=5)
 # 채택률 계산 구간과, 비율을 신뢰하기 위한 최소 노출 수
 ACCEPTANCE_WINDOW_DAYS = 60
 MIN_EXPOSURES_FOR_RATE = 3
@@ -205,7 +207,10 @@ def _valid_attribution(
     if row.shown_at is None or meal.deleted_at is not None or meal.is_skipped:
         return False
     shown, eaten = from_db(row.shown_at), from_db(meal.eaten_at)
-    if not shown <= eaten <= min(now, shown + timedelta(hours=window_hours)):
+    # eaten_at 은 FE 가 분(시간 선택기)·초 단위로 내려 보내고 단말 시계도 조금 어긋난다. 노출 몇 초 뒤에
+    # 저장해도 eaten < shown 이 되어 귀속이 통째로 빠지는 것을 운영 복제본 리허설에서 확인 — 앞쪽으로
+    # ATTRIBUTION_GRACE 만큼은 '노출 직후'로 본다. 뒤쪽 상한은 노출 + 창(기본 4시간), 미래 기록은 시계 오차만 허용.
+    if not shown - ATTRIBUTION_GRACE <= eaten <= min(now + CLOCK_SKEW_TOLERANCE, shown + timedelta(hours=window_hours)):
         return False
     index = load_group_index(db)
     target = index.resolve(row.name, row.food_group_id)

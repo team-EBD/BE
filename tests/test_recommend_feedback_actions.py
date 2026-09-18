@@ -84,7 +84,7 @@ def test_attribution_rejects_unrelated_or_invalid_meals(db_factory, case):
     user, other = _user(db, "owner"), _user(db, "other")
     row = _card(db, other if case == "wrong_owner" else user, shown_at=None if case == "unshown" else NOW)
     at = {
-        "past_meal": NOW - timedelta(minutes=1), "future_meal": NOW + timedelta(hours=3),
+        "past_meal": NOW - timedelta(minutes=10), "future_meal": NOW + timedelta(hours=3),
         "late_meal": NOW + timedelta(hours=5),
     }.get(case, NOW + timedelta(hours=1))
     name = "다른음식" if case == "wrong_food" else row.name
@@ -95,6 +95,20 @@ def test_attribution_rejects_unrelated_or_invalid_meals(db_factory, case):
         now=NOW + timedelta(hours=2 if case != "late_meal" else 6),
     ) == 0
     assert row.eaten_at is None and row.eaten_meal_record_id is None
+
+
+@pytest.mark.parametrize("offset", [timedelta(seconds=-59), timedelta(minutes=-4), timedelta(seconds=0)])
+def test_attribution_tolerates_rounded_or_slightly_early_eaten_at(db_factory, offset):
+    """FE 시간 선택기는 분 단위, 저장 payload 는 초 단위로 내린다 — 노출 직후 저장이 노출보다 '과거'로 보여도 귀속한다.
+
+    운영 복제본 리허설: 노출(13:26:35.83) 뒤 같은 초에 저장한 기록(13:26:35)이 귀속되지 않았다.
+    """
+    db = db_factory()
+    user = _user(db, "rounded")
+    row = _card(db, user)
+    meal = _meal(db, user, "dinner", NOW + offset, [(row.name, 400, 40, 25, 15)])
+    assert mark_eaten(db, user.id, meal.id, recommendation_item_id=row.id, now=NOW + timedelta(seconds=1)) == 1
+    assert row.eaten_meal_record_id == meal.id
 
 
 def test_one_explicit_item_only_is_rewarded_and_cannot_be_reused(db_factory):
