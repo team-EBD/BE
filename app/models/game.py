@@ -34,7 +34,9 @@ from app.models._common import (
 ITEM_CATEGORIES = ("pet", "background", "food", "blaster", "event_prop")
 
 # 획득 경로 — 기본 지급 / 첫 친구 무료 선택 / 코인 구매 / 스트릭 / 이벤트
-ITEM_SOURCES = ("default", "first_friend", "purchase", "streak", "event", "backfill")
+ITEM_SOURCES = (
+    "default", "first_friend", "purchase", "streak", "food", "event", "backfill"
+)
 
 
 class GameProfile(Base):
@@ -141,7 +143,9 @@ class UnlockProgress(Base):
     """조건부 해금(음식 발견 등)의 진행도. (user_id, catalog_item_id) 유일.
 
     스트릭 기반 해금은 game_profiles.current_streak 로 즉시 판정하므로 쓰지 않는다.
-    curated 음식 태그 매핑이 들어오는 다음 단계에서 사용한다 (핸드오프 §6 PR5).
+    음식 태그 해금(seed/game_food_tags.json)만 이 테이블을 쓴다 — 같은 날/같은 메뉴를
+    두 번 세지 않도록 증가는 reward_ledger(`food-progress:...`) 로 멱등 처리하고,
+    여기에는 누계와 마지막으로 센 논리 날짜만 남긴다.
     """
 
     __tablename__ = "unlock_progress"

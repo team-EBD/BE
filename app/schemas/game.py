@@ -110,6 +110,9 @@ class CollectionItem(BaseModel):
     signature_skill_name: str | None = None
     # 구매 불가 사유 (LOCKED_LEVEL / INSUFFICIENT_POINTS / NOT_FOR_SALE)
     locked_reason: str | None = None
+    # 음식 해금 진행도 {"current":3,"target":5,"unit":"day"|"menu"}.
+    # 이미 보유했거나 진행도 개념이 없는 아이템은 None (구버전 앱은 무시한다)
+    progress: dict | None = None
 
 
 class CollectionResponse(BaseModel):

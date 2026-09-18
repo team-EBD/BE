@@ -58,7 +58,7 @@ from app.services.game_profile import (
     owned_items,
     stage_placements,
 )
-from app.services.game_rewards import next_streak_unlock
+from app.services.game_rewards import food_progress_by_code, next_unlock
 
 router = APIRouter(prefix="/game", tags=["game"])
 
@@ -186,7 +186,7 @@ def build_home(db: Session, user: User) -> GameHomeResponse:
     profile = ensure_game_profile(db, user)
     stage = _stage(db, user.id)
     stage.revision = profile.stage_revision
-    unlock = next_streak_unlock(db, profile)
+    unlock = next_unlock(db, profile)
     return GameHomeResponse(
         profile=_profile_brief(profile),
         active_pet=_active_pet(db, profile),
@@ -208,6 +208,25 @@ def game_home(user: CurrentUser, db: DB) -> GameHomeResponse:
     return home
 
 
+def _unlock_progress(entry, rows: dict) -> dict | None:
+    """음식 해금의 진행도 — {"current":3,"target":5,"unit":"day"|"menu"}.
+
+    아직 진행이 없으면 0/target 으로 내려 카드가 목표를 보여줄 수 있게 한다.
+    보유 중인 아이템은 호출부에서 None 으로 둔다.
+    """
+    if entry.unlock.get("type") != "food":
+        return None
+    target = catalog.food_unlock_target(entry)
+    if target <= 0:
+        return None
+    row = rows.get(entry.code)
+    return {
+        "current": min(row.current_value, target) if row is not None else 0,
+        "target": target,
+        "unit": catalog.food_unlock_unit(entry),
+    }
+
+
 def _collection_items(
     db: Session, profile: GameProfile, *, shop_only: bool
 ) -> list[CollectionItem]:
@@ -215,6 +234,7 @@ def _collection_items(
     owned = owned_items(db, profile.user_id)
     active = {code for _placement, code in stage_placements(db, profile.user_id)}
     bonds = _bonds(db, profile.user_id)
+    progress_rows = food_progress_by_code(db, profile.user_id)
 
     items: list[CollectionItem] = []
     for entry in catalog.entries():
@@ -238,6 +258,7 @@ def _collection_items(
 
         bond = bonds.get(entry.code)
         skill = catalog.signature_skill(entry.code)
+        progress = _unlock_progress(entry, progress_rows) if not is_owned else None
         items.append(
             CollectionItem(
                 code=entry.code,
@@ -253,6 +274,7 @@ def _collection_items(
                 signature_skill=skill,
                 signature_skill_name=catalog.skill_name(skill) if skill else None,
                 locked_reason=locked_reason,
+                progress=progress,
             )
         )
     return items

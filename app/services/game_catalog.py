@@ -16,6 +16,9 @@ from pathlib import Path
 _SEED_DIR = Path(__file__).resolve().parents[2] / "seed"
 _CATALOG_FILE = _SEED_DIR / "gamification_catalog_v2.json"
 _GROWTH_FILE = _SEED_DIR / "gamification_growth_v3.json"
+# curated `nutrition_item_id → 음식 태그` 매핑. NutritionItem.category 는 한식/분식 같은
+# **요리 장르**라 여기서 vegetable/fruit/fish/soup 를 유도할 수 없어 손으로 태깅한다.
+_FOOD_TAGS_FILE = _SEED_DIR / "game_food_tags.json"
 
 # 카테고리별 동시 활성(무대 배치) 한도 — 서버가 강제한다
 DEFAULT_SLOT_LIMITS = {"pet": 1, "background": 1, "food": 5, "blaster": 3, "event_prop": 2}
@@ -27,6 +30,21 @@ DEFAULT_BACKGROUND_CODE = "bg_sunny_kitchen"
 # 아직 서버 판정이 구현되지 않은 스킬 — 해금은 되지만 장착해도 효과가 없다.
 # (미션/음식 발견이 들어오는 다음 PR 에서 열린다. 로드맵 v3 §4)
 ACTIVE_SKILL_CODES = frozenset({"streak_pause", "daily_xp_nudge"})
+
+# 음식 해금 태그 어휘 — 카탈로그 unlock.food_tags 와 같은 4종으로 고정한다
+FOOD_TAGS = ("vegetable", "fruit", "fish", "soup")
+# '다음 목표' 문구용 한국어 라벨. 비판단 말투를 유지한다 (체중/칼로리 언어 금지)
+FOOD_TAG_LABELS = {
+    "vegetable": "채소",
+    "fruit": "과일",
+    "fish": "생선",
+    "soup": "국물 요리",
+}
+
+# 음식 해금 규칙 (카탈로그 unlock.rule)
+FOOD_RULE_TAG_DAYS = "distinct_food_days"        # 태그가 든 식사를 기록한 서로 다른 날
+FOOD_RULE_MEAL_SLOT_DAYS = "distinct_meal_slot_days"  # 특정 끼니를 기록한 서로 다른 날
+FOOD_RULE_MENU_COUNT = "distinct_menu_days"      # 서로 다른 메뉴 가짓수 (날짜가 아니다)
 
 
 @dataclass(frozen=True)
@@ -97,6 +115,96 @@ def by_code() -> dict[str, CatalogEntry]:
 
 def get(code: str) -> CatalogEntry | None:
     return by_code().get(code)
+
+
+def food_unlock_entries() -> tuple[CatalogEntry, ...]:
+    """`unlock.type == "food"` 인 카탈로그 항목 (해금 진행도의 대상)."""
+    return tuple(e for e in entries() if e.unlock.get("type") == "food")
+
+
+def food_unlock_target(entry: CatalogEntry) -> int:
+    """해금에 필요한 값. 규칙에 따라 '일수' 또는 '메뉴 가짓수'다 (키는 둘 다 days)."""
+    return int(entry.unlock.get("days") or 0)
+
+
+def food_unlock_unit(entry: CatalogEntry) -> str:
+    """진행도 단위 — `day` 또는 `menu` (CollectionItem.progress.unit)."""
+    return "menu" if entry.unlock.get("rule") == FOOD_RULE_MENU_COUNT else "day"
+
+
+# --- 음식 태그 (curated → 키워드 폴백 2계층) ---
+
+@lru_cache(maxsize=1)
+def _food_tag_seed() -> dict:
+    return json.loads(_FOOD_TAGS_FILE.read_text(encoding="utf-8"))
+
+
+@lru_cache(maxsize=1)
+def food_tag_map() -> dict[int, frozenset[str]]:
+    """nutrition_item_id → curated 태그.
+
+    **빈 집합도 담는다** — "검토했고 태그가 없다"는 명시적 판단이라 키워드 폴백으로
+    넘어가면 안 되기 때문이다 (id 가 있는지 여부로 두 계층을 가른다).
+    """
+    return {
+        int(item["nutrition_item_id"]): frozenset(
+            t for t in (item.get("tags") or []) if t in FOOD_TAGS
+        )
+        for item in _food_tag_seed().get("curated", [])
+    }
+
+
+@lru_cache(maxsize=1)
+def food_tag_keywords() -> dict[str, tuple[tuple[str, ...], tuple[str, ...]]]:
+    """태그 → (include, exclude) 키워드. 시드 파일이 단일 원천이다 (코드에 두지 않는다)."""
+    raw = _food_tag_seed().get("keywords") or {}
+    table: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
+    for tag in FOOD_TAGS:
+        spec = raw.get(tag) or {}
+        table[tag] = (
+            tuple(spec.get("include") or ()),
+            tuple(spec.get("exclude") or ()),
+        )
+    return table
+
+
+def food_tags_from_name(name: str | None) -> frozenset[str]:
+    """음식 **이름**으로 추정한 태그 (curated 에 없는 항목의 폴백).
+
+    식약처 가공식품 OpenAPI 적재분처럼 curated 46종 밖의 음식이 대부분이라 필요하다.
+    `exclude` 가 하나라도 걸리면 그 태그는 붙이지 않는다 — 사과주스·귤차·탕수육·
+    유부초밥처럼 부분 문자열만 같은 가공품/동음이의를 막기 위해서다.
+    """
+    if not name:
+        return frozenset()
+    text = name.strip()
+    if not text:
+        return frozenset()
+    found = {
+        tag
+        for tag, (include, exclude) in food_tag_keywords().items()
+        if not any(bad in text for bad in exclude)
+        and any(good in text for good in include)
+    }
+    return frozenset(found)
+
+
+def food_tags_for(nutrition_item_id: int | None, name: str | None = None) -> frozenset[str]:
+    """확정된 음식 1건의 태그. curated 우선, 없으면 이름 키워드 폴백.
+
+    자유 입력(nutrition_item_id 가 None)은 애초에 진행도를 올리지 않으므로 빈 집합이다.
+    """
+    if nutrition_item_id is None:
+        return frozenset()
+    curated = food_tag_map()
+    key = int(nutrition_item_id)
+    if key in curated:
+        return curated[key]
+    return food_tags_from_name(name)
+
+
+def food_tag_label(tag: str) -> str:
+    return FOOD_TAG_LABELS.get(tag, tag)
 
 
 def slot_limits() -> dict[str, int]:

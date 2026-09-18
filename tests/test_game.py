@@ -20,6 +20,38 @@ def meal_on(day: date, meal_type: str = "lunch", **extra) -> dict:
     return {**MEAL_PAYLOAD, "meal_type": meal_type, "eaten_at": eaten.isoformat(), **extra}
 
 
+# 음식 태그 해금 테스트용 nutrition_item_id (seed/game_food_tags.json 기준)
+VEGETABLE = 43  # 샐러드 → vegetable
+SOUP = 1  # 김치찌개 → soup
+PLAIN = 8  # 공기밥 → 태그 없음
+
+
+def food_item(nutrition_item_id: int | None, name: str = "음식") -> dict:
+    return {
+        "nutrition_item_id": nutrition_item_id,
+        "food_name": name,
+        "serving_amount": 1.0,
+        "calories": 100,
+        "carbs": 10.0,
+        "protein": 5.0,
+        "fat": 1.0,
+    }
+
+
+def meal_with(day: date, nutrition_item_ids: list, meal_type: str = "lunch") -> dict:
+    """그 논리 날짜에 지정한 nutrition item 만 담은 기록 payload."""
+    return meal_on(
+        day,
+        meal_type,
+        items=[food_item(nid, f"음식{nid}") for nid in nutrition_item_ids],
+    )
+
+
+def collection_item(client, headers, code: str) -> dict:
+    items = client.get("/v1/game/collection", headers=headers).json()["items"]
+    return next(i for i in items if i["code"] == code)
+
+
 def home(client, headers) -> dict:
     res = client.get("/v1/game/home", headers=headers)
     assert res.status_code == 200, res.text
@@ -242,11 +274,16 @@ def test_seven_day_streak_unlocks_food(client, auth_headers):
 
 
 def test_home_shows_next_unlock_goal(client, auth_headers):
-    create_meal(client, auth_headers, meal_on(_logical_today()))
+    """음식 목표보다 스트릭이 가까우면 스트릭 목표를 보여 준다."""
+    today = _logical_today()
+    for offset in (2, 1, 0):
+        # 태그가 없는 음식만 기록 — 음식 목표는 5일 그대로 남는다
+        create_meal(client, auth_headers, meal_with(today - timedelta(days=offset), [PLAIN]))
     goal = home(client, auth_headers)["next_unlock"]
     assert goal["item_code"] == "food_apple"
     assert goal["target"] == 7
-    assert goal["current"] == 1
+    assert goal["current"] == 3
+    assert goal["label"] == "4일 더 기록하면 빨간 사과"
 
 
 # --- 첫 친구 선택 ---
@@ -527,3 +564,261 @@ def test_bond_level_boundaries():
     assert [catalog.bond_level_for(d) for d in (0, 2, 3, 6, 7, 13, 14, 29, 30, 99)] == [
         1, 1, 2, 2, 3, 3, 4, 4, 5, 5
     ]
+
+
+# --- 음식 태그 해금 (curated 매핑 + unlock_progress) ---
+
+def test_vegetable_meals_on_five_days_unlock_broccoli(client, auth_headers):
+    today = _logical_today()
+    rewards = None
+    for offset in range(4, -1, -1):
+        rewards = create_meal(
+            client, auth_headers, meal_with(today - timedelta(days=offset), [VEGETABLE])
+        )["rewards"]
+
+    progress = {p["item_code"]: p for p in rewards["progress_updates"]}
+    assert progress["food_broccoli"] == {
+        "item_code": "food_broccoli", "current": 5, "target": 5, "unlocked": True
+    }
+    assert "food_broccoli" in rewards["unlocked_items"]
+    assert collection_item(client, auth_headers, "food_broccoli")["owned"] is True
+
+
+def test_same_day_vegetable_twice_counts_one_day(client, auth_headers):
+    today = _logical_today()
+    first = create_meal(client, auth_headers, meal_with(today, [VEGETABLE], "lunch"))["rewards"]
+    second = create_meal(client, auth_headers, meal_with(today, [VEGETABLE], "dinner"))["rewards"]
+
+    assert {p["item_code"]: p["current"] for p in first["progress_updates"]}["food_broccoli"] == 1
+    # 같은 논리 날짜는 다시 세지 않는다 → 진행도 변화가 없어 응답에도 실리지 않는다
+    assert "food_broccoli" not in {p["item_code"] for p in second["progress_updates"]}
+    assert collection_item(client, auth_headers, "food_broccoli")["progress"] == {
+        "current": 1, "target": 5, "unit": "day"
+    }
+
+
+def test_free_text_item_does_not_move_progress(client, auth_headers):
+    """nutrition_item_id 가 없는 자유 입력은 '확정한 음식'이 아니다."""
+    today = _logical_today()
+    rewards = create_meal(
+        client, auth_headers, meal_on(today, "lunch", items=[food_item(None, "집밥")])
+    )["rewards"]
+    assert rewards["progress_updates"] == []
+    assert collection_item(client, auth_headers, "food_taco")["progress"]["current"] == 0
+    assert collection_item(client, auth_headers, "food_broccoli")["progress"]["current"] == 0
+
+
+def test_five_breakfast_days_unlock_pancakes(client, auth_headers):
+    today = _logical_today()
+    rewards = None
+    for offset in range(4, -1, -1):
+        rewards = create_meal(
+            client,
+            auth_headers,
+            meal_with(today - timedelta(days=offset), [PLAIN], "breakfast"),
+        )["rewards"]
+    assert "food_pancakes" in rewards["unlocked_items"]
+    assert collection_item(client, auth_headers, "food_pancakes")["owned"] is True
+    # 아침을 5일 기록했다고 채소 목표가 오르지는 않는다
+    assert collection_item(client, auth_headers, "food_broccoli")["progress"]["current"] == 0
+
+
+def test_eight_distinct_menus_unlock_taco(client, auth_headers):
+    today = _logical_today()
+    menus = [5, 6, 8, 10, 11, 15, 16]  # 태그가 없는 서로 다른 메뉴 7종
+    for offset, nid in zip(range(9, 2, -1), menus):
+        create_meal(client, auth_headers, meal_with(today - timedelta(days=offset), [nid]))
+    assert collection_item(client, auth_headers, "food_taco")["progress"] == {
+        "current": 7, "target": 8, "unit": "menu"
+    }
+
+    # 같은 메뉴를 다시 먹어도 가짓수는 늘지 않는다
+    repeat = create_meal(
+        client, auth_headers, meal_with(today - timedelta(days=1), [menus[0]])
+    )["rewards"]
+    assert "food_taco" not in {p["item_code"] for p in repeat["progress_updates"]}
+
+    eighth = create_meal(client, auth_headers, meal_with(today, [20]))["rewards"]
+    assert "food_taco" in eighth["unlocked_items"]
+    assert {p["item_code"]: p for p in eighth["progress_updates"]}["food_taco"]["current"] == 8
+
+
+def test_unlocked_food_is_not_granted_again(client, auth_headers):
+    today = _logical_today()
+    for offset in range(4, -1, -1):
+        create_meal(client, auth_headers, meal_with(today - timedelta(days=offset), [VEGETABLE]))
+    owned_before = {
+        i["code"] for i in client.get("/v1/game/collection", headers=auth_headers).json()["items"]
+        if i["owned"]
+    }
+
+    later = create_meal(
+        client, auth_headers, meal_with(today + timedelta(days=1), [VEGETABLE])
+    )["rewards"]
+    assert "food_broccoli" not in later["unlocked_items"]
+    assert "food_broccoli" not in {p["item_code"] for p in later["progress_updates"]}
+
+    item = collection_item(client, auth_headers, "food_broccoli")
+    assert item["owned"] is True
+    assert item["progress"] is None  # 이미 보유한 아이템은 진행도를 내리지 않는다
+    owned_after = {
+        i["code"] for i in client.get("/v1/game/collection", headers=auth_headers).json()["items"]
+        if i["owned"]
+    }
+    assert owned_after == owned_before
+
+
+def test_next_unlock_prefers_closer_food_goal(client, auth_headers):
+    """스트릭(7일)보다 가까운 음식 목표가 있으면 그쪽을 보여 준다."""
+    today = _logical_today()
+    for offset in (1, 0):
+        create_meal(client, auth_headers, meal_with(today - timedelta(days=offset), [SOUP]))
+    goal = home(client, auth_headers)["next_unlock"]
+    assert goal["item_code"] == "food_soup"
+    assert (goal["current"], goal["target"]) == (2, 5)
+    assert goal["label"] == "국물 요리가 든 식사를 3일 더 기록하면 따뜻한 수프"
+
+
+def test_meal_response_carries_progress_updates(client, auth_headers):
+    rewards = create_meal(
+        client, auth_headers, meal_with(_logical_today(), [SOUP])
+    )["rewards"]
+    by_code = {p["item_code"]: p for p in rewards["progress_updates"]}
+    assert by_code["food_soup"] == {
+        "item_code": "food_soup", "current": 1, "target": 5, "unlocked": False
+    }
+    # 같은 기록의 메뉴 가짓수도 함께 오른다
+    assert by_code["food_taco"]["current"] == 1
+    assert by_code["food_taco"]["target"] == 8
+    assert "food_broccoli" not in by_code  # 채소는 없었다
+
+
+def test_collection_shows_food_progress_units(client, auth_headers):
+    create_meal(client, auth_headers, meal_with(_logical_today(), [SOUP]))
+    assert collection_item(client, auth_headers, "food_soup")["progress"] == {
+        "current": 1, "target": 5, "unit": "day"
+    }
+    assert collection_item(client, auth_headers, "food_taco")["progress"]["unit"] == "menu"
+    # 스트릭 해금과 펫에는 진행도를 붙이지 않는다 (필드는 항상 존재한다)
+    assert collection_item(client, auth_headers, "food_apple")["progress"] is None
+    assert collection_item(client, auth_headers, "pet_cat")["progress"] is None
+
+
+# --- 보상 실패 rollback (핸드오프 §6-B G) ---
+
+def test_meal_is_saved_when_rewards_fail(client, auth_headers, db_factory, monkeypatch):
+    """보상 계산이 터져도 ① 식단은 저장되고 ② rewards 는 null ③ 원장은 비어 있다."""
+    from sqlalchemy import func, select
+
+    import app.services.meals as meals_service
+    from app.models import RewardLedger, UnlockProgress
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("보상 계산 실패")
+
+    monkeypatch.setattr(meals_service, "apply_meal_rewards", boom)
+
+    res = client.post(
+        "/v1/meals", headers=auth_headers, json=meal_with(_logical_today(), [SOUP])
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["rewards"] is None
+
+    detail = client.get(f"/v1/meals/{body['meal_id']}", headers=auth_headers)
+    assert detail.status_code == 200
+    assert [i["food_name"] for i in detail.json()["items"]] == ["음식1"]
+
+    db = db_factory()
+    try:
+        assert db.scalar(select(func.count(RewardLedger.id))) == 0
+        assert db.scalar(select(func.count(UnlockProgress.id))) == 0
+    finally:
+        db.close()
+
+
+# --- 음식 태그 2계층 (curated → 이름 키워드 폴백) ---
+
+def _add_nutrition_item(db_factory, name: str) -> int:
+    """curated 46종 밖의 영양 항목 (식약처 OpenAPI 적재분과 같은 상황)."""
+    from app.models import NutritionItem
+
+    db = db_factory()
+    try:
+        row = NutritionItem(
+            name=name,
+            normalized_name=name.replace(" ", ""),
+            base_amount=100,
+            base_unit="g",
+            calories=200,
+            carbs=10,
+            protein=20,
+            fat=8,
+            category="외식",
+            source="public",
+        )
+        db.add(row)
+        db.commit()
+        assert row.id > 46  # 시드 46종 밖이어야 폴백을 탄다
+        return row.id
+    finally:
+        db.close()
+
+
+def test_curated_tags_beat_keyword_fallback():
+    """curated 의 빈 배열은 '태그 없음'이라는 판단이므로 키워드로 덮이지 않는다."""
+    # 8 = 공기밥 (curated 빈 배열) — 이름에 키워드가 있어도 무태그로 남는다
+    assert catalog.food_tags_for(8, "채소 듬뿍 샐러드") == frozenset()
+    assert catalog.food_tags_for(25, "탕수육") == frozenset()  # 25 = 탕수육
+    # curated 에 값이 있으면 그 값만 쓴다 (이름이 더 많은 태그를 암시해도)
+    assert catalog.food_tags_for(1, "김치찌개") == frozenset({"soup"})
+    assert catalog.food_tags_for(43, "샐러드") == frozenset({"vegetable"})
+
+
+def test_keyword_fallback_tags_unknown_nutrition_item():
+    """curated 에 없는 id 는 이름으로 태깅한다."""
+    assert catalog.food_tags_for(9001, "훈제 연어 샐러드") == frozenset({"fish", "vegetable"})
+    assert catalog.food_tags_for(9002, "황태해장국") == frozenset({"fish", "soup"})
+    assert catalog.food_tags_for(9003, "시금치나물") == frozenset({"vegetable"})
+    assert catalog.food_tags_for(9004, "블루베리") == frozenset({"fruit"})
+    assert catalog.food_tags_for(9005, "순대국밥") == frozenset({"soup"})
+
+
+def test_keyword_exclusions_block_false_positives():
+    """가공품·동음이의에 태그가 붙으면 '안 먹었는데 진행도가 올랐다'가 된다."""
+    for name in ("사과주스", "사과차", "딸기우유", "포도당", "수박바", "망고빙수"):
+        assert "fruit" not in catalog.food_tags_from_name(name), name
+    for name in ("유부초밥", "멸치육수", "참치액", "게맛살"):
+        assert "fish" not in catalog.food_tags_from_name(name), name
+    for name in ("보쌈", "야채빵", "배추김치", "과일샐러드", "옥수수샐러드", "당근케이크"):
+        assert "vegetable" not in catalog.food_tags_from_name(name), name
+    for name in ("탕수육", "그라탕", "설탕", "탕후루", "라면스프", "볶음라면", "스프링롤"):
+        assert "soup" not in catalog.food_tags_from_name(name), name
+
+
+def test_keyword_fallback_ignores_missing_name():
+    assert catalog.food_tags_for(9001, None) == frozenset()
+    assert catalog.food_tags_for(9001, "") == frozenset()
+    assert catalog.food_tags_for(9001, "   ") == frozenset()
+    assert catalog.food_tags_for(9001, "돈까스") == frozenset()
+    # 자유 입력(nutrition_item_id 없음)은 이름이 무엇이든 진행도를 올리지 않는다
+    assert catalog.food_tags_for(None, "연어 스테이크") == frozenset()
+
+
+def test_unknown_nutrition_item_progresses_by_name(client, auth_headers, db_factory):
+    """식약처 적재분처럼 curated 밖의 음식도 해금이 열린다."""
+    salmon = _add_nutrition_item(db_factory, "연어 스테이크")
+    juice = _add_nutrition_item(db_factory, "사과주스")
+    today = _logical_today()
+
+    rewards = None
+    for offset in range(4, -1, -1):
+        rewards = create_meal(
+            client, auth_headers, meal_with(today - timedelta(days=offset), [salmon])
+        )["rewards"]
+    assert "food_sushi_salmon" in rewards["unlocked_items"]
+    assert collection_item(client, auth_headers, "food_sushi_salmon")["owned"] is True
+
+    # 가공 음료는 과일 진행도를 올리지 않는다
+    create_meal(client, auth_headers, meal_with(today, [juice], "snack"))
+    assert collection_item(client, auth_headers, "food_strawberry")["progress"]["current"] == 0
