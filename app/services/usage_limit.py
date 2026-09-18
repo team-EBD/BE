@@ -19,6 +19,20 @@ from app.core.timeutil import kst_date_of, kst_day_bounds, now_utc
 from app.models import AiCallLog
 from app.services.subscription import is_premium
 
+# 같은 기능인데 **비용 분리 계측** 때문에 task_type 을 나눠 기록하는 것들.
+# 한도는 기능 단위로 세야 한다 — 그렇지 않으면 '발견 돋보기' 분석(analyze_clarifier)이
+# 하루 한도를 통째로 우회한다.
+TASK_TYPE_FAMILY: dict[str, tuple[str, ...]] = {
+    "analyze": ("analyze", "analyze_clarifier"),
+    "recommend": ("recommend",),
+}
+
+
+def task_types_for(task_type: str) -> tuple[str, ...]:
+    """한도·사용량 집계에 함께 세야 하는 ai_call_logs.task_type 값들."""
+    return TASK_TYPE_FAMILY.get(task_type, (task_type,))
+
+
 # task_type 은 AI 서버 ai_call_log 계약값 (analyze/recommend)
 _LIMIT_MESSAGES = {
     "analyze": "오늘 사용할 수 있는 음식 분석 횟수를 모두 사용했어요.",
@@ -51,7 +65,7 @@ def count_today_success(db: Session, user_id: int, task_type: str) -> int:
         db.scalar(
             select(func.count(AiCallLog.id)).where(
                 AiCallLog.user_id == user_id,
-                AiCallLog.task_type == task_type,
+                AiCallLog.task_type.in_(task_types_for(task_type)),
                 AiCallLog.status == "success",
                 AiCallLog.created_at >= start,
                 AiCallLog.created_at < end,

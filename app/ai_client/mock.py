@@ -28,21 +28,31 @@ class MockAIClient:
         image_url: str,
         eating_habits: dict | None = None,
         user_text: str | None = None,
+        candidate_depth: str | None = None,
     ) -> AnalyzeResult:
+        clarifier = candidate_depth == "clarifier"
+        candidates = [
+            # 음식 0: 찌개류 대체 예측 3개, 음식 1: 공기밥 (여러 음식 그룹핑 검증용)
+            AICandidate(food_index=0, food_name="김치찌개", confidence=0.87, estimated_serving=1.0, has_soup=True, has_sauce=False, bbox=_STEW_BOX),
+            AICandidate(food_index=0, food_name="된장찌개", confidence=0.08, estimated_serving=1.0, has_soup=True, has_sauce=False, bbox=_STEW_BOX),
+            AICandidate(food_index=0, food_name="순두부찌개", confidence=0.05, estimated_serving=1.0, has_soup=True, has_sauce=False, bbox=_STEW_BOX),
+        ]
+        if clarifier:  # '발견 돋보기' — 음식당 대체 후보 1개 추가
+            candidates.append(
+                AICandidate(food_index=0, food_name="부대찌개", confidence=0.03, estimated_serving=1.0, has_soup=True, has_sauce=False, bbox=_STEW_BOX)
+            )
+        candidates.append(
+            AICandidate(food_index=1, food_name="공기밥", confidence=0.95, estimated_serving=1.0, has_soup=False, has_sauce=False, bbox=_RICE_BOX)
+        )
         return AnalyzeResult(
             status="success",
             draft_notice="AI가 분석한 기록 초안입니다.",
-            candidates=[
-                # 음식 0: 찌개류 대체 예측 3개, 음식 1: 공기밥 (여러 음식 그룹핑 검증용)
-                AICandidate(food_index=0, food_name="김치찌개", confidence=0.87, estimated_serving=1.0, has_soup=True, has_sauce=False, bbox=_STEW_BOX),
-                AICandidate(food_index=0, food_name="된장찌개", confidence=0.08, estimated_serving=1.0, has_soup=True, has_sauce=False, bbox=_STEW_BOX),
-                AICandidate(food_index=0, food_name="순두부찌개", confidence=0.05, estimated_serving=1.0, has_soup=True, has_sauce=False, bbox=_STEW_BOX),
-                AICandidate(food_index=1, food_name="공기밥", confidence=0.95, estimated_serving=1.0, has_soup=False, has_sauce=False, bbox=_RICE_BOX),
-            ],
+            candidates=candidates,
             ai_call_log=AICallLogPayload(
                 provider="google",
                 model_name=MOCK_MODEL,
-                task_type="analyze",
+                # 비용 분리 집계의 근거 — 돋보기 호출은 별도 task_type 으로 남는다
+                task_type="analyze_clarifier" if clarifier else "analyze",
                 status="success",
                 latency_ms=42,
             ),
