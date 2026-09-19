@@ -11,6 +11,7 @@ from datetime import date, timedelta
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.timeutil import kst_date_of, kst_day_bounds, now_utc
 from app.models import DailyNutritionSummary, MealImage, MealItem, MealRecord, UserProfile
 from app.services.image_retention import retention_cutoff_utc
@@ -72,14 +73,16 @@ def get_goals(db: Session, user_id: int) -> dict[str, int]:
     }
 
 
-def aggregate_day(db: Session, user_id: int, day: date, day_start_hour: int = 0) -> dict:
+def aggregate_day(
+    db: Session, user_id: int, day: date, day_start_hour: int = settings.day_start_hour
+) -> dict:
     """해당 KST 날짜의 합계·끼니 수 (soft delete 제외).
 
     끼니 수(meal_count)는 실제로 먹은 기록만 센다 — 생략(is_skipped) 기록은
     영양 합계(0)에는 무해하지만 '몇 끼 먹었는지'에는 포함하면 안 된다.
 
-    day_start_hour 가 0 이 아니면 하루 경계를 그 시각으로 옮긴다
-    (예: 6 이면 06:00~다음날 06:00 — 새벽 야식이 전날 섭취로 잡힌다).
+    기본 경계는 settings.day_start_hour (KST 06:00)이다.
+    day_start_hour 로 다른 경계를 지정할 수 있다.
     """
     start, end = kst_day_bounds(day, day_start_hour)
     row = db.execute(
@@ -109,7 +112,7 @@ def aggregate_day(db: Session, user_id: int, day: date, day_start_hour: int = 0)
 
 def aggregate_range(
     db: Session, user_id: int, start_day: date, end_day: date,
-    day_start_hour: int = 0,
+    day_start_hour: int = settings.day_start_hour,
 ) -> dict[date, dict]:
     """[start_day, end_day] 구간을 한 번의 쿼리로 KST 날짜별 집계한다.
 
@@ -173,7 +176,9 @@ def macro_ratio(carbs: float, protein: float, fat: float) -> dict[str, int]:
 STREAK_LOOKBACK_DAYS = 365  # streak 계산 시 최대 조회 기간
 
 
-def streak_days(db: Session, user_id: int, day: date, day_start_hour: int = 0) -> int:
+def streak_days(
+    db: Session, user_id: int, day: date, day_start_hour: int = settings.day_start_hour
+) -> int:
     """해당 date 기준 연속 기록 일수.
 
     date 에 기록이 있으면 date 부터, 없으면 date-1 부터 거꾸로 센다.
@@ -228,7 +233,7 @@ def _food_image_url(
 
 def top_foods_in_range(
     db: Session, user_id: int, start_day: date, end_day: date, limit: int,
-    day_start_hour: int = 0,
+    day_start_hour: int = settings.day_start_hour,
 ) -> list[dict]:
     """기간 내 MealItem.food_name 최빈 상위 N — aggregate_day 와 동일한 meal 상태 조건.
 
@@ -297,12 +302,12 @@ def recompute_daily_summary(db: Session, user_id: int, day: date) -> DailyNutrit
 
 
 def daily_summary_response(
-    db: Session, user_id: int, day: date, day_start_hour: int = 0
+    db: Session, user_id: int, day: date, day_start_hour: int = settings.day_start_hour
 ) -> dict:
     """GET /nutrition/daily-summary 응답 (명세서 9.1). 조회 시점 재계산으로 정확성 보장.
 
-    day_start_hour 는 조회에만 적용된다 — daily_nutrition_summaries 캐시는
-    자정 경계로 유지하고(recompute_daily_summary), 응답은 매번 재집계한다.
+    캐시와 조회 모두 기본적으로 settings.day_start_hour 경계를 사용한다.
+    응답은 요청한 day_start_hour 로 매번 재집계한다.
     """
     total = aggregate_day(db, user_id, day, day_start_hour)
     goals = get_goals(db, user_id)
@@ -401,7 +406,8 @@ def build_weekly_summary_text(
 
 
 def weekly_summary_response(
-    db: Session, user_id: int, week_start: date, day_start_hour: int = 0
+    db: Session, user_id: int, week_start: date,
+    day_start_hour: int = settings.day_start_hour,
 ) -> dict:
     """GET /nutrition/weekly-summary 응답 (명세서 9.2 확장). 평균은 기록 있는 날 기준.
 
@@ -594,7 +600,8 @@ def build_monthly_summary_text(stats: dict, prev_stats: dict) -> str:
 
 
 def monthly_summary_response(
-    db: Session, user_id: int, year: int, month: int, day_start_hour: int = 0
+    db: Session, user_id: int, year: int, month: int,
+    day_start_hour: int = settings.day_start_hour,
 ) -> dict:
     """GET /nutrition/monthly-summary 응답. 당월/전월 각 1회 range 집계 쿼리."""
     goals = get_goals(db, user_id)

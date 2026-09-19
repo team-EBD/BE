@@ -6,6 +6,7 @@ from datetime import date
 
 from fastapi import APIRouter, HTTPException, Query
 
+from app.core.config import settings
 from app.core.deps import DB, CurrentUser
 from app.services.summary import (
     daily_summary_response,
@@ -23,8 +24,8 @@ def daily_summary(
     user: CurrentUser,
     db: DB,
     date_: date = Query(alias="date"),
-    # 하루 경계 시각 (0=자정, 6=06시~다음날 06시를 한 날로). 홈 화면이 6 을 쓴다.
-    day_start_hour: int = Query(default=0, ge=0, le=12),
+    # 하루 경계 시각 (기본 06시, 명시적으로 0을 주면 자정 경계).
+    day_start_hour: int = Query(default=settings.day_start_hour, ge=0, le=12),
 ) -> dict:
     return daily_summary_response(db, user.id, date_, day_start_hour)
 
@@ -34,7 +35,7 @@ def weekly_summary(
     user: CurrentUser,
     db: DB,
     week_start: date = Query(),
-    day_start_hour: int = Query(default=0, ge=0, le=12),
+    day_start_hour: int = Query(default=settings.day_start_hour, ge=0, le=12),
 ) -> dict:
     return weekly_summary_response(db, user.id, week_start, day_start_hour)
 
@@ -44,7 +45,7 @@ def monthly_summary(
     user: CurrentUser,
     db: DB,
     month: str = Query(description="YYYY-MM"),
-    day_start_hour: int = Query(default=0, ge=0, le=12),
+    day_start_hour: int = Query(default=settings.day_start_hour, ge=0, le=12),
 ) -> dict:
     # 전역 핸들러가 요청 검증 오류를 400 으로 매핑하므로,
     # 계약(422)을 지키기 위해 형식 검증을 라우터에서 직접 수행한다.

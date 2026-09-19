@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 
 from app.ai_client import get_ai_client
 from app.ai_client.base import AIClient
+from app.core.config import settings
 from app.core.deps import DB, CurrentUser
 from app.core.errors import APIError
 from app.core.timeutil import (
@@ -152,7 +153,7 @@ def get_calendar(
     user: CurrentUser,
     db: DB,
     month: str = Query(pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
-    day_start_hour: int = Query(default=0, ge=0, le=12),
+    day_start_hour: int = Query(default=settings.day_start_hour, ge=0, le=12),
 ) -> CalendarResponse:
     year, mon = int(month[:4]), int(month[5:7])
     start, end = kst_month_bounds(year, mon, day_start_hour)
@@ -190,7 +191,7 @@ def list_meals(
     user: CurrentUser,
     db: DB,
     date_: date = Query(alias="date"),
-    day_start_hour: int = Query(default=0, ge=0, le=12),
+    day_start_hour: int = Query(default=settings.day_start_hour, ge=0, le=12),
 ) -> MealListResponse:
     start, end = kst_day_bounds(date_, day_start_hour)
     meals = list(
