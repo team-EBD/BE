@@ -7,7 +7,7 @@ ERD(ref/설계/eatlog_mvp_erd.mmd) 17개 테이블 1:1 매핑.
 """
 from app.core.database import Base
 from app.models.ai import AiCallLog, FoodCandidate, RecommendationLog
-from app.models.billing import Subscription
+from app.models.billing import RefundGuaranteeClaim, Subscription
 from app.models.game import (
     CatalogItem,
     GameEvent,
@@ -67,6 +67,7 @@ __all__ = [
     "RecommendationLog",
     # billing domain
     "Subscription",
+    "RefundGuaranteeClaim",
     # gamification domain
     "GameProfile",
     "CatalogItem",

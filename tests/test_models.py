@@ -35,6 +35,7 @@ EXPECTED_TABLES = {
     "favorite_foods",
     # 인앱 결제(구독)
     "subscriptions",
+    "refund_guarantee_claims",
     # 게이미피케이션 (함께 크는 펫)
     "game_profiles",
     "catalog_items",
@@ -55,7 +56,7 @@ EXPECTED_TABLES = {
 
 def test_all_tables_registered():
     assert set(Base.metadata.tables.keys()) == EXPECTED_TABLES
-    assert len(EXPECTED_TABLES) == 35
+    assert len(EXPECTED_TABLES) == 36
 
 
 def _sqlite_factory():

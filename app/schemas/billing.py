@@ -30,3 +30,15 @@ class SubscriptionResponse(BaseModel):
     started_at: KSTDateTime | None = None
     expires_at: KSTDateTime | None = None
     environment: str | None = None  # production/sandbox
+
+
+class RefundGuaranteeResponse(BaseModel):
+    eligible_program: bool
+    recorded: int | None
+    target: int | None
+    daily_cap: int | None
+    period_start: KSTDateTime | None
+    period_end: KSTDateTime | None
+    days_left: int | None
+    achieved: bool | None
+    claim_status: Literal["requested", "approved", "rejected", "refunded"] | None
