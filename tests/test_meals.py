@@ -130,13 +130,13 @@ def test_list_by_date(client, auth_headers):
 
 
 def test_kst_day_boundary(client, auth_headers):
-    # KST 자정 직후(=UTC 전날 15:10)는 해당 KST 날짜에 잡혀야 한다
+    # KST 자정 직후(=UTC 전날 15:10)는 06시 경계 전이므로 전날 기록이다.
     payload = {**MEAL_PAYLOAD, "eaten_at": "2026-06-28T00:10:00+09:00"}
     create_meal(client, auth_headers, payload)
     res = client.get("/v1/meals", headers=auth_headers, params={"date": "2026-06-28"})
-    assert len(res.json()["meals"]) == 1
+    assert len(res.json()["meals"]) == 0
     res2 = client.get("/v1/meals", headers=auth_headers, params={"date": "2026-06-27"})
-    assert len(res2.json()["meals"]) == 0
+    assert len(res2.json()["meals"]) == 1
 
 
 def test_calendar(client, auth_headers):
@@ -175,11 +175,18 @@ def test_list_by_date_day_start_hour(client, auth_headers):
         "2026-06-28T01:30:00+09:00",
     ]
 
-    # 기본값(자정 경계)에서는 기존 동작 유지
+    # 기본값도 설정의 06시 경계를 따른다.
     res_default = client.get(
         "/v1/meals", headers=auth_headers, params={"date": "2026-06-27"}
     )
-    assert len(res_default.json()["meals"]) == 1
+    assert res_default.json() == body
+
+    # 기존 명시적 자정 경계 조회는 계속 지원한다.
+    res_midnight = client.get(
+        "/v1/meals", headers=auth_headers,
+        params={"date": "2026-06-27", "day_start_hour": 0},
+    )
+    assert len(res_midnight.json()["meals"]) == 1
 
 
 def test_calendar_day_start_hour(client, auth_headers):
@@ -212,6 +219,53 @@ def test_calendar_day_start_hour(client, auth_headers):
 def test_calendar_bad_month_400(client, auth_headers):
     res = client.get("/v1/meals/calendar", headers=auth_headers, params={"month": "2026-13"})
     assert res.status_code == 400
+
+
+def test_default_logical_date_matches_game_ledger_in_meal_views(client, auth_headers, db_factory):
+    from sqlalchemy import select
+
+    from app.models import RewardLedger
+
+    meal_id = create_meal(
+        client, auth_headers,
+        {**MEAL_PAYLOAD, "eaten_at": "2026-07-01T03:00:00+09:00"},
+    )["meal_id"]
+    with db_factory() as db:
+        ledger_day = db.scalar(
+            select(RewardLedger.logical_date).where(
+                RewardLedger.idempotency_key == f"meal:{meal_id}"
+            )
+        )
+    assert ledger_day.isoformat() == "2026-06-30"
+
+    meals = client.get(
+        "/v1/meals", headers=auth_headers, params={"date": "2026-06-30"}
+    )
+    assert meals.status_code == 200, meals.text
+    assert meals.json()["date"] == ledger_day.isoformat()
+    assert [meal["meal_id"] for meal in meals.json()["meals"]] == [meal_id]
+    next_day = client.get(
+        "/v1/meals", headers=auth_headers, params={"date": "2026-07-01"}
+    )
+    assert next_day.json()["meals"] == []
+
+    june = client.get(
+        "/v1/meals/calendar", headers=auth_headers, params={"month": "2026-06"}
+    )
+    assert june.status_code == 200, june.text
+    assert june.json()["days"] == [
+        {"date": ledger_day.isoformat(), "meal_count": 1, "total_calories": 524.0}
+    ]
+    july = client.get(
+        "/v1/meals/calendar", headers=auth_headers, params={"month": "2026-07"}
+    )
+    assert july.json()["days"] == []
+
+    midnight = client.get(
+        "/v1/meals/calendar", headers=auth_headers,
+        params={"month": "2026-07", "day_start_hour": 0},
+    )
+    assert midnight.json()["days"][0]["date"] == "2026-07-01"
 
 
 def test_bbox_saved_and_returned_in_detail(client, auth_headers):
