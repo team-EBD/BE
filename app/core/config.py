@@ -69,6 +69,8 @@ class Settings(BaseSettings):
     # 무료 한도를 낮춰도 구독자 정책은 건드리지 않게.
     analyze_daily_limit_premium: int = 0
     recommend_daily_limit_premium: int = 0
+    # FE 스토어 배포 전에는 기존 일일 한도를 유지한다.
+    ai_premium_gate: bool = False
     # 하루 경계 시각 (KST). 6이면 06:00~다음날 06:00 를 '하루'로 취급 —
     # 캘린더/요약(FE day_start_hour=6)과 사용량 리셋 기준을 일치시킨다.
     day_start_hour: int = 6
