@@ -39,6 +39,7 @@ class User(Base):
     profile_image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     # 이메일 가입 사용자만 사용 (소셜 전용 계정은 NULL)
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    tutorial_completed_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
     created_at: Mapped[datetime] = created_at_column()
     updated_at: Mapped[datetime] = updated_at_column()
 
