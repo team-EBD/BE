@@ -41,4 +41,4 @@ class RefundGuaranteeResponse(BaseModel):
     period_end: KSTDateTime | None
     days_left: int | None
     achieved: bool | None
-    claim_status: Literal["requested", "approved", "rejected", "refunded"] | None
+    claim_status: Literal["requested", "approved", "rejected", "refunded"] | None  # 기존 응답 값 유지
