@@ -141,6 +141,7 @@ class _LoopHarness:
         self.acquire = list(acquire)
         self.alive = list(alive)
         self.started = 0
+        self.entered = 0
         self.running: list[asyncio.Task] = []
         self.cancelled = 0
 
@@ -154,6 +155,7 @@ class _LoopHarness:
         self.started += 1
 
         async def _sleep_forever():
+            self.entered += 1
             try:
                 await asyncio.sleep(3600)
             except asyncio.CancelledError:
@@ -164,8 +166,8 @@ class _LoopHarness:
         return list(self.running)
 
 
-def _run_leader_loop(monkeypatch, harness: _LoopHarness, *, ticks: int) -> None:
-    """감시 루프를 `ticks` 번의 sleep 만큼 돌린 뒤 취소하고, 종료가 깨끗한지 확인한다."""
+def _run_leader_loop(monkeypatch, harness: _LoopHarness, *, expected_starts: int) -> None:
+    """가짜 루프가 실제로 시작할 때까지 기다린 뒤 깨끗하게 종료되는지 확인한다."""
     monkeypatch.setattr(app_main, "try_acquire_leader", harness.try_acquire)
     monkeypatch.setattr(app_main, "leader_alive", harness.leader_alive)
     monkeypatch.setattr(app_main, "_start_background_loops", harness.start_loops)
@@ -173,9 +175,20 @@ def _run_leader_loop(monkeypatch, harness: _LoopHarness, *, ticks: int) -> None:
 
     async def scenario():
         task = asyncio.create_task(app_main._leader_loop())
-        for _ in range(ticks):
-            await asyncio.sleep(0)
-        await app_main._cancel_all([task])
+        try:
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 5.0
+            while harness.started < expected_starts or harness.entered < expected_starts:
+                if task.done():
+                    task.result()
+                if loop.time() >= deadline:
+                    pytest.fail(
+                        f"leader loop did not start {expected_starts} time(s) within 5s "
+                        f"(started={harness.started}, entered={harness.entered})"
+                    )
+                await asyncio.sleep(0.001)
+        finally:
+            await app_main._cancel_all([task])
         assert task.cancelled() or task.done()
 
     asyncio.run(scenario())
@@ -183,7 +196,7 @@ def _run_leader_loop(monkeypatch, harness: _LoopHarness, *, ticks: int) -> None:
 
 def test_leader_loop_starts_loops_once_when_acquired(monkeypatch):
     h = _LoopHarness(acquire=[True], alive=[True, True, True])
-    _run_leader_loop(monkeypatch, h, ticks=30)
+    _run_leader_loop(monkeypatch, h, expected_starts=1)
     assert h.started == 1
     # 종료 시 루프 태스크도 함께 취소된다
     assert h.cancelled == 1
@@ -192,7 +205,7 @@ def test_leader_loop_starts_loops_once_when_acquired(monkeypatch):
 
 def test_leader_loop_waits_as_follower_until_lock_is_free(monkeypatch):
     h = _LoopHarness(acquire=[False, False, True], alive=[True])
-    _run_leader_loop(monkeypatch, h, ticks=40)
+    _run_leader_loop(monkeypatch, h, expected_starts=1)
     assert h.started == 1
     assert h.acquire == []  # False 두 번을 거쳐 세 번째 시도에서 담당이 됨
 
@@ -200,7 +213,7 @@ def test_leader_loop_waits_as_follower_until_lock_is_free(monkeypatch):
 def test_leader_loop_stops_loops_and_reelects_when_lock_lost(monkeypatch):
     # 담당 → 자격 상실(alive False) → 재선출 성공 → 다시 담당
     h = _LoopHarness(acquire=[True, True], alive=[True, False, True, True])
-    _run_leader_loop(monkeypatch, h, ticks=60)
+    _run_leader_loop(monkeypatch, h, expected_starts=2)
     assert h.started == 2
     # 첫 루프 세트는 자격 상실 시점에, 둘째는 종료 시점에 취소됨
     assert h.cancelled == 2
@@ -217,7 +230,7 @@ def test_leader_loop_survives_acquire_exception(monkeypatch):
         return True
 
     h.try_acquire = flaky
-    _run_leader_loop(monkeypatch, h, ticks=30)
+    _run_leader_loop(monkeypatch, h, expected_starts=1)
     assert calls["n"] >= 2
     assert h.started == 1
 
