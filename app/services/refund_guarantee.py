@@ -1,4 +1,7 @@
-"""첫 월 구독 결제 후 30일, 식사 기록 90건 환불 보장 진행도와 신청 접수."""
+"""첫 월 구독 결제 후 30일, 식사 기록 90건 무료 연장 진행도와 신청 접수.
+
+보상은 구독 1개월 무료 연장이다(과거에는 환불로 설계됨).
+"""
 from __future__ import annotations
 
 from collections import Counter
@@ -102,16 +105,16 @@ def request_claim(db: Session, user_id: int) -> dict:
     now = now_utc()
     sub = _first_monthly_subscription(db, user_id)
     if sub is None:
-        _reject("not_eligible_program", "첫 월 구독 결제 대상이 아닙니다.")
+        _reject("not_eligible_program", "이 결제는 무료 연장 신청 대상이 아닙니다.")
 
     start = from_db(sub.started_at)
     end = start + PERIOD
     if _claim(db, sub, start) is not None:
-        _reject("already_claimed", "이미 환불 신청을 접수했습니다.")
+        _reject("already_claimed", "이미 무료 연장을 신청했습니다.")
     if sub.status == "revoked":
-        _reject("not_eligible_program", "이미 환불된 결제는 신청 대상이 아닙니다.")
+        _reject("not_eligible_program", "이 결제는 무료 연장 신청 대상이 아닙니다.")
     if now >= end:
-        _reject("period_expired", "환불 보장 신청 기간이 지났습니다.")
+        _reject("period_expired", "무료 연장 신청 기간이 지났습니다.")
 
     recorded = _recorded_count(db, user_id, start, now)
     if recorded < TARGET:
@@ -133,6 +136,6 @@ def request_claim(db: Session, user_id: int) -> dict:
     except IntegrityError:
         db.rollback()
         if _claim(db, sub, start) is not None:
-            _reject("already_claimed", "이미 환불 신청을 접수했습니다.")
+            _reject("already_claimed", "이미 무료 연장을 신청했습니다.")
         raise
     return progress(db, user_id, at=now)

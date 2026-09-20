@@ -1,4 +1,4 @@
-"""월 구독 첫 결제 후 30일간 90회 기록 환불 보장 계약."""
+"""월 구독 첫 결제 후 30일간 90회 기록 무료 연장 계약."""
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -79,7 +79,9 @@ def test_no_subscription_is_explicitly_ineligible(client, auth_headers):
         "achieved": None,
         "claim_status": None,
     }
-    assert _reason(client.post(f"{URL}/claim", headers=auth_headers)) == "not_eligible_program"
+    claim = client.post(f"{URL}/claim", headers=auth_headers)
+    assert _reason(claim) == "not_eligible_program"
+    assert claim.json()["error"]["message"] == "이 결제는 무료 연장 신청 대상이 아닙니다."
 
 
 def test_yearly_subscription_is_not_eligible(client, auth_headers, db_factory):
@@ -121,7 +123,9 @@ def test_ninety_records_on_one_logical_day_count_as_three(client, auth_headers, 
     body = client.get(URL, headers=auth_headers).json()
     assert body["recorded"] == 3
     assert body["achieved"] is False
-    assert _reason(client.post(f"{URL}/claim", headers=auth_headers)) == "not_enough_records"
+    claim = client.post(f"{URL}/claim", headers=auth_headers)
+    assert _reason(claim) == "not_enough_records"
+    assert claim.json()["error"]["message"] == "인정된 식사 기록이 90건 미만입니다."
 
 
 @pytest.mark.parametrize("excluded", ["skipped", "deleted"])
@@ -157,7 +161,9 @@ def test_expired_period_cannot_claim(client, auth_headers, db_factory, monkeypat
     body = client.get(URL, headers=auth_headers).json()
     assert body["days_left"] == 0
     assert body["achieved"] is True
-    assert _reason(client.post(f"{URL}/claim", headers=auth_headers)) == "period_expired"
+    claim = client.post(f"{URL}/claim", headers=auth_headers)
+    assert _reason(claim) == "period_expired"
+    assert claim.json()["error"]["message"] == "무료 연장 신청 기간이 지났습니다."
 
 
 def test_claim_is_unique_and_retains_snapshot(client, auth_headers, db_factory):
@@ -169,6 +175,7 @@ def test_claim_is_unique_and_retains_snapshot(client, auth_headers, db_factory):
     second = client.post(f"{URL}/claim", headers=auth_headers)
     assert second.status_code == 409
     assert _reason(second) == "already_claimed"
+    assert second.json()["error"]["message"] == "이미 무료 연장을 신청했습니다."
     with db_factory() as db:
         assert db.scalar(select(func.count()).select_from(RefundGuaranteeClaim)) == 1
         claim = db.scalar(select(RefundGuaranteeClaim))
@@ -192,6 +199,16 @@ def test_claim_status_survives_store_refund(client, auth_headers, db_factory):
     body = client.get(URL, headers=auth_headers).json()
     assert body["eligible_program"] is True
     assert body["claim_status"] == "requested"
+
+
+def test_revoked_subscription_cannot_claim(client, auth_headers, db_factory):
+    sub_id = _subscription(db_factory)
+    with db_factory() as db:
+        db.get(Subscription, sub_id).status = "revoked"
+        db.commit()
+    claim = client.post(f"{URL}/claim", headers=auth_headers)
+    assert _reason(claim) == "not_eligible_program"
+    assert claim.json()["error"]["message"] == "이 결제는 무료 연장 신청 대상이 아닙니다."
 
 
 def test_refund_guarantee_requires_auth(client):

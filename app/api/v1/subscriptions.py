@@ -4,8 +4,8 @@
 - POST /v1/subscriptions/verify                구매 토큰 검증·등록 (결제 완료/복원)
 - POST /v1/subscriptions/notifications/google  Play 실시간 개발자 알림(RTDN)
 - POST /v1/subscriptions/notifications/apple   App Store Server Notifications V2
-- GET  /v1/subscriptions/refund-guarantee      첫 월 결제 환불 보장 진행도
-- POST /v1/subscriptions/refund-guarantee/claim 환불 신청 접수
+- GET  /v1/subscriptions/refund-guarantee      첫 월 결제 무료 연장 진행도
+- POST /v1/subscriptions/refund-guarantee/claim 무료 연장 신청 접수
 
 알림 엔드포인트는 스토어(Pub/Sub·Apple)가 호출하므로 사용자 인증이 없다.
 대신 콘솔에 등록한 URL 의 쿼리 시크릿(?token=...)으로 호출자를 확인하고,
