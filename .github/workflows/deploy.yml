@@ -20,7 +20,12 @@ name: Test & Deploy
 on:
   push:
     branches: [dev]
-  workflow_dispatch: # 수동 재배포용
+  workflow_dispatch: # 수동 재배포용 — 기본은 AWS EC2(운영) 재배포다.
+    inputs:
+      include_cloudtype:
+        description: cloudtype 에도 배포한다 (기본 아니오 — 운영은 AWS EC2 다)
+        type: boolean
+        default: false
 
 jobs:
   test:
@@ -48,7 +53,11 @@ jobs:
     # 환경변수는 Parameter Store(/eatlog/be/*)가 정본 — 이 워크플로에 값을 적지 않는다.
     # 롤백: AWS 콘솔 Systems Manager → Run Command → eatlog-deploy 에 이전 sha 를 ref 로 실행.
     # Innovation Sandbox 만료 등으로 AWS 쪽이 사라지면 이 잡만 실패하고 test 는 영향 없다.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    # push(dev) 자동 배포. 수동 실행으로도 같은 배포를 돌릴 수 있어야 한다 —
+    # Parameter Store 값만 바꾸고 재배포해야 하는 경우가 있다.
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/dev')
+      || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       id-token: write   # OIDC 토큰 발급 (AssumeRoleWithWebIdentity)
@@ -95,7 +104,12 @@ jobs:
     runs-on: ubuntu-latest
     # 수동 실행에서만 배포한다 (파일 상단 🚨 참고 — 스펙이 운영 DB 설정을 되돌린다).
     # 변수 미설정 = 아직 연동 안 함 → 배포를 건너뛴다 (기존 앱 설정 보호)
-    if: github.event_name == 'workflow_dispatch' && vars.CLOUDTYPE_PROJECT != ''
+    # 2026-09-20: 수동 실행이 의도치 않게 cloudtype 만 배포하고 운영(EC2)은 건너뛰던
+    # 문제가 있었다. 이제 입력으로 명시해야 돈다.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      && inputs.include_cloudtype
+      && vars.CLOUDTYPE_PROJECT != ''
     steps:
       - uses: actions/checkout@v4
       - name: Connect repository to cloudtype
