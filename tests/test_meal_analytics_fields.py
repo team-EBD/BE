@@ -2,9 +2,9 @@
 슬라이더 양 조정 correction_logs (2026-09-11)."""
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
-from app.models import AiCallLog, CorrectionLog, FoodCandidate, MealRecord
+from app.models import AiCallLog, CorrectionLog, FoodCandidate, MealItem, MealRecord
 from tests.conftest import login
 from tests.test_meals import MEAL_PAYLOAD, create_meal
 
@@ -162,3 +162,46 @@ def test_serving_adjustment_does_not_leak_into_detail_correction_type(client, au
     meal_id = create_meal(client, auth_headers, payload)["meal_id"]
     body = client.get(f"/v1/meals/{meal_id}", headers=auth_headers).json()
     assert body["items"][0]["correction_type"] == "no_soup"
+
+
+# --- 앱 1.9.0~1.12.3 의 직접 검색 음식: 화면용 임시 키가 후보 ID 로 온다 (2026-09-22) ---
+
+def test_local_candidate_key_does_not_block_saving(client, auth_headers, db_factory):
+    """초안에 직접 검색으로 추가한 음식 — food_candidate_id 가 "manual-1" 이어도 저장된다."""
+    log_id, ids = _seed_draft(db_factory, _me(client, auth_headers))
+    payload = {
+        **MEAL_PAYLOAD, "entry_method": "photo", "ai_call_log_id": log_id,
+        "items": [_item(food_candidate_id=ids[0]), _item(food_name="공기밥", food_candidate_id="manual-1")],
+    }
+    res = client.post("/v1/meals", headers=auth_headers, json=payload)
+    assert res.status_code == 201, res.text
+    with db_factory() as db:
+        # AI 후보에서 온 항목의 정답지 표시는 그대로 동작한다
+        assert db.get(FoodCandidate, ids[0]).is_selected is True
+        assert db.scalar(select(func.count(MealItem.id)).where(MealItem.meal_record_id == res.json()["meal_id"])) == 2
+
+
+def test_local_candidate_key_leaves_no_fake_serving_log(client, auth_headers, db_factory):
+    """직접 고른 음식은 AI 추정량이 없다 — 앱이 기본값 1 을 보내도 양 조정 로그를 남기지 않는다."""
+    meal_id = create_meal(
+        client, auth_headers,
+        {**MEAL_PAYLOAD, "items": [_item(serving_amount=0.5, estimated_serving=1, food_candidate_id="manual-3")]},
+    )["meal_id"]
+    with db_factory() as db:
+        assert list(db.scalars(select(CorrectionLog).where(CorrectionLog.meal_record_id == meal_id))) == []
+
+
+def test_numeric_string_candidate_id_still_accepted(client, auth_headers, db_factory):
+    _, ids = _seed_draft(db_factory, _me(client, auth_headers))
+    create_meal(client, auth_headers, {**MEAL_PAYLOAD, "items": [_item(food_candidate_id=str(ids[1]))]})
+    with db_factory() as db:
+        assert db.get(FoodCandidate, ids[1]).is_selected is True
+
+
+def test_update_also_tolerates_local_candidate_key(client, auth_headers):
+    meal_id = create_meal(client, auth_headers, MEAL_PAYLOAD)["meal_id"]
+    res = client.patch(
+        f"/v1/meals/{meal_id}", headers=auth_headers,
+        json={"items": [_item(food_candidate_id="manual-2")]},
+    )
+    assert res.status_code == 200, res.text
