@@ -2,6 +2,7 @@
 
 GET /v1/usage/daily — 분석/추천 각각의 오늘(KST) 사용량·한도·잔여와 평생 무료 크레딧.
 한도가 비활성(0 이하)이면 limit/remaining 은 null (무제한).
+한도 면제 역할(users.role 이 tester/admin)은 모든 항목이 무제한으로 온다.
 플래그가 켜지면 기능별 일일 한도는 없고 무료 크레딧만 통합 적용된다.
 """
 from __future__ import annotations
@@ -18,6 +19,7 @@ from app.services.usage_limit import (
     count_lifetime_success,
     count_today_success,
     daily_limit,
+    is_limit_exempt,
 )
 
 router = APIRouter(prefix="/usage", tags=["usage"])
@@ -48,6 +50,15 @@ def _quota(db, user_id: int, task_type: str, limit: int) -> UsageQuota:
 def get_daily_usage(user: CurrentUser, db: DB) -> DailyUsageResponse:
     premium = is_premium(db, user.id)
     free_used = count_lifetime_success(db, user.id)
+    if is_limit_exempt(db, user.id):
+        # 한도 면제 역할(tester/admin): 전부 무제한으로 알린다 — 앱이 '무료 크레딧 소진' 배지를 띄우지 않게.
+        # is_premium 은 사실대로 둔다(구독 화면·결제 흐름은 일반 사용자처럼 시험할 수 있어야 한다).
+        return DailyUsageResponse(
+            analyze=_quota(db, user.id, "analyze", 0),
+            recommend=_quota(db, user.id, "recommend", 0),
+            free_credits=UsageQuota(limit=None, used=free_used, remaining=None),
+            is_premium=premium,
+        )
     # 새 정책에는 기능별 일일 한도가 없고, 무료 크레딧만 통합 적용한다.
     analyze_limit = 0 if settings.ai_premium_gate else daily_limit("analyze", premium)
     recommend_limit = 0 if settings.ai_premium_gate else daily_limit("recommend", premium)
