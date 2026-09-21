@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.errors import APIError
 from app.core.timeutil import kst_date_of, kst_day_bounds, now_utc
-from app.models import AiCallLog
+from app.models import AI_LIMIT_EXEMPT_ROLES, AiCallLog, User
 from app.services.subscription import is_premium
 
 # 같은 기능인데 **비용 분리 계측** 때문에 task_type 을 나눠 기록하는 것들.
@@ -92,8 +92,19 @@ def count_lifetime_success(db: Session, user_id: int) -> int:
     )
 
 
+def is_limit_exempt(db: Session, user_id: int) -> bool:
+    """AI 사용 한도를 받지 않는 계정인가 — users.role 이 tester/admin (UserRole 참고).
+
+    테스터가 점검·디버깅 중에 한도에 막히지 않게 하기 위한 것이다. 구독 상태(is_premium)와는 별개라
+    구독·결제 화면은 그대로 시험할 수 있다. 역할은 서버에서만 지정된다.
+    """
+    return db.scalar(select(User.role).where(User.id == user_id)) in AI_LIMIT_EXEMPT_ROLES
+
+
 def enforce_daily_limit(db: Session, user_id: int, task_type: str) -> None:
-    """플래그에 따른 AI 한도 초과 시 429."""
+    """플래그에 따른 AI 한도 초과 시 429. 한도 면제 역할(tester/admin)은 어떤 한도도 받지 않는다."""
+    if is_limit_exempt(db, user_id):
+        return
     premium = is_premium(db, user_id)
     if settings.ai_premium_gate:
         if premium:
