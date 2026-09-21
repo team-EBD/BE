@@ -9,10 +9,24 @@ from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import settings
 
+
+def pool_kwargs(uri: str) -> dict:
+    """URI 에 맞는 커넥션 풀 옵션. SQLite(테스트·로컬 파일)는 큐 풀을 쓰지 않아
+    pool_size 류 인자를 받지 않으므로 비워 둔다."""
+    if uri.startswith("sqlite"):
+        return {}
+    return {
+        "pool_size": settings.db_pool_size,
+        "max_overflow": settings.db_max_overflow,
+        "pool_timeout": settings.db_pool_timeout_seconds,
+    }
+
+
 engine = create_engine(
     settings.sqlalchemy_database_uri,
     pool_pre_ping=True,
     future=True,
+    **pool_kwargs(settings.sqlalchemy_database_uri),
 )
 
 SessionLocal = sessionmaker(

@@ -1,17 +1,40 @@
-name: Deploy to cloudtype
+name: Test & Deploy
 
-# dev 에 푸시(=PR 머지 포함)되면 테스트 후 cloudtype 에 배포한다.
+# 브랜치 역할 (2026-09-21 main 배포 전환):
+#   feat/* → dev : 통합. 푸시·PR 에서 테스트만 돌고 **배포하지 않는다**.
+#   dev → main   : PR 로 올린다. PR 에서 테스트 + 마이그레이션 검증, 머지(=main 푸시)되면 AWS EC2 운영 배포.
+#   stage 는 쓰지 않는다 — 시험 서버가 생기면 dev 와 main 사이에 넣는다.
+# 배포 권한의 최종 관문은 AWS 쪽이다: IAM 역할 eatlog-github-deploy 의 신뢰 정책이 허용한 브랜치만 로그인된다
+# (pjt_eatlog/deploy_aws/setup_github_deploy_branches.sh). 여기 조건만 바꿔서는 다른 브랜치에서 배포할 수 없다.
+# 수동 재배포(workflow_dispatch)도 **main 을 골라 실행**해야 한다 — 기본 브랜치(dev)에서 돌리면 테스트만 돈다.
+# 긴급 수정: main 에서 hotfix/* 를 따 main 으로 PR → 같은 변경을 dev 에도 반영한다.
+#
+# 🚨 cloudtype 배포는 2026-09-05 부터 **수동 실행(workflow_dispatch)에서만** 일어난다.
+#    이유: 아래 배포 스펙이 cloudtype 앱 설정을 통째로 덮어쓰는데, 2026-08-27 AWS
+#    컷오버(SCRUM-248)로 cloudtype BE 는 대시보드에서 **RDS** 를 바라보도록 바뀌었다.
+#    그런데 이 스펙에는 아직 옛 cloudtype Postgres 주소가 박혀 있어, dev 에 푸시할
+#    때마다 운영 DB 연결이 조용히 되돌아간다. 직전 배포가 08-12(컷오버 이전)라
+#    09-05 배포에서 처음 드러났다 (SCRUM-256).
+#
+#    다시 자동 배포로 되돌리려면: 아래 POSTGRES_* 를 RDS 값으로 고치고(호스트/포트/
+#    유저/DB 는 시크릿 또는 저장소 변수로) `if` 조건에서 workflow_dispatch 제한을 빼면 된다.
+#    cloudtype 을 폐기한다면 이 워크플로째로 지우는 편이 낫다.
 #
 # 스키마 변경은 기동 시 app/core/migrations.py 가 alembic upgrade head 를 적용하므로
 # 이 워크플로에서 따로 마이그레이션을 돌리지 않는다.
 #
 # ⚠️ deploy 잡은 저장소 변수 CLOUDTYPE_PROJECT 가 설정돼야만 실행된다.
-#    cloudtype 대시보드의 GitHub 자동배포를 이미 쓰고 있다면 이 잡은 중복이므로
-#    변수를 비워 둔 채로 두면 된다 (test 잡만 돌아간다).
 on:
   push:
-    branches: [dev]
-  workflow_dispatch: # 수동 재배포용
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+  workflow_dispatch: # 수동 재배포용 — 기본은 AWS EC2(운영) 재배포다.
+    inputs:
+      include_cloudtype:
+        description: cloudtype 에도 배포한다 (기본 아니오 — 운영은 AWS EC2 다)
+        type: boolean
+        default: false
 
 jobs:
   test:
@@ -29,12 +52,107 @@ jobs:
         # 테스트는 SQLite in-memory 로 돌아 운영 DB 를 건드리지 않는다 (tests/conftest.py)
         run: python -m pytest -q
 
+  migrations:
+    # pytest 는 SQLite + create_all 이라 마이그레이션 파일을 한 번도 실행하지 않는다.
+    # 이 잡이 없으면 alembic 스크립트는 운영 배포에서 처음 실제 Postgres 를 만난다.
+    name: alembic on Postgres
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine # 운영 RDS 와 같은 메이저 버전
+        env:
+          POSTGRES_USER: eatlog
+          POSTGRES_PASSWORD: eatlog
+          POSTGRES_DB: eatlog
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U eatlog" --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      ALEMBIC_DATABASE_URL: postgresql+psycopg://eatlog:eatlog@localhost:5432/eatlog
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Single head
+        run: test "$(alembic heads | wc -l)" -eq 1 || { alembic heads; echo "마이그레이션 head 가 둘 이상이다 — down_revision 을 정리할 것"; exit 1; }
+      - name: Upgrade from empty database
+        run: alembic upgrade head
+      - name: Newest migration is reversible
+        run: alembic downgrade -1 && alembic upgrade head
+
+  deploy-aws:
+    name: AWS EC2 deploy (SSM Run Command)
+    needs: [test, migrations]
+    # main 에 푸시(=dev→main PR 머지)되고 테스트·마이그레이션 검증이 통과하면 AWS EC2(eatlog-app)에 배포한다
+    # (2026-09-06~ dev 푸시 배포 → 2026-09-21 main 푸시 배포로 전환).
+    # 방식: GitHub OIDC 로 IAM 역할 eatlog-github-deploy 를 빌려 SSM 문서 eatlog-deploy 를
+    #   보내고, EC2 가 ~/eatlog/deploy_service.sh 로 체크아웃→Parameter Store env 갱신→빌드→재기동
+    #   →헬스체크를 수행한다. 액세스 키·SSH 키를 GitHub 에 두지 않는다.
+    # 환경변수는 Parameter Store(/eatlog/be/*)가 정본 — 이 워크플로에 값을 적지 않는다.
+    # 롤백: AWS 콘솔 Systems Manager → Run Command → eatlog-deploy 에 이전 sha 를 ref 로 실행.
+    # Innovation Sandbox 만료 등으로 AWS 쪽이 사라지면 이 잡만 실패하고 test 는 영향 없다.
+    # push(main) 자동 배포. 수동 실행으로도 같은 배포를 돌릴 수 있어야 한다 —
+    # Parameter Store 값만 바꾸고 재배포해야 하는 경우가 있다. 수동 실행도 main 을 골랐을 때만 배포한다
+    # (다른 브랜치는 AWS 신뢰 정책이 거부하므로, 실패로 끝나기보다 아예 건너뛰게 한다).
+    if: >-
+      github.ref == 'refs/heads/main'
+      && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # OIDC 토큰 발급 (AssumeRoleWithWebIdentity)
+      contents: read
+    env:
+      AWS_REGION: ap-northeast-2
+      INSTANCE_ID: i-0d96d7d601622339d
+      SERVICE: be
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::779403607744:role/eatlog-github-deploy
+          aws-region: ap-northeast-2
+      - name: Send deploy command
+        id: send
+        run: |
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" --document-name eatlog-deploy \
+            --parameters "service=$SERVICE,ref=${{ github.sha }}" \
+            --comment "GitHub ${{ github.repository }}@${{ github.sha }}" \
+            --query Command.CommandId --output text)
+          echo "cmd_id=$CMD_ID" >> "$GITHUB_OUTPUT"
+          echo "command: $CMD_ID"
+      - name: Wait for result
+        run: |
+          CMD_ID="${{ steps.send.outputs.cmd_id }}"
+          STATUS=Pending
+          for i in $(seq 1 90); do
+            STATUS=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+                       --query Status --output text 2>/dev/null || echo Pending)
+            case "$STATUS" in Success|Failed|Cancelled|TimedOut) break ;; esac
+            sleep 10
+          done
+          echo "status: $STATUS"
+          aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+            --query StandardOutputContent --output text
+          aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+            --query StandardErrorContent --output text >&2
+          [ "$STATUS" = Success ]
+
   deploy:
     name: cloudtype deploy
     needs: test
     runs-on: ubuntu-latest
+    # 수동 실행에서만 배포한다 (파일 상단 🚨 참고 — 스펙이 운영 DB 설정을 되돌린다).
     # 변수 미설정 = 아직 연동 안 함 → 배포를 건너뛴다 (기존 앱 설정 보호)
-    if: vars.CLOUDTYPE_PROJECT != ''
+    # 2026-09-20: 수동 실행이 의도치 않게 cloudtype 만 배포하고 운영(EC2)은 건너뛰던
+    # 문제가 있었다. 이제 입력으로 명시해야 돈다.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      && inputs.include_cloudtype
+      && vars.CLOUDTYPE_PROJECT != ''
     steps:
       - uses: actions/checkout@v4
       - name: Connect repository to cloudtype
@@ -68,6 +186,10 @@ jobs:
                   value: local
                 - name: API_V1_PREFIX
                   value: /v1
+                # 🚨 옛 cloudtype Postgres 주소. 2026-08-27 컷오버 이후 운영 DB 는
+                #    AWS RDS 다 — 이 값을 그대로 배포하면 cloudtype BE 가 RDS 에서
+                #    떨어져 나가 "두 프론트, 한 DB" 가 깨진다. 고치기 전까지 자동 배포
+                #    금지(파일 상단 참고). RDS 값을 아는 사람이 여기를 갱신할 것.
                 - name: POSTGRES_HOST
                   value: svc.sel3.cloudtype.app
                 - name: POSTGRES_PORT
@@ -121,6 +243,33 @@ jobs:
                   value: eatlog.service@gmail.com
                 - name: SMTP_PASSWORD
                   value: ${{ secrets.SMTP_PASSWORD }}
+                # 인앱 결제(구독). store = 스토어 API 로 실제 영수증을 검증한다.
+                # 기본값 mock 은 **어떤 토큰이든 프리미엄으로 인정**하므로 운영에서
+                # 절대 쓰면 안 된다 — 자격증명 시크릿이 아직 없으면 검증이 503 으로
+                # 실패할 뿐, 무료로 프리미엄이 열리지는 않는다(안전한 실패).
+                - name: BILLING_BACKEND
+                  value: store
+                - name: SUBSCRIPTION_PRODUCT_IDS
+                  value: eatlog_premium_monthly,eatlog_premium_yearly
+                - name: GOOGLE_PLAY_PACKAGE_NAME
+                  value: com.eatlog
+                # Play Console 에 연결한 서비스 계정 JSON (androidpublisher 권한).
+                # Firebase 서비스 계정과 다른 계정이다 — 재사용 금지.
+                - name: GOOGLE_PLAY_CREDENTIALS_JSON
+                  value: '${{ secrets.GOOGLE_PLAY_CREDENTIALS_JSON }}'
+                - name: GOOGLE_PLAY_RTDN_SECRET
+                  value: ${{ secrets.GOOGLE_PLAY_RTDN_SECRET }}
+                - name: APP_STORE_ISSUER_ID
+                  value: ${{ secrets.APP_STORE_ISSUER_ID }}
+                - name: APP_STORE_KEY_ID
+                  value: ${{ secrets.APP_STORE_KEY_ID }}
+                # .p8 내용. 개행은 이스케이프(백슬래시 n)해 한 줄로 넣는다.
+                - name: APP_STORE_PRIVATE_KEY
+                  value: '${{ secrets.APP_STORE_PRIVATE_KEY }}'
+                - name: APP_STORE_BUNDLE_ID
+                  value: com.eatlog
+                - name: APP_STORE_NOTIFICATION_SECRET
+                  value: ${{ secrets.APP_STORE_NOTIFICATION_SECRET }}
               buildenv: []
             context:
               git:

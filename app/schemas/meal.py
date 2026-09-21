@@ -7,9 +7,12 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 from app.schemas.common import KSTDateTime
+from app.schemas.game import MealRewards
 
 CorrectionType = Literal["half", "large", "no_soup", "no_sauce", "custom"]
 MealType = Literal["breakfast", "lunch", "dinner", "snack"]
+# 기록 입력 방식 — photo(사진 분석) / text(문장 파싱) / search(직접 검색)
+EntryMethod = Literal["photo", "text", "search"]
 
 
 # --- 이미지 업로드 (5.1) ---
@@ -115,6 +118,13 @@ class MealItemInput(BaseModel):
     # AI 분석이 준 사진 속 위치 스냅샷 (직접 검색으로 담은 음식은 None)
     bbox: BoundingBox | None = None
     before_data: NutritionSnapshot | None = None
+    # --- 분석 로그(정답지)용, 모두 선택 (2026-09-11) ---
+    # 이 항목이 어느 AI 후보에서 왔는지 → food_candidates.is_selected 갱신.
+    # 직접 검색으로 담았거나 초안에서 바꾼 음식은 None.
+    food_candidate_id: int | None = None
+    # AI 가 추정한 섭취량. serving_amount 와 다르면 슬라이더 양 조정으로 보고
+    # correction_logs(serving_adjusted) 에 전후값을 남긴다.
+    estimated_serving: float | None = Field(default=None, gt=0)
 
 
 class MealCreateRequest(BaseModel):
@@ -125,6 +135,10 @@ class MealCreateRequest(BaseModel):
     # 식사 생략(안 먹음) 기록 — true 면 items 없이 저장한다 (합계 0)
     is_skipped: bool = False
     items: list[MealItemInput] = Field(default_factory=list)
+    # --- 분석 로그용, 모두 선택 (2026-09-11) ---
+    entry_method: EntryMethod | None = None
+    # 초안을 만든 AI 호출(분석/문장 파싱). 직접 검색·생략 기록은 None.
+    ai_call_log_id: int | None = None
 
     @model_validator(mode="after")
     def _validate_items_by_skip(self) -> "MealCreateRequest":
@@ -167,6 +181,9 @@ class MealCreateResponse(BaseModel):
     total_protein: float
     total_fat: float
     items: list[MealItemBrief]
+    # 게이미피케이션 보상 (XP·잎 코인·펫 유대). 별도 호출로 만들면 연출 타이밍을
+    # 놓치므로 저장 응답에 함께 싣는다. 구버전 서버/생략 기록에서는 없을 수 있다.
+    rewards: MealRewards | None = None
 
 
 class MealItemDetail(BaseModel):

@@ -15,6 +15,7 @@ from app.core.pagination import PageParams, Pagination, page_params
 from app.core.timeutil import kst_day_bounds
 from app.models import AiCallLog
 from app.schemas.ai_log import AiCallLogItem, AiCallLogListResponse
+from app.services.usage_limit import task_types_for
 
 router = APIRouter(prefix="/ai-call-logs", tags=["ai-call-logs"])
 
@@ -33,7 +34,9 @@ def list_ai_call_logs(
     if status_ is not None:
         conditions.append(AiCallLog.status == status_)
     if task_type is not None:
-        conditions.append(AiCallLog.task_type == task_type)
+        # "analyze" 는 돋보기 분석(analyze_clarifier)까지 함께 본다 — 사용자 입장에선
+        # 같은 분석 한 건이고, 한도 집계와도 기준이 어긋나면 안 된다.
+        conditions.append(AiCallLog.task_type.in_(task_types_for(task_type)))
     if from_ is not None:
         conditions.append(AiCallLog.created_at >= kst_day_bounds(from_)[0])
     if to is not None:

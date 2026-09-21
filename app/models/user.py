@@ -39,6 +39,12 @@ class User(Base):
     profile_image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     # 이메일 가입 사용자만 사용 (소셜 전용 계정은 NULL)
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    tutorial_completed_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    # 앱이 로그인·가입 요청에 실어 보내는 '테스트 기기' 여부 (2026-09-21 분석 로그).
+    #   True  = 구글 플레이 사전 점검 로봇 등 Firebase Test Lab 기기 (안드로이드 설정 firebase.test.lab)
+    #   False = 앱이 일반 기기라고 보고함 / NULL = 보고한 적 없음(이 기능 이전 빌드)
+    # 분석 대시보드가 True 인 계정을 지표에서 제외한다. 기록 규칙은 app/services/test_device.py.
+    is_test_device: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[datetime] = created_at_column()
     updated_at: Mapped[datetime] = updated_at_column()
 

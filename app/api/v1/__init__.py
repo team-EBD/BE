@@ -6,11 +6,13 @@ from app.api.v1 import (
     auth,
     client_events,
     foods,
+    game,
     health,
     meals,
     nutrition,
     push_tokens,
     recommendations,
+    subscriptions,
     usage,
     users,
 )
@@ -26,4 +28,6 @@ api_router.include_router(nutrition.router)
 api_router.include_router(recommendations.router)
 api_router.include_router(ai_call_logs.router)
 api_router.include_router(usage.router)
+api_router.include_router(subscriptions.router)
 api_router.include_router(client_events.router)
+api_router.include_router(game.router)

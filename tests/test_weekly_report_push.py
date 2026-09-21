@@ -5,13 +5,14 @@ from datetime import date, datetime, timedelta
 
 from sqlalchemy import select
 
-from app.core.timeutil import KST
+from app.core.timeutil import KST, to_utc
 from app.models import MealRecord, NotificationSetting, PushToken, User
 from app.push_client.base import PushSendReport
 from app.push_client.mock import MockPushClient
 from app.services.weekly_report_push import (
     build_push_content,
     last_completed_week_start,
+    recorded_days_in_week,
     send_weekly_report_push,
     weekly_push_due,
     weekly_report_push_recipients,
@@ -149,6 +150,31 @@ def test_send_personalizes_body_per_user(db_factory):
     assert "3일" in by_token["t-active"]["body"]
     assert "기록이 없었어요" in by_token["t-silent"]["body"]
     assert all(m["data"] == {"type": "weekly_report"} for m in client.sent)
+    db.close()
+
+
+def test_early_sunday_meal_counts_in_previous_week_push(db_factory):
+    db = db_factory()
+    user = _make_user(db, "early-sunday")
+    _add_token(db, user.id, "t-early-sunday")
+    # 일요일 03:00 KST는 논리 날짜상 직전 토요일(07-25)이다.
+    _add_meal(db, user.id, to_utc(datetime(2026, 7, 26, 3, 0, tzinfo=KST)))
+
+    client = MockPushClient()
+    assert send_weekly_report_push(db, client, now=_SUNDAY_0900) == 1
+    assert "지난주 1일 기록했어요" in client.sent[0]["body"]
+    db.close()
+
+
+def test_weekly_record_days_exclude_previous_sunday_early_meal(db_factory):
+    db = db_factory()
+    user = _make_user(db, "week-boundary")
+    week_start = date(2026, 7, 19)
+    # 주 시작 일요일 03:00은 직전 주 토요일, 토요일 03:00은 이번 주 금요일이다.
+    _add_meal(db, user.id, to_utc(datetime(2026, 7, 19, 3, 0, tzinfo=KST)))
+    _add_meal(db, user.id, to_utc(datetime(2026, 7, 25, 3, 0, tzinfo=KST)))
+
+    assert recorded_days_in_week(db, user.id, week_start) == 1
     db.close()
 
 

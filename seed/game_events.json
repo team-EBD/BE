@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "_comment": "이벤트 카탈로그. **기간은 여기서만 바꾼다** — 코드 배포 없이 켜고 끈다. rule: stamp = 기간 중 기록한 서로 다른 논리 날짜 수 / mission_count = 기간 중 완료한 미션 수. 문구는 비판단 말투 ('며칠 놓쳤어요' 금지).",
+  "events": [
+    {
+      "code": "treasure_picnic",
+      "name": "보물섬 피크닉",
+      "description": "기록한 날마다 스탬프를 한 장 모아요.",
+      "rule": "stamp",
+      "starts_on": "2026-09-18",
+      "ends_on": "2026-10-19",
+      "rewards": [
+        {"stamp": 1, "item_code": "event_bottle"},
+        {"stamp": 3, "item_code": "event_chest"},
+        {"stamp": 5, "item_code": "event_palm"},
+        {"stamp": 7, "item_code": "event_ship"}
+      ]
+    },
+    {
+      "code": "harvest_festival",
+      "name": "수확제",
+      "description": "가을 동안 미션을 모으면 과수원 배경이 열려요.",
+      "rule": "mission_count",
+      "starts_on": "2026-10-01",
+      "ends_on": "2026-10-31",
+      "rewards": [{"count": 7, "item_code": "bg_harvest_festival"}]
+    },
+    {
+      "code": "winter_table",
+      "name": "겨울 식탁",
+      "description": "겨울 동안 미션을 모으면 북극곰 친구가 찾아와요.",
+      "rule": "mission_count",
+      "starts_on": "2026-12-01",
+      "ends_on": "2027-01-31",
+      "rewards": [{"count": 10, "item_code": "pet_polar"}]
+    },
+    {
+      "code": "morning_routine",
+      "name": "아침 루틴",
+      "description": "한 달 동안 미션을 모으면 병아리 친구가 찾아와요.",
+      "rule": "mission_count",
+      "starts_on": "2027-02-01",
+      "ends_on": "2027-02-28",
+      "rewards": [{"count": 10, "item_code": "pet_chick"}]
+    },
+    {
+      "code": "spring_bloom",
+      "name": "봄맞이",
+      "description": "봄 동안 미션을 모으면 꿀벌 친구가 찾아와요.",
+      "rule": "mission_count",
+      "starts_on": "2027-03-01",
+      "ends_on": "2027-03-31",
+      "rewards": [{"count": 7, "item_code": "pet_bee"}]
+    },
+    {
+      "code": "earth_week",
+      "name": "지구의 주",
+      "description": "이 주 동안 미션을 모으면 판다 친구가 찾아와요.",
+      "rule": "mission_count",
+      "starts_on": "2027-04-19",
+      "ends_on": "2027-04-25",
+      "rewards": [{"count": 5, "item_code": "pet_panda"}]
+    },
+    {
+      "code": "summer_sea",
+      "name": "여름 바다",
+      "description": "여름 동안 미션을 모으면 게 친구가 찾아와요.",
+      "rule": "mission_count",
+      "starts_on": "2027-07-01",
+      "ends_on": "2027-08-31",
+      "rewards": [{"count": 7, "item_code": "pet_crab"}]
+    }
+  ]
+}

@@ -4,6 +4,7 @@
   → 자체 JWT 발급. 기존 200 / 신규 201.
 - POST /auth/signup / POST /auth/login: 이메일 가입/로그인.
   users 에는 social_provider="email", social_id=<소문자 이메일> 로 저장한다.
+- 로그인·가입 요청의 is_test_device(선택): 테스트 기기 표시 → users.is_test_device (services/test_device.py).
 - POST /auth/refresh: refresh 회전(기존 철회 → 새 쌍 발급).
 - POST /auth/password/forgot / POST /auth/password/reset: 비밀번호 재설정
   (이메일로 6자리 인증코드 발송 → 코드 검증 후 새 비밀번호 저장).
@@ -47,6 +48,7 @@ from app.services.goals import personalized_goals
 from app.services.nickname import allocate_nickname_tag
 from app.services.password_reset import consume_code, issue_code
 from app.services.summary import DEFAULT_GOALS, derive_macro_goals
+from app.services.test_device import record_test_device
 from app.social_client import SocialIdentity, verify_social_token
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -107,6 +109,7 @@ def social_login(
         db.add(user)
         db.flush()  # id 확보
 
+    record_test_device(user, body.is_test_device)
     access, refresh = _issue_token_pair(db, user.id)
     db.commit()
 
@@ -157,6 +160,7 @@ def email_signup(body: EmailSignupRequest, db: DB) -> EmailAuthResponse:
         )
     )
 
+    record_test_device(user, body.is_test_device)
     access, refresh = _issue_token_pair(db, user.id)
     db.commit()
     return EmailAuthResponse(access_token=access, refresh_token=refresh, user=user)
@@ -179,6 +183,7 @@ def email_login(body: EmailLoginRequest, db: DB) -> EmailAuthResponse:
     ):
         raise invalid
 
+    record_test_device(user, body.is_test_device)
     access, refresh = _issue_token_pair(db, user.id)
     db.commit()
     return EmailAuthResponse(access_token=access, refresh_token=refresh, user=user)

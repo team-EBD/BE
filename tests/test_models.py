@@ -33,12 +33,30 @@ EXPECTED_TABLES = {
     "client_events",
     # 즐겨찾기
     "favorite_foods",
+    # 인앱 결제(구독)
+    "subscriptions",
+    "refund_guarantee_claims",
+    # 게이미피케이션 (함께 크는 펫)
+    "game_profiles",
+    "catalog_items",
+    "user_items",
+    "stage_placements",
+    "unlock_progress",
+    "reward_ledger",
+    "pet_bonds",
+    "user_skills",
+    "skill_usage_ledger",
+    # 게이미피케이션 (미션·이벤트)
+    "game_missions",
+    "user_missions",
+    "game_events",
+    "user_events",
 }
 
 
 def test_all_tables_registered():
     assert set(Base.metadata.tables.keys()) == EXPECTED_TABLES
-    assert len(EXPECTED_TABLES) == 21
+    assert len(EXPECTED_TABLES) == 36
 
 
 def _sqlite_factory():

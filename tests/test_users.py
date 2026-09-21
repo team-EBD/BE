@@ -10,6 +10,53 @@ def test_get_me(client, auth_headers):
     assert body["created_at"].endswith("+09:00")  # 명세서 1.6
 
 
+def test_tutorial_completed_at_defaults_to_null(client, auth_headers):
+    res = client.get("/v1/users/me", headers=auth_headers)
+    assert res.status_code == 200
+    assert res.json()["tutorial_completed_at"] is None
+
+
+def test_tutorial_completed_at_can_be_set_and_read(client, auth_headers):
+    completed_at = "2026-09-20T12:34:56+09:00"
+    res = client.patch(
+        "/v1/users/me",
+        headers=auth_headers,
+        json={"tutorial_completed_at": completed_at},
+    )
+    assert res.status_code == 200
+    assert res.json()["tutorial_completed_at"] == completed_at
+
+    res = client.get("/v1/users/me", headers=auth_headers)
+    assert res.status_code == 200
+    assert res.json()["tutorial_completed_at"] == completed_at
+
+    res = client.patch("/v1/users/me", headers=auth_headers, json={"nickname": "현우"})
+    assert res.status_code == 200
+    assert res.json()["tutorial_completed_at"] == completed_at
+
+
+def test_tutorial_completed_at_can_be_cleared_with_null(client, auth_headers):
+    completed_at = "2026-09-20T12:34:56+09:00"
+    client.patch(
+        "/v1/users/me", headers=auth_headers, json={"tutorial_completed_at": completed_at}
+    )
+    res = client.patch(
+        "/v1/users/me", headers=auth_headers, json={"tutorial_completed_at": None}
+    )
+    assert res.status_code == 200
+    assert res.json()["tutorial_completed_at"] is None
+    assert client.get("/v1/users/me", headers=auth_headers).json()["tutorial_completed_at"] is None
+
+
+def test_tutorial_completed_at_requires_authentication(client):
+    assert client.get("/v1/users/me").status_code == 401
+    res = client.patch(
+        "/v1/users/me", json={"tutorial_completed_at": "2026-09-20T12:34:56+09:00"}
+    )
+    assert res.status_code == 401
+    assert res.json()["error"]["code"] == "UNAUTHORIZED"
+
+
 def test_patch_me_updates_profile(client, auth_headers):
     res = client.patch(
         "/v1/users/me",

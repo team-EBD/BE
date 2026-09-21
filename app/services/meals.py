@@ -7,14 +7,36 @@
 """
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.errors import APIError
 from app.core.timeutil import kst_date_of, now_utc, to_utc
-from app.models import CorrectionLog, MealImage, MealItem, MealRecord, User
+from app.models import (
+    AiCallLog,
+    CorrectionLog,
+    FoodCandidate,
+    MealImage,
+    MealItem,
+    MealRecord,
+    User,
+)
+
+logger = logging.getLogger(__name__)
+
+# 슬라이더 양 조정 로그의 correction_type — 보정 칩(half/large/…)과 구분한다.
+# 상세 응답의 correction_type(칩 라벨)에는 섞이지 않는다.
+SERVING_ADJUSTED = "serving_adjusted"
+_SERVING_EPS = 1e-6
 from app.schemas.meal import MealCreateRequest, MealItemInput, MealUpdateRequest
+from app.services.game_profile import ensure_game_profile
+from app.services.game_rewards import apply_meal_rewards
 from app.services.summary import recompute_daily_summary
+
+logger = logging.getLogger(__name__)
 
 
 def get_owned_meal(db: Session, user: User, meal_id: int) -> MealRecord:
@@ -35,6 +57,56 @@ def _validate_image(db: Session, user: User, meal_image_id: int | None) -> None:
         raise APIError(404, "NOT_FOUND", "업로드된 이미지를 찾을 수 없습니다.")
     if image.user_id != user.id:
         raise APIError(403, "FORBIDDEN", "다른 사용자의 이미지입니다.")
+
+
+def _owned_ai_call_log_id(db: Session, user: User, ai_call_log_id: int | None) -> int | None:
+    """분석 로그 키는 저장을 막지 않는다 — 없거나 남의 것이면 NULL 로 저장하고 경고만 남긴다."""
+    if ai_call_log_id is None:
+        return None
+    log = db.get(AiCallLog, ai_call_log_id)
+    if log is None or (log.user_id is not None and log.user_id != user.id):
+        logger.warning("meal.ai_call_log_id ignored id=%s user=%s", ai_call_log_id, user.id)
+        return None
+    return log.id
+
+
+def _owned_candidate(db: Session, user: User, candidate_id: int) -> FoodCandidate | None:
+    """후보 소유권은 ai_call_logs.user_id 또는 meal_images.user_id 로 확인한다."""
+    cand = db.get(FoodCandidate, candidate_id)
+    if cand is None:
+        return None
+    if cand.ai_call_log_id is not None:
+        log = db.get(AiCallLog, cand.ai_call_log_id)
+        if log is not None and log.user_id is not None and log.user_id != user.id:
+            return None
+    if cand.meal_image_id is not None:
+        image = db.get(MealImage, cand.meal_image_id)
+        if image is not None and image.user_id != user.id:
+            return None
+    return cand
+
+
+def _mark_selected_candidates(db: Session, user: User, items: list[MealItemInput]) -> None:
+    """저장 항목이 가리키는 AI 후보를 is_selected=True 로 — 정답지(AI 채택률)의 원천.
+
+    항목 하나라도 food_candidate_id 를 보냈을 때만 동작한다. 같은 AI 호출의 다른 후보는
+    False 로 되돌려, 초안을 바꿔 다시 저장해도 마지막 선택만 True 로 남는다.
+    """
+    ids = [i.food_candidate_id for i in items if i.food_candidate_id is not None]
+    if not ids:
+        return
+    chosen = [c for c in (_owned_candidate(db, user, cid) for cid in ids) if c is not None]
+    if len(chosen) != len(ids):
+        logger.warning("meal.food_candidate_id partially ignored user=%s ids=%s", user.id, ids)
+    call_log_ids = {c.ai_call_log_id for c in chosen if c.ai_call_log_id is not None}
+    if call_log_ids:
+        siblings = db.scalars(
+            select(FoodCandidate).where(FoodCandidate.ai_call_log_id.in_(call_log_ids))
+        )
+        for sib in siblings:
+            sib.is_selected = False
+    for c in chosen:
+        c.is_selected = True
 
 
 def _totals(items: list[MealItemInput]) -> dict[str, float]:
@@ -83,10 +155,28 @@ def _insert_items(
                     after_data=after,
                 )
             )
+
+        # AI 추정량과 최종 섭취량이 다르면 슬라이더 양 조정으로 기록한다
+        # (보정 칩과 별개 행 — AI 추정량 대비 최종량이 정답지 지표의 재료다)
+        if (
+            item.estimated_serving is not None
+            and abs(float(item.estimated_serving) - float(item.serving_amount)) > _SERVING_EPS
+        ):
+            db.add(
+                CorrectionLog(
+                    meal_record_id=meal.id,
+                    meal_item_id=row.id,
+                    correction_type=SERVING_ADJUSTED,
+                    before_data={"serving_amount": float(item.estimated_serving)},
+                    after_data={"serving_amount": float(item.serving_amount)},
+                )
+            )
     return created
 
 
-def create_meal(db: Session, user: User, body: MealCreateRequest) -> MealRecord:
+def create_meal(
+    db: Session, user: User, body: MealCreateRequest, *, commit: bool = True
+) -> MealRecord:
     _validate_image(db, user, body.meal_image_id)
     eaten_at = to_utc(body.eaten_at)
     totals = _totals(body.items)
@@ -98,6 +188,8 @@ def create_meal(db: Session, user: User, body: MealCreateRequest) -> MealRecord:
         eaten_at=eaten_at,
         is_skipped=body.is_skipped,
         memo=body.memo,
+        entry_method=body.entry_method,
+        ai_call_log_id=_owned_ai_call_log_id(db, user, body.ai_call_log_id),
         total_calories=totals["calories"],
         total_carbs=totals["carbs"],
         total_protein=totals["protein"],
@@ -106,15 +198,47 @@ def create_meal(db: Session, user: User, body: MealCreateRequest) -> MealRecord:
     db.add(meal)
     db.flush()
     _insert_items(db, meal, body.items)
+    _mark_selected_candidates(db, user, body.items)
 
-    recompute_daily_summary(db, user.id, kst_date_of(eaten_at))
-    db.commit()
+    recompute_daily_summary(db, user.id, kst_date_of(eaten_at, settings.day_start_hour))
+    if commit:
+        db.commit()
     return meal
+
+
+def create_meal_with_rewards(
+    db: Session, user: User, body: MealCreateRequest
+) -> tuple[MealRecord, dict | None]:
+    """식단 저장 + 게이미피케이션 보상을 **한 트랜잭션**으로 처리한다.
+
+    보상이 성공하면 둘이 함께 커밋되고, 실패하면 둘 다 롤백한 뒤 **식단만 다시
+    저장한다**. 게임 도메인(마이그레이션 지연·카탈로그 손상 등)이 기록 자체를
+    막아서는 안 되기 때문이다. 이때 rewards 는 None 이고 FE 는 연출을 건너뛴다.
+    """
+    try:
+        # 기록을 넣기 **전에** 프로필을 보장한다 — 기존 사용자 백필이 방금 저장한
+        # 이 기록까지 세어 유대가 두 번 오르는 것을 막는다.
+        ensure_game_profile(db, user)
+    except Exception:  # noqa: BLE001
+        logger.exception("게임 프로필 보장 실패 (기록은 정상 저장)")
+        db.rollback()
+        return create_meal(db, user, body, commit=True), None
+
+    meal = create_meal(db, user, body, commit=False)
+    try:
+        rewards = apply_meal_rewards(db, user, meal)
+    except Exception:  # noqa: BLE001 — 보상 실패가 기록 실패가 되면 안 된다
+        logger.exception("게이미피케이션 보상 지급 실패 (기록은 정상 저장)")
+        db.rollback()
+        meal = create_meal(db, user, body, commit=True)
+        return meal, None
+    db.commit()
+    return meal, rewards
 
 
 def update_meal(db: Session, user: User, meal_id: int, body: MealUpdateRequest) -> MealRecord:
     meal = get_owned_meal(db, user, meal_id)
-    old_date = kst_date_of(meal.eaten_at)
+    old_date = kst_date_of(meal.eaten_at, settings.day_start_hour)
 
     if body.meal_type is not None:
         meal.meal_type = body.meal_type
@@ -146,13 +270,14 @@ def update_meal(db: Session, user: User, meal_id: int, body: MealUpdateRequest) 
             db.delete(old)
         db.flush()
         _insert_items(db, meal, body.items)
+        _mark_selected_candidates(db, user, body.items)
         totals = _totals(body.items)
         meal.total_calories = totals["calories"]
         meal.total_carbs = totals["carbs"]
         meal.total_protein = totals["protein"]
         meal.total_fat = totals["fat"]
 
-    new_date = kst_date_of(meal.eaten_at)
+    new_date = kst_date_of(meal.eaten_at, settings.day_start_hour)
     recompute_daily_summary(db, user.id, old_date)
     if new_date != old_date:
         recompute_daily_summary(db, user.id, new_date)
@@ -163,7 +288,7 @@ def update_meal(db: Session, user: User, meal_id: int, body: MealUpdateRequest) 
 def delete_meal(db: Session, user: User, meal_id: int) -> None:
     meal = get_owned_meal(db, user, meal_id)
     meal.deleted_at = now_utc()
-    recompute_daily_summary(db, user.id, kst_date_of(meal.eaten_at))
+    recompute_daily_summary(db, user.id, kst_date_of(meal.eaten_at, settings.day_start_hour))
     db.commit()
 
 
@@ -185,6 +310,7 @@ def meal_items_with_corrections(
     )
     correction_by_item: dict[int, str] = {}
     for log in logs:
-        if log.meal_item_id is not None:
+        # 양 조정 로그는 칩이 아니므로 표시용 correction_type 에서 제외
+        if log.meal_item_id is not None and log.correction_type != SERVING_ADJUSTED:
             correction_by_item[log.meal_item_id] = log.correction_type
     return [(item, correction_by_item.get(item.id)) for item in items]

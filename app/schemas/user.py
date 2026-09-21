@@ -1,6 +1,7 @@
 """사용자·식습관·설정·동의 스키마 (명세서 4·11·12·13장)."""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -19,6 +20,7 @@ class UpdateMeRequest(BaseModel):
     birth_year: int | None = Field(default=None, ge=1900, le=2100)
     # "auto" 전송 시 직접 설정(manual) 목표를 버리고 BMR/TDEE 자동 산정으로 되돌린다
     goal_source: Literal["auto"] | None = None
+    tutorial_completed_at: datetime | None = None
 
 
 class MeDetailResponse(BaseModel):
@@ -35,6 +37,7 @@ class MeDetailResponse(BaseModel):
     birth_year: int | None
     # 목표 출처: auto(BMR 자동 산정) / manual(직접 설정). 프로필 없으면 null.
     goal_source: str | None
+    tutorial_completed_at: KSTDateTime | None
     created_at: KSTDateTime
 
 

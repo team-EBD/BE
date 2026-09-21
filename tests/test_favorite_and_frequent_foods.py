@@ -3,17 +3,14 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from app.core.timeutil import KST, now_utc
+from app.core.timeutil import to_kst, now_utc
 
 
-def _recent_meal_time(days_ago: int, hour: int) -> str:
-    """30일 집계 테스트가 실행 날짜와 무관하게 최근 기록을 만들도록 한다."""
-    return (
-        now_utc()
-        .astimezone(KST)
-        .replace(hour=hour, minute=0, second=0, microsecond=0)
-        - timedelta(days=days_ago)
-    ).isoformat()
+def _days_ago(days: int, hour: int = 12) -> str:
+    """N일 전 KST 시각. /foods/frequent 는 '최근 30일' 창을 보므로
+    날짜를 고정하면 시간이 지나면서 테스트가 스스로 깨진다."""
+    dt = to_kst(now_utc()) - timedelta(days=days)
+    return dt.replace(hour=hour, minute=0, second=0, microsecond=0).isoformat()
 
 
 def _add_meal(client, headers, food_name, nutrition_item_id, eaten_at, **extra):
@@ -47,10 +44,10 @@ def test_frequent_foods_counts_and_orders(client, auth_headers):
     a, b = items[0], items[1] if len(items) > 1 else items[0]
 
     # a 를 2회, b 를 1회 기록
-    _add_meal(client, auth_headers, a["name"], a["nutrition_item_id"], _recent_meal_time(2, 12))
+    _add_meal(client, auth_headers, a["name"], a["nutrition_item_id"], _days_ago(2))
     _add_meal(client, auth_headers, a["name"], a["nutrition_item_id"],
-              _recent_meal_time(1, 12), meal_type="dinner")
-    _add_meal(client, auth_headers, b["name"], b["nutrition_item_id"], _recent_meal_time(1, 8),
+              _days_ago(1), meal_type="dinner")
+    _add_meal(client, auth_headers, b["name"], b["nutrition_item_id"], _days_ago(1, hour=8),
               meal_type="breakfast")
 
     res = client.get("/v1/foods/frequent", headers=auth_headers)
@@ -65,8 +62,7 @@ def test_frequent_foods_counts_and_orders(client, auth_headers):
 def test_frequent_excludes_deleted_meals(client, auth_headers):
     items = _first_seed_items(client, auth_headers)
     a = items[0]
-    meal_id = _add_meal(client, auth_headers, a["name"], a["nutrition_item_id"],
-                        _recent_meal_time(1, 12))
+    meal_id = _add_meal(client, auth_headers, a["name"], a["nutrition_item_id"], _days_ago(1))
     client.delete(f"/v1/meals/{meal_id}", headers=auth_headers)
 
     res = client.get("/v1/foods/frequent", headers=auth_headers)

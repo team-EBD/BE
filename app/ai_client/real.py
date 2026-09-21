@@ -64,12 +64,17 @@ class RealAIClient:
         image_url: str,
         eating_habits: dict | None = None,
         user_text: str | None = None,
+        candidate_depth: str | None = None,
     ) -> AnalyzeResult:
         payload: dict = {"image_url": image_url}
         if eating_habits:
             payload["user_eating_habits"] = eating_habits
         if user_text:
             payload["user_text"] = user_text
+        # 기본값(standard)이면 필드를 **아예 보내지 않는다** — 구버전 AI 서버가
+        # 모르는 키로 400 을 내도 기록 흐름이 죽으면 안 된다.
+        if candidate_depth and candidate_depth != "standard":
+            payload["candidate_depth"] = candidate_depth
         data, error, latency = self._post("/internal/analyze", payload)
         if error:
             return failed_analyze(error, latency)

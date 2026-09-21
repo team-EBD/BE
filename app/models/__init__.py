@@ -7,6 +7,22 @@ ERD(ref/설계/eatlog_mvp_erd.mmd) 17개 테이블 1:1 매핑.
 """
 from app.core.database import Base
 from app.models.ai import AiCallLog, FoodCandidate, RecommendationLog
+from app.models.billing import RefundGuaranteeClaim, Subscription
+from app.models.game import (
+    CatalogItem,
+    GameEvent,
+    GameMission,
+    GameProfile,
+    PetBond,
+    RewardLedger,
+    SkillUsageLedger,
+    StagePlacement,
+    UnlockProgress,
+    UserEvent,
+    UserItem,
+    UserMission,
+    UserSkill,
+)
 from app.models.meal import CorrectionLog, MealImage, MealItem, MealRecord
 from app.models.nutrition import DailyNutritionSummary, FavoriteFood, NutritionItem
 from app.models.telemetry import ClientEvent, RequestLog
@@ -49,4 +65,21 @@ __all__ = [
     "RequestLog",
     "FoodCandidate",
     "RecommendationLog",
+    # billing domain
+    "Subscription",
+    "RefundGuaranteeClaim",
+    # gamification domain
+    "GameProfile",
+    "CatalogItem",
+    "UserItem",
+    "StagePlacement",
+    "UnlockProgress",
+    "RewardLedger",
+    "PetBond",
+    "UserSkill",
+    "SkillUsageLedger",
+    "GameMission",
+    "UserMission",
+    "GameEvent",
+    "UserEvent",
 ]
