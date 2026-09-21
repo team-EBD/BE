@@ -34,14 +34,18 @@ from app.models.user import (
     PushToken,
     RefreshToken,
     TermsAgreement,
+    AI_LIMIT_EXEMPT_ROLES,
     User,
     UserProfile,
+    UserRole,
 )
 
 __all__ = [
     "Base",
     # user domain
     "User",
+    "UserRole",
+    "AI_LIMIT_EXEMPT_ROLES",
     "RefreshToken",
     "PasswordResetCode",
     "UserProfile",
