@@ -7,8 +7,10 @@ from datetime import date, datetime
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     ForeignKey,
+    JSON,
     Integer,
     Numeric,
     String,
@@ -19,11 +21,91 @@ from sqlalchemy import false as sa_false
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
+from app.food_taxonomy import FAMILIES
 from app.models._common import created_at_column, pk_column, updated_at_column
+
+
+class FoodGroup(Base):
+    """음식군 — 3층 구조의 2층 (계열 > 군 > 상품). docs/음식군-DB-계약.md §1·§2.1
+
+    식약처 대표식품명을 기준으로 만들고 동명 병합(버거=햄버거)한다. 추천은 군 단위로
+    후보를 고르고, 카드 표시명은 사용자 이력의 상품명이 있으면 그것, 없으면 군명.
+    role 은 계열 규칙으로 유도한다 (§5) — 사람이 라벨링하지 않는다.
+    """
+
+    __tablename__ = "food_groups"
+    __table_args__ = (
+        CheckConstraint("family IN (" + ",".join(repr(f) for f in FAMILIES) + ")", name="ck_food_groups_family"),
+        CheckConstraint("role IN ('meal','companion','snack','exclude')", name="ck_food_groups_role"),
+        CheckConstraint("member_count >= 0", name="ck_food_groups_member_count"),
+        CheckConstraint("companion_group_id IS NULL OR (companion_group_id <> id AND role = 'meal')",
+                        name="ck_food_groups_companion"),
+    )
+
+    id: Mapped[int] = pk_column()
+    name: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
+    family: Mapped[str] = mapped_column(String(30), nullable=False, index=True)  # 계열 18개 (§4)
+    role: Mapped[str] = mapped_column(String(12), nullable=False, index=True)  # meal|companion|snack|exclude
+    # 기본 동반 군 (찌개 → 쌀밥). NULL = 없음 (버거·면·김밥)
+    companion_group_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("food_groups.id", ondelete="SET NULL"), nullable=True
+    )
+    # 1인분 대표 영양값 — serving_basis=per_serving 구성원의 절사평균. NULL 이면 유사 후보 풀에서 제외
+    calories: Mapped[float | None] = mapped_column(Numeric(8, 2), nullable=True)
+    carbs: Mapped[float | None] = mapped_column(Numeric(8, 2), nullable=True)
+    protein: Mapped[float | None] = mapped_column(Numeric(8, 2), nullable=True)
+    fat: Mapped[float | None] = mapped_column(Numeric(8, 2), nullable=True)
+    base_amount: Mapped[float | None] = mapped_column(Numeric(8, 2), nullable=True)
+    base_unit: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    member_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    source_names: Mapped[str | None] = mapped_column(Text, nullable=True)  # 병합 전 대표식품명 "버거|햄버거"
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)  # role 예외 등 수동 조정 이유
+    created_at: Mapped[datetime] = created_at_column()
+
+
+class FoodGroupAlias(Base):
+    """이름 → 군. 사용자 기록 이름·시드·동의어를 군에 잇는다 (§2.2).
+
+    alias 는 normalize_name() 을 적용한 키다 (공백·온도·사이즈 표기 제거) — 조회 측도 같은
+    함수로 정규화해서 찍는다. kind: synonym | seed | manual | auto
+    """
+
+    __tablename__ = "food_group_aliases"
+    __table_args__ = (
+        CheckConstraint("kind IN ('synonym','seed','manual','auto')", name="ck_food_group_aliases_kind"),
+    )
+
+    alias: Mapped[str] = mapped_column(String(100), primary_key=True)
+    group_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("food_groups.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    kind: Mapped[str] = mapped_column(String(12), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class NutritionItemPruned(Base):
+    """삭제한 nutrition_items 행의 아카이브 (§2.6·§6). 되돌리기용.
+
+    행 전체를 JSON 으로 보존한다 — 컬럼을 복제하면 원본 스키마가 바뀔 때마다 따라가야 한다.
+    survivor_id 는 참조(meal_items 등)를 넘긴 대표 행.
+    """
+
+    __tablename__ = "nutrition_items_pruned"
+
+    id: Mapped[int] = pk_column()
+    original_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    survivor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    reason: Mapped[str] = mapped_column(String(30), nullable=False)  # duplicate | exclude_family
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    pruned_at: Mapped[datetime] = created_at_column()
 
 
 class NutritionItem(Base):
     __tablename__ = "nutrition_items"
+    __table_args__ = (
+        CheckConstraint("serving_basis IS NULL OR serving_basis IN ('per_serving','per_100g')",
+                        name="ck_nutrition_items_serving_basis"),
+    )
 
     id: Mapped[int] = pk_column()
     name: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -56,6 +138,13 @@ class NutritionItem(Base):
     macros_estimated: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=sa_false()
     )  # 탄단지가 원본 실측이 아니라 적재 시 추정으로 채워진 행 (실측/추정 추적, 2026-08-05)
+    # 음식군 (docs/음식군-DB-계약.md). NULL = 미분류 → 추천 후보에서 제외, 매칭·검색은 정상
+    food_group_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("food_groups.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    # 영양값 기준량 — per_serving(1인분 환산) | per_100g(원본 100g/100ml). NULL = 미판정.
+    # 지금까지는 "대표 = 1인분"이라는 관례로만 구분했다 (김치찌개 19kcal 사고의 뿌리).
+    serving_basis: Mapped[str | None] = mapped_column(String(12), nullable=True)
 
 
 class FavoriteFood(Base):

@@ -44,6 +44,12 @@ def set_role(db_factory, auth_headers):
     return _set
 
 
+@pytest.fixture(autouse=True)
+def _legacy_recommend_engine(monkeypatch):
+    """무료 크레딧 게이트는 AI 를 실제로 부르는 legacy 추천에만 걸린다 — 기본 엔진(v2)은 AI·한도를 쓰지 않는다."""
+    monkeypatch.setattr(settings, "recommend_engine", "legacy")
+
+
 def test_new_accounts_default_to_user(client, auth_headers, db_factory):
     with db_factory() as db:
         assert db.scalar(select(User.role)) == UserRole.USER

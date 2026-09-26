@@ -40,8 +40,9 @@ from sqlalchemy import select
 
 from app.core.database import SessionLocal
 from app.models import NutritionItem
+from app.services.matching import per_serving_representatives
 from scripts.import_mfds_api import trimmed_mean
-from scripts.import_public_nutrition import normalize_name
+from scripts.import_public_nutrition import majority_group_id, normalize_name
 
 # 만들 총칭어. AI 가 사진 분석에서 실제로 내놓을 법한 상위어만 둔다 —
 # 너무 넓은 말(음식·식사)이나 재료명(고기·야채)은 대표값의 의미가 없어 제외한다.
@@ -131,19 +132,21 @@ def build(term: str, members: list[NutritionItem]) -> dict | None:
         "total_weight": round(serving, 2),
         "source": "public",
         "is_representative": True,
+        "serving_basis": "per_serving",
+        "food_group_id": majority_group_id([m.food_group_id for m in members]),
         **values,
     }
 
 
 def run(session_factory=SessionLocal) -> dict:
-    stats_out = {"created": 0, "updated": 0, "skipped": 0, "detail": {}}
+    stats_out = {"created": 0, "updated": 0, "skipped": 0, "retired": 0, "detail": {}}
 
     with session_factory() as session:
         # 재료: 이미 1인분으로 환산된 항목만. 총칭끼리 서로를 재료로 삼지 않도록 제외.
         pool = list(
             session.scalars(
                 select(NutritionItem).where(
-                    NutritionItem.is_representative.is_(True),
+                    per_serving_representatives(),
                     NutritionItem.external_id.is_(None)
                     | NutritionItem.external_id.not_like("gen:%"),
                 )
@@ -170,6 +173,7 @@ def run(session_factory=SessionLocal) -> dict:
                     continue
                 buckets[term].append(item)
 
+        refreshed: set[str] = set()
         for term in GENERIC_TERMS:
             members = buckets.get(term, [])
             payload = build(term, members) if len(members) >= MIN_GROUP else None
@@ -186,9 +190,17 @@ def run(session_factory=SessionLocal) -> dict:
                 for k, v in payload.items():
                     setattr(existing, k, v)
                 stats_out["updated"] += 1
+            refreshed.add(payload["external_id"])
             stats_out["detail"][term] = (
                 len(members), payload["base_amount"], payload["base_unit"], payload["calories"]
             )
+        # 원료 소실·검증 실패·더 좋은 정확일치 대표가 생기면 이전 합성 대표도
+        # 퇴역시킨다. id와 1인분 영양값은 과거 참조/검색용으로 보존한다.
+        for old in session.scalars(select(NutritionItem).where(NutritionItem.external_id.like("gen:%"))):
+            if old.external_id not in refreshed and (old.is_representative or old.food_group_id is not None):
+                old.is_representative = False
+                old.food_group_id = None
+                stats_out["retired"] += 1
         session.commit()
     return stats_out
 
@@ -196,7 +208,7 @@ def run(session_factory=SessionLocal) -> dict:
 def main() -> None:
     argparse.ArgumentParser(description="총칭 대표 생성").parse_args()
     r = run()
-    print(f"[generic] 생성 {r['created']} / 갱신 {r['updated']} / 재료 부족으로 건너뜀 {r['skipped']}")
+    print(f"[generic] 생성 {r['created']} / 갱신 {r['updated']} / 퇴역 {r['retired']} / 건너뜀 {r['skipped']}")
     for term, (n, amount, unit, kcal) in sorted(r["detail"].items(), key=lambda x: -x[1][0]):
         print(f"[generic]   {term:<8} 재료 {n:>5}건 → 1인분({amount:g}{unit}) {kcal:g}kcal")
 

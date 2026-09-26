@@ -38,6 +38,8 @@ from app.models import NutritionItem
 # 정규화 규칙의 정의처는 app.services.matching — 검색·매칭과 적재가 반드시 같은 규칙이어야
 # 정확일치가 성립한다. 여기서 re-export 해 다른 적재 스크립트들이 가져다 쓴다.
 from app.services.matching import normalize_name, strip_variant_markers  # noqa: F401
+from app.services.recommend.groups import GroupIndex, load_group_index
+from scripts.food_group_taxonomy import canonical_source_group
 
 BATCH_SIZE = 1000
 
@@ -371,7 +373,22 @@ def _exclude_reason(row: dict) -> str | None:
     return None
 
 
-def transform(row: dict) -> dict | None:
+def source_group_id(row: dict, index: GroupIndex | None) -> int | None:
+    """원본 대표식품명으로 이미 구축된 군에 연결한다. 미분류는 추정하지 않는다."""
+    name = canonical_source_group(row.get("데이터구분코드") or "", row.get("대표식품명") or "")
+    group = index.resolve(name) if index else None
+    return group.id if group else None
+
+
+def majority_group_id(group_ids: list[int | None]) -> int | None:
+    """미분류 구성원까지 포함한 엄격한 과반수만 상속한다. 동률·소수는 미분류다."""
+    if not group_ids:
+        return None
+    group_id, count = Counter(group_ids).most_common(1)[0]
+    return group_id if group_id is not None and count > len(group_ids) / 2 else None
+
+
+def transform(row: dict, index: GroupIndex | None = None) -> dict | None:
     """CSV 행 → nutrition_items 필드 dict. 적재 불가 행은 None."""
     calories = _num(row.get("에너지(kcal)"))
     if calories is None:
@@ -475,6 +492,9 @@ def transform(row: dict) -> dict | None:
         "category": category,
         "total_weight": total[0] if total and total[1] == base[1] else None,
         "source": "public",
+        "is_representative": False,  # 원본 재적재로 100g 값이 돌아오면 대표 승격도 해제한다
+        "serving_basis": "per_100g" if base[0] == 100 else None,
+        "food_group_id": source_group_id(row, index),
         "macros_estimated": estimated,  # 탄단지가 실측이 아니라 추정으로 채워진 행 (2026-08-05)
     }
 
@@ -502,6 +522,8 @@ def run(paths: list[Path], session_factory=SessionLocal) -> dict:
     excluded: Counter = Counter()
     category_dist: Counter = Counter()
     pending: dict[str, dict] = {}  # external_id → values (파일 간 중복 제거)
+    with session_factory() as session:
+        index = load_group_index(session)
 
     for path in paths:
         rows = read_rows(path)
@@ -516,7 +538,7 @@ def run(paths: list[Path], session_factory=SessionLocal) -> dict:
             if reason:
                 excluded[reason] += 1
                 continue
-            values = transform(row)
+            values = transform(row, index)
             if values is None:
                 excluded["열량 없음"] += 1
                 continue

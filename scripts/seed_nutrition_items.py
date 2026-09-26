@@ -17,6 +17,7 @@ from sqlalchemy import select
 
 from app.core.database import SessionLocal
 from app.models import NutritionItem
+from app.services.recommend.groups import load_group_index
 
 SEED_PATH = Path(__file__).resolve().parent.parent / "seed" / "nutrition_items_seed.json"
 
@@ -49,11 +50,15 @@ def seed(path: Path = SEED_PATH, session_factory=SessionLocal) -> dict[str, int]
     inserted = updated = 0
 
     with session_factory() as session:
+        index = load_group_index(session)
         for raw in items:
             values = {k: raw.get(k) for k in _FIELDS}
             values.setdefault("source", "seed")
             # 시드는 전부 1인분 기준 → 대표 음식 (검색 최상위·AI 매칭 대상)
             values["is_representative"] = True
+            values["serving_basis"] = "per_serving"
+            group = index.resolve(values["name"])
+            values["food_group_id"] = group.id if group else None
 
             existing = session.scalar(
                 select(NutritionItem).where(

@@ -6,6 +6,7 @@ confidence 를 FUZZY_CONFIDENCE_PENALTY 만큼 감산해 내려보낸다.
 """
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -15,6 +16,7 @@ from app.main import app
 from app.models import Base, NutritionItem
 from app.services.matching import (
     SIMILARITY_CUT,
+    db_candidates_for_text,
     match_food_name,
     trigram_similarity,
 )
@@ -152,6 +154,23 @@ def test_only_representative_items_matched():
     matched, path = match_food_name(session, "김치찌게")
     assert matched is None
     assert path == "none"
+
+
+@pytest.mark.parametrize("query", ["김치찌개", "찌개", "김치찌게"])
+def test_per_100g_representative_is_not_treated_as_one_serving(query):
+    """기준량 감사로 강등돼도 대표 플래그는 유지된다 — 모든 매칭 경로에서 제외해야 한다."""
+    session = _session_with([
+        _item("김치찌개", serving_basis="per_100g", base_amount=100, calories=80),
+    ])
+    assert match_food_name(session, query) == (None, "none")
+    assert db_candidates_for_text(session, "김치찌개 먹었어") == []
+
+
+def test_explicit_per_serving_item_remains_matchable():
+    session = _session_with([_item("김치찌개", serving_basis="per_serving")])
+    matched, path = match_food_name(session, "김치찌개")
+    assert matched.name == "김치찌개" and path == "exact"
+    assert [item.name for item in db_candidates_for_text(session, "김치찌개 먹었어")] == ["김치찌개"]
 
 
 # ------------------------------- confidence 감산 (분석 흐름 통합)
