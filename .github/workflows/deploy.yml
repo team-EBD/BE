@@ -25,8 +25,6 @@ name: Test & Deploy
 #
 # ⚠️ deploy 잡은 저장소 변수 CLOUDTYPE_PROJECT 가 설정돼야만 실행된다.
 on:
-  pull_request:
-    branches: [dev]
   push:
     branches: [dev, main]
   pull_request:
@@ -42,20 +40,6 @@ jobs:
   test:
     name: pytest
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: eatlog-ci-only
-          POSTGRES_DB: eatlog_test_ci
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d eatlog_test_ci"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -65,10 +49,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Run tests
-        # API회귀는 SQLite, 스키마 upgrade/호환회귀는 이 잡의 일회용 PostgreSQL만 사용한다.
-        env:
-          DATABASE_URL: sqlite://
-          EATLOG_TEST_POSTGRES_URL: postgresql+psycopg://postgres:eatlog-ci-only@127.0.0.1:5432/eatlog_test_ci
+        # 테스트는 SQLite in-memory 로 돌아 운영 DB 를 건드리지 않는다 (tests/conftest.py)
         run: python -m pytest -q
 
   migrations:
@@ -112,8 +93,7 @@ jobs:
     #   보내고, EC2 가 ~/eatlog/deploy_service.sh 로 체크아웃→Parameter Store env 갱신→빌드→재기동
     #   →헬스체크를 수행한다. 액세스 키·SSH 키를 GitHub 에 두지 않는다.
     # 환경변수는 Parameter Store(/eatlog/be/*)가 정본 — 이 워크플로에 값을 적지 않는다.
-    # 롤백: 현재 DB revision 파일과 안전한 시작 루틴을 유지한 migration 호환 빌드를 준비한다.
-    # 새 DB revision 파일이 없는 이전 SHA를 그대로 재배포하면 자동 migration이 실패할 수 있다.
+    # 롤백: AWS 콘솔 Systems Manager → Run Command → eatlog-deploy 에 이전 sha 를 ref 로 실행.
     # Innovation Sandbox 만료 등으로 AWS 쪽이 사라지면 이 잡만 실패하고 test 는 영향 없다.
     # push(main) 자동 배포. 수동 실행으로도 같은 배포를 돌릴 수 있어야 한다 —
     # Parameter Store 값만 바꾸고 재배포해야 하는 경우가 있다. 수동 실행도 main 을 골랐을 때만 배포한다
