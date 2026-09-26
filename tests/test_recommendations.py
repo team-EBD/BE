@@ -1,12 +1,17 @@
 """Phase 9·10 DoD — 추천 3종 + 실패 5xx + 위치 동의 가드."""
 from __future__ import annotations
 
+from datetime import date, datetime, timezone
+
+from sqlalchemy import select
+
 from app.ai_client import get_ai_client
 from app.ai_client.base import failed_recommend
 from app.ai_client.mock import MockAIClient
 from app.core.config import settings
+from app.models import RewardLedger
 from app.main import app
-from tests.test_meals import create_meal
+from tests.test_meals import MEAL_PAYLOAD, create_meal
 
 
 class FailingAIClient:
@@ -24,9 +29,10 @@ class FailingAIClient:
 
 
 class RecordingAIClient(MockAIClient):
-    """recommend 로 전달된 user_history_context/current_time 을 기록하는 성공 클라이언트."""
+    """recommend 로 전달된 요약·식사 이력·현재 시각을 기록하는 성공 클라이언트."""
 
     def __init__(self) -> None:
+        self.summary_calls: list = []
         self.history_calls: list = []
         self.time_calls: list = []
 
@@ -34,12 +40,109 @@ class RecordingAIClient(MockAIClient):
         self, daily_summary, preferred_category, meal_timing,
         user_history_context=None, current_time=None,
     ):
+        self.summary_calls.append(daily_summary)
         self.history_calls.append(user_history_context)
         self.time_calls.append(current_time)
         return super().recommend(
             daily_summary, preferred_category, meal_timing,
             user_history_context, current_time,
         )
+
+
+def _boundary_meals(client, auth_headers):
+    """같은 게임 논리 날짜의 23시·익일 03시 식사를 기록한다."""
+    ids = []
+    for eaten_at, food_name, calories in (
+        ("2026-09-19T23:00:00+09:00", "전날 밤 식사", 900),
+        ("2026-09-20T03:00:00+09:00", "새벽 식사", 800),
+    ):
+        payload = {
+            **MEAL_PAYLOAD,
+            "eaten_at": eaten_at,
+            "items": [{**MEAL_PAYLOAD["items"][0], "food_name": food_name, "calories": calories}],
+        }
+        ids.append(create_meal(client, auth_headers, payload)["meal_id"])
+    return ids
+
+
+def _at_kst_three(monkeypatch):
+    import app.api.v1.recommendations as rec
+
+    monkeypatch.setattr(
+        rec, "now_utc", lambda: datetime(2026, 9, 19, 18, 0, tzinfo=timezone.utc)
+    )
+
+
+def _assert_logical_day_context(recording):
+    assert recording.summary_calls[-1]["total_calories"] == 1700
+    assert recording.history_calls[-1] == {
+        "today_foods": ["전날 밤 식사", "새벽 식사"],
+        "last_meal_type": "lunch",
+        "last_meal_foods": ["새벽 식사"],
+    }
+
+
+def test_next_meal_at_kst_three_matches_game_logical_date(
+    client, auth_headers, db_factory
+):
+    meal_ids = _boundary_meals(client, auth_headers)
+    with db_factory() as db:
+        logical_dates = db.scalars(
+            select(RewardLedger.logical_date).where(
+                RewardLedger.idempotency_key.in_([f"meal:{meal_id}" for meal_id in meal_ids])
+            )
+        ).all()
+    assert logical_dates == [date(2026, 9, 19), date(2026, 9, 19)]
+
+    recording = RecordingAIClient()
+    app.dependency_overrides[get_ai_client] = lambda: recording
+    res = client.post(
+        "/v1/recommendations/next-meal",
+        headers=auth_headers,
+        json={"date": "2026-09-19"},
+    )
+    assert res.status_code == 200, res.text
+    _assert_logical_day_context(recording)
+
+
+def test_menu_at_kst_three_uses_game_logical_today(client, auth_headers, monkeypatch):
+    monkeypatch.setattr(settings, "recommend_engine", "legacy")  # AI(legacy) 경로의 일일 요약 계약
+    _boundary_meals(client, auth_headers)
+    _at_kst_three(monkeypatch)
+    recording = RecordingAIClient()
+    app.dependency_overrides[get_ai_client] = lambda: recording
+
+    res = client.post(
+        "/v1/recommendations/menu", headers=auth_headers, json={"meal_type": "lunch"}
+    )
+    assert res.status_code == 200, res.text
+    _assert_logical_day_context(recording)
+    # 2,000 kcal 목표에서 두 식사 1,700 kcal를 빼면 300 kcal가 남는다.
+    assert res.json()["recommended_menus"] == []
+    assert len(res.json()["alternative_menus"]) == 3
+
+
+def test_location_menu_at_kst_three_uses_game_logical_today(
+    client, auth_headers, monkeypatch
+):
+    _boundary_meals(client, auth_headers)
+    _at_kst_three(monkeypatch)
+    consent = client.post(
+        "/v1/users/location-consent",
+        headers=auth_headers,
+        json={"consent_status": True, "consent_version": "1.0"},
+    )
+    assert consent.status_code == 201, consent.text
+    recording = RecordingAIClient()
+    app.dependency_overrides[get_ai_client] = lambda: recording
+
+    res = client.post(
+        "/v1/recommendations/location-based-menu",
+        headers=auth_headers,
+        json={"latitude": 37.5665, "longitude": 126.9780},
+    )
+    assert res.status_code == 200, res.text
+    _assert_logical_day_context(recording)
 
 
 def test_next_meal_success(client, auth_headers):

@@ -27,7 +27,7 @@ from app.main import app
 from app.models import RecommendationItem
 
 PREVIOUS = "e1e74fab8c35"
-HEAD = "e4b07cde1f68"
+HEAD = "e3a96bcd0e57"
 
 
 @pytest.fixture()

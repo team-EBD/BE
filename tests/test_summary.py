@@ -290,12 +290,12 @@ def test_daily_summary_day_start_hour_moves_late_night_meal(client, auth_headers
         assert res.status_code == 200, res.text
         return res.json()["total"]["calories"]
 
-    # 기본(자정 경계) — 먹은 날짜 그대로 6/28
-    assert total("2026-06-27") == 0
-    assert total("2026-06-28") == 524.0
-    # 6시 경계 — 전날 기록으로 이동
-    assert total("2026-06-27", day_start_hour=6) == 524.0
-    assert total("2026-06-28", day_start_hour=6) == 0
+    # 기본값은 설정의 06시 경계다.
+    assert total("2026-06-27") == 524.0
+    assert total("2026-06-28") == 0
+    # 명시적으로 0을 주면 기존 자정 경계도 조회할 수 있다.
+    assert total("2026-06-27", day_start_hour=0) == 0
+    assert total("2026-06-28", day_start_hour=0) == 524.0
 
 
 def test_daily_summary_day_start_hour_streak(client, auth_headers):
@@ -320,15 +320,72 @@ def test_daily_summary_rejects_out_of_range_day_start_hour(client, auth_headers)
     assert res.status_code in (400, 422)
 
 
+def test_nutrition_views_default_to_game_logical_date(client, auth_headers):
+    create_meal(
+        client, auth_headers,
+        {**MEAL_PAYLOAD, "eaten_at": "2026-07-01T03:00:00+09:00"},
+    )
+
+    daily = client.get(
+        "/v1/nutrition/daily-summary", headers=auth_headers,
+        params={"date": "2026-06-30"},
+    )
+    assert daily.status_code == 200, daily.text
+    assert daily.json()["date"] == "2026-06-30"
+    assert daily.json()["total"]["calories"] == 524.0
+    next_day = client.get(
+        "/v1/nutrition/daily-summary", headers=auth_headers,
+        params={"date": "2026-07-01"},
+    )
+    assert next_day.json()["total"]["calories"] == 0
+
+    weekly = client.get(
+        "/v1/nutrition/weekly-summary", headers=auth_headers,
+        params={"week_start": "2026-06-29"},
+    )
+    assert weekly.status_code == 200, weekly.text
+    assert weekly.json()["recorded_days"] == 1
+    week_days = {day["date"]: day for day in weekly.json()["days"]}
+    assert week_days["2026-06-30"]["meal_count"] == 1
+    assert week_days["2026-07-01"]["meal_count"] == 0
+    weekly_midnight = client.get(
+        "/v1/nutrition/weekly-summary", headers=auth_headers,
+        params={"week_start": "2026-06-29", "day_start_hour": 0},
+    )
+    midnight_days = {day["date"]: day for day in weekly_midnight.json()["days"]}
+    assert midnight_days["2026-06-30"]["meal_count"] == 0
+    assert midnight_days["2026-07-01"]["meal_count"] == 1
+
+    june = client.get(
+        "/v1/nutrition/monthly-summary", headers=auth_headers,
+        params={"month": "2026-06"},
+    )
+    assert june.status_code == 200, june.text
+    assert june.json()["recorded_days"] == 1
+    assert june.json()["weeks"][-1]["recorded_days"] == 1
+    july = client.get(
+        "/v1/nutrition/monthly-summary", headers=auth_headers,
+        params={"month": "2026-07"},
+    )
+    assert july.json()["recorded_days"] == 0
+
+    midnight = client.get(
+        "/v1/nutrition/monthly-summary", headers=auth_headers,
+        params={"month": "2026-07", "day_start_hour": 0},
+    )
+    assert midnight.json()["recorded_days"] == 1
+
+
 # ------------------------------------------- 진행 중인 오늘 제외 (리포트 왜곡 방지)
 
 
 def _kst_today() -> "date":
     from datetime import date as _date
 
+    from app.core.config import settings
     from app.core.timeutil import kst_date_of, now_utc
 
-    return kst_date_of(now_utc(), 0)
+    return kst_date_of(now_utc(), settings.day_start_hour)
 
 
 def test_weekly_average_excludes_in_progress_today(client, auth_headers):

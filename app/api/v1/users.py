@@ -65,6 +65,7 @@ def _me_response(db: DB, user) -> MeDetailResponse:
         weight=float(profile.weight) if profile and profile.weight is not None else None,
         birth_year=profile.birth_year if profile else None,
         goal_source=profile.goal_source if profile else None,
+        tutorial_completed_at=user.tutorial_completed_at,
         created_at=user.created_at,
     )
 
@@ -101,6 +102,11 @@ def delete_me(user: CurrentUser, db: DB) -> Response:
 
 @router.patch("/me", response_model=MeDetailResponse)
 def update_me(body: UpdateMeRequest, user: CurrentUser, db: DB) -> MeDetailResponse:
+    if "tutorial_completed_at" in body.model_fields_set:
+        user.tutorial_completed_at = (
+            to_utc(body.tutorial_completed_at) if body.tutorial_completed_at else None
+        )
+
     if body.nickname is not None and body.nickname != user.nickname:
         # 새 닉네임에서 기존 태그가 비어 있으면 유지, 쓰이고 있으면 새로 할당
         user.nickname_tag = allocate_nickname_tag(

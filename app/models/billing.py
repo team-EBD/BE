@@ -72,3 +72,30 @@ class Subscription(Base):
     __table_args__ = (
         UniqueConstraint("platform", "purchase_key", name="uq_subscriptions_platform_key"),
     )
+
+
+REFUND_CLAIM_STATUSES = ("requested", "approved", "rejected", "refunded")
+
+
+class RefundGuaranteeClaim(Base):
+    __tablename__ = "refund_guarantee_claims"
+
+    id: Mapped[int] = pk_column()
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    subscription_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("subscriptions.id", ondelete="CASCADE"), nullable=False
+    )
+    period_start: Mapped[datetime] = mapped_column(TZDateTime, nullable=False)
+    period_end: Mapped[datetime] = mapped_column(TZDateTime, nullable=False)
+    recorded_count: Mapped[int] = mapped_column(nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="requested")
+    requested_at: Mapped[datetime] = created_at_column()
+    processed_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "subscription_id", "period_start", name="uq_refund_guarantee_claim_period"
+        ),
+    )

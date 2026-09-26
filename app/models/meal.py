@@ -11,6 +11,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     ForeignKey,
+    Index,
     Numeric,
     String,
     Text,
@@ -41,6 +42,8 @@ class MealImage(Base):
 
 class MealRecord(Base):
     __tablename__ = "meal_records"
+
+    __table_args__ = (Index("ix_meal_records_user_eaten_at", "user_id", "eaten_at"),)
 
     id: Mapped[int] = pk_column()
     user_id: Mapped[int] = mapped_column(

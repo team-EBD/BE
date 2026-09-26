@@ -1,6 +1,13 @@
 name: Test & Deploy
 
-# dev 에 푸시(=PR 머지 포함)되면 pytest 를 돌리고, 통과하면 AWS EC2 에 배포한다 (deploy-aws 잡).
+# 브랜치 역할 (2026-09-21 main 배포 전환):
+#   feat/* → dev : 통합. 푸시·PR 에서 테스트만 돌고 **배포하지 않는다**.
+#   dev → main   : PR 로 올린다. PR 에서 테스트 + 마이그레이션 검증, 머지(=main 푸시)되면 AWS EC2 운영 배포.
+#   stage 는 쓰지 않는다 — 시험 서버가 생기면 dev 와 main 사이에 넣는다.
+# 배포 권한의 최종 관문은 AWS 쪽이다: IAM 역할 eatlog-github-deploy 의 신뢰 정책이 허용한 브랜치만 로그인된다
+# (pjt_eatlog/deploy_aws/setup_github_deploy_branches.sh). 여기 조건만 바꿔서는 다른 브랜치에서 배포할 수 없다.
+# 수동 재배포(workflow_dispatch)도 **main 을 골라 실행**해야 한다 — 기본 브랜치(dev)에서 돌리면 테스트만 돈다.
+# 긴급 수정: main 에서 hotfix/* 를 따 main 으로 PR → 같은 변경을 dev 에도 반영한다.
 #
 # 🚨 cloudtype 배포는 2026-09-05 부터 **수동 실행(workflow_dispatch)에서만** 일어난다.
 #    이유: 아래 배포 스펙이 cloudtype 앱 설정을 통째로 덮어쓰는데, 2026-08-27 AWS
@@ -21,8 +28,15 @@ on:
   pull_request:
     branches: [dev]
   push:
-    branches: [dev]
-  workflow_dispatch: # 수동 재배포용
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+  workflow_dispatch: # 수동 재배포용 — 기본은 AWS EC2(운영) 재배포다.
+    inputs:
+      include_cloudtype:
+        description: cloudtype 에도 배포한다 (기본 아니오 — 운영은 AWS EC2 다)
+        type: boolean
+        default: false
 
 jobs:
   test:
@@ -57,10 +71,43 @@ jobs:
           EATLOG_TEST_POSTGRES_URL: postgresql+psycopg://postgres:eatlog-ci-only@127.0.0.1:5432/eatlog_test_ci
         run: python -m pytest -q
 
+  migrations:
+    # pytest 는 SQLite + create_all 이라 마이그레이션 파일을 한 번도 실행하지 않는다.
+    # 이 잡이 없으면 alembic 스크립트는 운영 배포에서 처음 실제 Postgres 를 만난다.
+    name: alembic on Postgres
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine # 운영 RDS 와 같은 메이저 버전
+        env:
+          POSTGRES_USER: eatlog
+          POSTGRES_PASSWORD: eatlog
+          POSTGRES_DB: eatlog
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U eatlog" --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      ALEMBIC_DATABASE_URL: postgresql+psycopg://eatlog:eatlog@localhost:5432/eatlog
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Single head
+        run: test "$(alembic heads | wc -l)" -eq 1 || { alembic heads; echo "마이그레이션 head 가 둘 이상이다 — down_revision 을 정리할 것"; exit 1; }
+      - name: Upgrade from empty database
+        run: alembic upgrade head
+      - name: Newest migration is reversible
+        run: alembic downgrade -1 && alembic upgrade head
+
   deploy-aws:
     name: AWS EC2 deploy (SSM Run Command)
-    needs: test
-    # dev 에 푸시(=PR 머지)되고 pytest 가 통과하면 AWS EC2(eatlog-app)에 배포한다 (2026-09-06~).
+    needs: [test, migrations]
+    # main 에 푸시(=dev→main PR 머지)되고 테스트·마이그레이션 검증이 통과하면 AWS EC2(eatlog-app)에 배포한다
+    # (2026-09-06~ dev 푸시 배포 → 2026-09-21 main 푸시 배포로 전환).
     # 방식: GitHub OIDC 로 IAM 역할 eatlog-github-deploy 를 빌려 SSM 문서 eatlog-deploy 를
     #   보내고, EC2 가 ~/eatlog/deploy_service.sh 로 체크아웃→Parameter Store env 갱신→빌드→재기동
     #   →헬스체크를 수행한다. 액세스 키·SSH 키를 GitHub 에 두지 않는다.
@@ -68,7 +115,12 @@ jobs:
     # 롤백: 현재 DB revision 파일과 안전한 시작 루틴을 유지한 migration 호환 빌드를 준비한다.
     # 새 DB revision 파일이 없는 이전 SHA를 그대로 재배포하면 자동 migration이 실패할 수 있다.
     # Innovation Sandbox 만료 등으로 AWS 쪽이 사라지면 이 잡만 실패하고 test 는 영향 없다.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    # push(main) 자동 배포. 수동 실행으로도 같은 배포를 돌릴 수 있어야 한다 —
+    # Parameter Store 값만 바꾸고 재배포해야 하는 경우가 있다. 수동 실행도 main 을 골랐을 때만 배포한다
+    # (다른 브랜치는 AWS 신뢰 정책이 거부하므로, 실패로 끝나기보다 아예 건너뛰게 한다).
+    if: >-
+      github.ref == 'refs/heads/main'
+      && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     permissions:
       id-token: write   # OIDC 토큰 발급 (AssumeRoleWithWebIdentity)
@@ -115,7 +167,12 @@ jobs:
     runs-on: ubuntu-latest
     # 수동 실행에서만 배포한다 (파일 상단 🚨 참고 — 스펙이 운영 DB 설정을 되돌린다).
     # 변수 미설정 = 아직 연동 안 함 → 배포를 건너뛴다 (기존 앱 설정 보호)
-    if: github.event_name == 'workflow_dispatch' && vars.CLOUDTYPE_PROJECT != ''
+    # 2026-09-20: 수동 실행이 의도치 않게 cloudtype 만 배포하고 운영(EC2)은 건너뛰던
+    # 문제가 있었다. 이제 입력으로 명시해야 돈다.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      && inputs.include_cloudtype
+      && vars.CLOUDTYPE_PROJECT != ''
     steps:
       - uses: actions/checkout@v4
       - name: Connect repository to cloudtype

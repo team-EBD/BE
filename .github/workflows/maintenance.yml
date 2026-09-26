@@ -1,0 +1,90 @@
+# 운영 유지보수 작업을 수동으로 돌린다 (workflow_dispatch 전용).
+#
+# 지금 있는 작업: 영양 요약 캐시 재계산.
+#   2026-09-20 에 논리 날짜 경계를 KST 06시로 통일하면서(PR #50) 기존
+#   daily_nutrition_summaries 행들이 자정 기준으로 남았다. 일회성 재계산이 필요하다.
+#
+# 기본은 dry-run 이다. 실제로 쓰려면 mode 를 apply 로 골라야 한다.
+name: Maintenance
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: 실행할 작업
+        required: true
+        default: recompute-summaries
+        type: choice
+        options:
+          - recompute-summaries
+      mode:
+        description: dry-run 은 읽기만 한다. apply 여야 실제로 쓴다.
+        required: true
+        default: dry-run
+        type: choice
+        options:
+          - dry-run
+          - apply
+      since_user_id:
+        description: 재개할 첫 사용자 ID (중단됐을 때만 바꾼다)
+        required: false
+        default: "1"
+
+jobs:
+  run:
+    name: SSM maintenance
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: ap-northeast-2
+      INSTANCE_ID: i-0d96d7d601622339d
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::779403607744:role/eatlog-github-deploy
+          aws-region: ap-northeast-2
+
+      - name: Build command
+        id: build
+        run: |
+          case "${{ inputs.task }}" in
+            recompute-summaries)
+              FLAG="--dry-run"
+              [ "${{ inputs.mode }}" = "apply" ] && FLAG="--apply"
+              SCRIPT="scripts/recompute_daily_nutrition_summaries.py"
+              # 호스트 경로를 추측하지 않는다. 컨테이너 WORKDIR 가 /app 이고 scripts/ 가 들어 있다.
+              CMD="docker exec -i eatlog-be-1 python $SCRIPT $FLAG --since-user-id ${{ inputs.since_user_id }}"
+              ;;
+            *) echo "알 수 없는 작업"; exit 1 ;;
+          esac
+          echo "cmd=$CMD" >> "$GITHUB_OUTPUT"
+          echo "실행할 명령: $CMD"
+
+      - name: Send via SSM
+        id: send
+        run: |
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" --document-name AWS-RunShellScript \
+            --parameters commands="[\"${{ steps.build.outputs.cmd }}\"]" \
+            --comment "maintenance ${{ inputs.task }} ${{ inputs.mode }}" \
+            --query Command.CommandId --output text)
+          echo "cmd_id=$CMD_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for result
+        run: |
+          CMD_ID="${{ steps.send.outputs.cmd_id }}"
+          STATUS=Pending
+          for i in $(seq 1 180); do
+            STATUS=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+                       --query Status --output text 2>/dev/null || echo Pending)
+            case "$STATUS" in Success|Failed|Cancelled|TimedOut) break ;; esac
+            sleep 10
+          done
+          echo "status: $STATUS"
+          aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+            --query StandardOutputContent --output text
+          aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$INSTANCE_ID" \
+            --query StandardErrorContent --output text >&2
+          [ "$STATUS" = Success ]

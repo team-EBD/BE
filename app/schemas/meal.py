@@ -126,6 +126,26 @@ class MealItemInput(BaseModel):
     # correction_logs(serving_adjusted) 에 전후값을 남긴다.
     estimated_serving: float | None = Field(default=None, gt=0)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _ignore_local_candidate_id(cls, data):
+        """분석용 선택 필드가 식단 저장을 막으면 안 된다.
+
+        앱 1.9.0~1.12.3 은 초안에 '직접 검색'으로 추가·교체한 음식에 화면용 임시 키("manual-1")를
+        food_candidate_id 로 그대로 보낸다 → 정수 검증에 걸려 저장 전체가 400 으로 실패했다(2026-09-22 발견).
+        서버가 발급한 정수 ID 가 아니면 '직접 고른 음식'으로 보고 후보 ID 를 비운다. 그런 항목에는
+        AI 추정량도 없으므로(앱이 기본값 1 을 채워 보낸다) estimated_serving 도 함께 비워
+        가짜 양 조정 로그(serving_adjusted)가 남지 않게 한다.
+        """
+        if not isinstance(data, dict):
+            return data
+        raw = data.get("food_candidate_id")
+        if raw is None or (isinstance(raw, int) and not isinstance(raw, bool)):
+            return data
+        if isinstance(raw, str) and raw.strip().isdigit():
+            return data  # "12" 같은 숫자 문자열은 기존처럼 정수로 받아들인다
+        return {**data, "food_candidate_id": None, "estimated_serving": None}
+
 
 class MealCreateRequest(BaseModel):
     meal_type: MealType

@@ -25,7 +25,7 @@ from app.ai_client.base import AIClient, RecommendResult
 from app.core.config import settings
 from app.core.deps import DB, CurrentUser
 from app.core.errors import APIError
-from app.core.timeutil import KST, kst_day_bounds, now_utc, to_kst
+from app.core.timeutil import kst_date_of, kst_day_bounds, now_utc, to_kst
 from app.models import (
     AiCallLog,
     LocationConsent,
@@ -96,7 +96,7 @@ def _history_context_payload(db: Session, user_id: int, day: date) -> dict | Non
     reason 이 실제 먹은 음식(특히 직전 식사)을 근거로 작성되도록 음식 이름을
     eaten_at 순으로 전달한다. 기록이 없으면 None(필드 생략).
     """
-    start, end = kst_day_bounds(day)
+    start, end = kst_day_bounds(day, settings.day_start_hour)
     records = db.scalars(
         select(MealRecord)
         .where(
@@ -288,7 +288,7 @@ def menu(
     if settings.recommend_engine == "v2":
         return _menu_v2(db, user, body)
 
-    today = now_utc().astimezone(KST).date()
+    today = kst_date_of(now_utc(), settings.day_start_hour)
     # legacy(AI) 는 snack 을 모른다 — 생략·간식이면 시각 기준 끼니로
     meal_timing = body.meal_type if body.meal_type in ("breakfast", "lunch", "dinner") else None
     result, call_log = _call_and_log(
@@ -356,7 +356,7 @@ def location_based_menu(
     if consent is None or not consent.consent_status or consent.revoked_at is not None:
         raise APIError(403, "FORBIDDEN", "위치 정보 동의가 필요합니다.")
 
-    today = now_utc().astimezone(KST).date()
+    today = kst_date_of(now_utc(), settings.day_start_hour)
     meal_timing = body.meal_timing or _default_meal_timing()
     result, call_log = _call_and_log(
         db, user, ai, today, body.category or DEFAULT_CATEGORY, meal_timing

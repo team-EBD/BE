@@ -4,6 +4,8 @@
 - POST /v1/subscriptions/verify                구매 토큰 검증·등록 (결제 완료/복원)
 - POST /v1/subscriptions/notifications/google  Play 실시간 개발자 알림(RTDN)
 - POST /v1/subscriptions/notifications/apple   App Store Server Notifications V2
+- GET  /v1/subscriptions/refund-guarantee      첫 월 결제 무료 연장 진행도
+- POST /v1/subscriptions/refund-guarantee/claim 무료 연장 신청 접수
 
 알림 엔드포인트는 스토어(Pub/Sub·Apple)가 호출하므로 사용자 인증이 없다.
 대신 콘솔에 등록한 URL 의 쿼리 시크릿(?token=...)으로 호출자를 확인하고,
@@ -25,8 +27,13 @@ from app.billing_client.base import BillingAccessCheck
 from app.core.config import settings
 from app.core.deps import DB, CurrentUser
 from app.models.billing import Subscription
-from app.schemas.billing import SubscriptionResponse, SubscriptionVerifyRequest
+from app.schemas.billing import (
+    RefundGuaranteeResponse,
+    SubscriptionResponse,
+    SubscriptionVerifyRequest,
+)
 from app.services import subscription as subscription_service
+from app.services import refund_guarantee as refund_guarantee_service
 
 logger = logging.getLogger("eatlog.billing")
 
@@ -64,6 +71,16 @@ def get_my_subscription(
     if sub is not None:
         sub = subscription_service.refresh_if_stale(db, billing(sub.platform), sub)
     return _to_response(sub)
+
+
+@router.get("/refund-guarantee", response_model=RefundGuaranteeResponse)
+def get_refund_guarantee(user: CurrentUser, db: DB) -> RefundGuaranteeResponse:
+    return RefundGuaranteeResponse(**refund_guarantee_service.progress(db, user.id))
+
+
+@router.post("/refund-guarantee/claim", response_model=RefundGuaranteeResponse)
+def claim_refund_guarantee(user: CurrentUser, db: DB) -> RefundGuaranteeResponse:
+    return RefundGuaranteeResponse(**refund_guarantee_service.request_claim(db, user.id))
 
 
 @router.post("/verify", response_model=SubscriptionResponse)

@@ -5,7 +5,7 @@
 aliases 는 사용자 기록 이름·시드·동의어 → 군.
 
 Revision ID: d7f3a9c21e40
-Revises: c4d8e21f7a95
+Revises: d5a9f37c1e84  (dev 의 users.role 뒤에 선형으로 붙인다 — CI 의 downgrade -1 검증은 병합 리비전을 허용하지 않는다)
 Create Date: 2026-09-16 10:00:00.000000
 """
 from typing import Sequence, Union
@@ -16,7 +16,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = "d7f3a9c21e40"
-down_revision: Union[str, None] = "c4d8e21f7a95"
+down_revision: Union[str, None] = "d5a9f37c1e84"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

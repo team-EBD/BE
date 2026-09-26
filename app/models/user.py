@@ -4,10 +4,12 @@
 notification_settings, push_tokens, location_consents, terms_agreements
 """
 from datetime import datetime
+from enum import StrEnum
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     ForeignKey,
     Integer,
     Numeric,
@@ -25,6 +27,29 @@ from app.models._common import (
 )
 
 
+class UserRole(StrEnum):
+    """계정 역할 (users.role). 서버에서만 지정한다 — 어떤 API 로도 바꿀 수 없고 응답에도 싣지 않는다.
+
+    지정 도구: pjt_eatlog/deploy_aws/set_user_roles.sh (운영 DB 에 직접 반영).
+
+    - USER   : 일반 사용자 (기본값)
+    - TESTER : 앱을 점검하는 팀원·테스터. AI 사용 한도(무료 10회·일일 한도)를 적용하지 않는다.
+               구독 상태는 그대로라 구독·결제 화면은 일반 사용자처럼 시험할 수 있다.
+               무료 사용자 화면(한도 소진 안내)을 시험하려면 USER 계정을 쓴다.
+    - ADMIN  : 운영 관리자. 지금은 TESTER 와 같은 면제만 받는다 — 관리자 전용 API 가 생기면 이 값으로 구분한다.
+
+    분석 대시보드는 TESTER·ADMIN 계정을 지표에서 제외한다 (dashboard/models/00_internal_users.sql).
+    """
+
+    USER = "user"
+    TESTER = "tester"
+    ADMIN = "admin"
+
+
+# AI 사용 한도를 받지 않는 역할 (app/services/usage_limit.py)
+AI_LIMIT_EXEMPT_ROLES = frozenset({UserRole.TESTER, UserRole.ADMIN})
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -39,12 +64,23 @@ class User(Base):
     profile_image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     # 이메일 가입 사용자만 사용 (소셜 전용 계정은 NULL)
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    tutorial_completed_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    # 앱이 로그인·가입 요청에 실어 보내는 '테스트 기기' 여부 (2026-09-21 분석 로그).
+    #   True  = 구글 플레이 사전 점검 로봇 등 Firebase Test Lab 기기 (안드로이드 설정 firebase.test.lab)
+    #   False = 앱이 일반 기기라고 보고함 / NULL = 보고한 적 없음(이 기능 이전 빌드)
+    # 분석 대시보드가 True 인 계정을 지표에서 제외한다. 기록 규칙은 app/services/test_device.py.
+    is_test_device: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # 계정 역할 user/tester/admin — UserRole 참고. 서버에서만 지정한다 (2026-09-22).
+    role: Mapped[str] = mapped_column(
+        String(10), nullable=False, default=UserRole.USER.value, server_default=UserRole.USER.value
+    )
     created_at: Mapped[datetime] = created_at_column()
     updated_at: Mapped[datetime] = updated_at_column()
 
     __table_args__ = (
         UniqueConstraint("social_provider", "social_id", name="uq_users_provider_social_id"),
         UniqueConstraint("nickname", "nickname_tag", name="uq_users_nickname_tag"),
+        CheckConstraint("role IN ('user', 'tester', 'admin')", name="ck_users_role"),
     )
 
 

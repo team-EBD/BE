@@ -77,6 +77,9 @@ class Settings(BaseSettings):
     recommend_engine: str = "v2"
     # 홈은 첫 카드, 추천 탭은 마지막 카드를 탐색한다. 0은 탐색만 끄고 학습은 유지한다.
     recommend_bandit_epsilon: float = Field(default=0.1, ge=0, le=0.3)
+
+    # FE 스토어 배포 전에는 기존 일일 한도를 유지한다.
+    ai_premium_gate: bool = False
     # 하루 경계 시각 (KST). 6이면 06:00~다음날 06:00 를 '하루'로 취급 —
     # 캘린더/요약(FE day_start_hour=6)과 사용량 리셋 기준을 일치시킨다.
     day_start_hour: int = 6

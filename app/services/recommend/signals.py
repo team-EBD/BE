@@ -96,6 +96,12 @@ def meal_type_for_hour(hour: int) -> str:
     return "snack"
 
 
+def _display_name(rows) -> str:
+    """표시명 — 가장 많이 쓰인 원문 이름, 동률이면 가장 최근 기록의 이름 (DB 정렬에 기대지 않는다)."""
+    counts = Counter(r.name for r in rows)
+    return max(rows, key=lambda r: (counts[r.name], r.eaten_at)).name
+
+
 @dataclass
 class FoodStat:
     """묶음 키 하나의 집계. 영양값은 1인분 기준(군 대표값 우선, 없으면 기록값 평균)."""
@@ -299,7 +305,7 @@ def _aggregate(rows: list[_Row], weight_of, *, per_user: bool = False) -> list[F
         stats.append(
             FoodStat(
                 key=key,
-                name=Counter(r.name for r in group).most_common(1)[0][0],
+                name=_display_name(group),
                 score=round(score, 4),
                 count=n,
                 last_eaten=max(r.eaten_at for r in group),

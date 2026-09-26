@@ -12,6 +12,7 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.errors import APIError
 from app.core.timeutil import kst_date_of, now_utc, to_utc
 from app.models import (
@@ -233,7 +234,7 @@ def create_meal(
             db, user.id, meal.id, recommendation_item_id=body.recommendation_item_id,
         )
 
-    recompute_daily_summary(db, user.id, kst_date_of(eaten_at))
+    recompute_daily_summary(db, user.id, kst_date_of(eaten_at, settings.day_start_hour))
     if commit:
         db.commit()
     return meal
@@ -271,7 +272,7 @@ def create_meal_with_rewards(
 
 def update_meal(db: Session, user: User, meal_id: int, body: MealUpdateRequest) -> MealRecord:
     meal = get_owned_meal(db, user, meal_id)
-    old_date = kst_date_of(meal.eaten_at)
+    old_date = kst_date_of(meal.eaten_at, settings.day_start_hour)
 
     if body.meal_type is not None:
         meal.meal_type = body.meal_type
@@ -310,7 +311,7 @@ def update_meal(db: Session, user: User, meal_id: int, body: MealUpdateRequest) 
         meal.total_protein = totals["protein"]
         meal.total_fat = totals["fat"]
 
-    new_date = kst_date_of(meal.eaten_at)
+    new_date = kst_date_of(meal.eaten_at, settings.day_start_hour)
     reconcile_meal_feedback(db, meal)
     recompute_daily_summary(db, user.id, old_date)
     if new_date != old_date:
@@ -323,7 +324,7 @@ def delete_meal(db: Session, user: User, meal_id: int) -> None:
     meal = get_owned_meal(db, user, meal_id)
     meal.deleted_at = now_utc()
     reconcile_meal_feedback(db, meal)
-    recompute_daily_summary(db, user.id, kst_date_of(meal.eaten_at))
+    recompute_daily_summary(db, user.id, kst_date_of(meal.eaten_at, settings.day_start_hour))
     db.commit()
 
 

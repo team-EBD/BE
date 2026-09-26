@@ -13,7 +13,17 @@ from app.schemas.common import KSTDateTime
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]{2,}$")
 
 
-class SocialLoginRequest(BaseModel):
+class DeviceReport(BaseModel):
+    """로그인·가입 요청이 공통으로 실어 보내는 기기 정보 (2026-09-21).
+
+    is_test_device: 앱이 테스트 기기(구글 플레이 사전 점검 로봇 등)에서 실행 중인지.
+    보내지 않으면(None) 서버는 기존 값을 유지한다 — 이 필드 이전 빌드와 호환된다.
+    """
+
+    is_test_device: bool | None = None
+
+
+class SocialLoginRequest(DeviceReport):
     provider: str  # google / apple (확장: kakao)
     token: str
     # Apple 은 이름이 identityToken 에 없고 최초 인증 응답에만 포함된다 —
@@ -51,7 +61,7 @@ def validate_password_rules(value: str) -> str:
     return value
 
 
-class EmailSignupRequest(BaseModel):
+class EmailSignupRequest(DeviceReport):
     email: str = Field(max_length=255)
     # 길이 검사도 custom validator 에서 수행 — 어떤 위반이든 한국어 안내 한 문장으로 응답되게 한다.
     password: str
@@ -74,7 +84,7 @@ class EmailSignupRequest(BaseModel):
         return validate_password_rules(value)
 
 
-class EmailLoginRequest(BaseModel):
+class EmailLoginRequest(DeviceReport):
     email: str
     password: str
 
