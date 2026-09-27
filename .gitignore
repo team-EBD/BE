@@ -28,3 +28,4 @@ uploads/
 
 # Windows/MSYS 크래시 덤프 (커밋 대상 아님)
 *.stackdump
+reports/

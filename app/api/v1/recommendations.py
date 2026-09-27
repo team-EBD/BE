@@ -6,6 +6,9 @@
   AI 서버는 실패도 200 + status=failed 로 주므로, reason 을 서버 로그와
   error.details 에 남겨 5xx 의 원인(no_candidates/provider_error 등)을 추적 가능하게 한다.
 - 위치 기반(10.3)은 위치 동의 사용자만(403), 좌표는 Body 로만 받는다.
+- /menu 는 settings.recommend_engine 로 갈린다: legacy(AI) | v2(후보 생성·문맥 밴딧).
+  v2 는 AI·일일 한도를 쓰지 않고 정책·카드 생성 스냅샷을 저장한다. 실제 노출·기록 시작·
+  거절은 /items/{item_id}/feedback, 식사 전환은 저장 요청의 recommendation_item_id로 연결한다.
 """
 from __future__ import annotations
 
@@ -19,9 +22,9 @@ from sqlalchemy.orm import Session
 
 from app.ai_client import get_ai_client
 from app.ai_client.base import AIClient, RecommendResult
+from app.core.config import settings
 from app.core.deps import DB, CurrentUser
 from app.core.errors import APIError
-from app.core.config import settings
 from app.core.timeutil import kst_date_of, kst_day_bounds, now_utc, to_kst
 from app.models import (
     AiCallLog,
@@ -29,11 +32,17 @@ from app.models import (
     MealItem,
     MealRecord,
     RecommendationLog,
+    RecommendationItem as RecommendationItemRow,
     User,
 )
 from app.schemas.recommendation import (
+    AcceptRequest,
+    AcceptResponse,
+    ItemFeedbackRequest,
+    ItemFeedbackResponse,
     LocationMenuRequest,
     LocationMenuResponse,
+    MenuBudget,
     MenuItem,
     MenuRequest,
     MenuResponse,
@@ -41,6 +50,10 @@ from app.schemas.recommendation import (
     NextMealResponse,
     RecommendationItem,
 )
+from app.services.recommend import recommend as recommend_v2
+from app.services.recommend.feedback import log_exposure, mark_accepted, record_feedback
+from app.services.recommend.foods import food_item_payload, representative_item
+from app.services.recommend.groups import load_group_index
 from app.services.summary import aggregate_day, get_goals
 from app.services.usage_limit import enforce_daily_limit
 
@@ -200,6 +213,71 @@ def next_meal(
     )
 
 
+def _menu_v2(db: Session, user: User, body: MenuRequest) -> MenuResponse:
+    """이력 기반 엔진 — AI 호출·일일 한도 없음. 생성 로그와 카드별 피드백 id 를 돌려준다.
+
+    exceed_flag 는 오늘 남은 칼로리 기준(동반 포함 합산)이지만 v2 에서는 카드를
+    alternative 로 빼지 않는다 — 엔진이 예산의 2배까지 이미 잘랐고, 남은 칼로리가 거의
+    없는 날 recommended 가 비어 버리면 FE 가 아무것도 못 보여 준다.
+    """
+    result = recommend_v2(db, user.id, meal_type=body.meal_type, mood=body.mood, surface=body.surface)
+    log = log_exposure(db, user.id, result)  # commit 포함
+    rows = db.scalars(
+        select(RecommendationItemRow).where(RecommendationItemRow.log_id == log.id)
+        .order_by(RecommendationItemRow.rank)
+    ).all()
+    b = result.budget
+    remaining = body.remaining_calories if body.remaining_calories is not None else b.remaining_today
+    category = body.preferred_category or DEFAULT_CATEGORY
+    index = load_group_index(db)
+
+    def companion_food(item):
+        if not item.companion_name:
+            return None
+        group = index.by_key.get(item.companion_key) if item.companion_key else None
+        return food_item_payload(
+            representative_item(db, group_id=group.id if group else None, name=item.companion_name)
+        )
+
+    menus = [
+        MenuItem(
+            name=item.name,
+            category=category,
+            estimated_calories=item.calories,
+            exceed_flag=item.total_calories > remaining,
+            reason=item.reason,
+            source=item.source,
+            budget_label=item.budget_label,
+            total_calories=item.total_calories,
+            companion_name=item.companion_name,
+            companion_calories=item.companion_kcal or None,
+            group_id=item.group_id,
+            group_name=item.group_name,
+            family=item.family,
+            recommendation_item_id=row.id,
+            food=food_item_payload(representative_item(db, group_id=item.group_id, name=item.name)),
+            companion_food=companion_food(item),
+        )
+        for item, row in zip(result.items, rows)
+    ]
+    return MenuResponse(
+        recommended_menus=menus,
+        alternative_menus=[],
+        caution_text=DEFAULT_CAUTION,
+        ai_call_log_id=None,
+        engine="v2",
+        recommendation_log_id=log.id,
+        budget=MenuBudget(
+            meal_type=result.meal_type,
+            meal_budget=b.meal_budget,
+            remaining_today=b.remaining_today,
+            goal_calories=b.goal_calories,
+            ratio_source=b.ratio_source,
+            protein_gap=round(b.protein_gap, 1),
+        ),
+    )
+
+
 @router.post("/menu", response_model=MenuResponse)
 def menu(
     body: MenuRequest,
@@ -207,9 +285,15 @@ def menu(
     db: DB,
     ai: AIClient = Depends(get_ai_client),
 ) -> MenuResponse:
+    if settings.recommend_engine == "v2":
+        return _menu_v2(db, user, body)
+
     today = kst_date_of(now_utc(), settings.day_start_hour)
+    # legacy(AI) 는 snack 을 모른다 — 생략·간식이면 시각 기준 끼니로
+    meal_timing = body.meal_type if body.meal_type in ("breakfast", "lunch", "dinner") else None
     result, call_log = _call_and_log(
-        db, user, ai, today, body.preferred_category or DEFAULT_CATEGORY, body.meal_type
+        db, user, ai, today, body.preferred_category or DEFAULT_CATEGORY,
+        meal_timing or _default_meal_timing(),
     )
 
     # 남은 칼로리 필터: 미지정 시 오늘 요약에서 계산 (FR-LIMIT-002~003)
@@ -237,7 +321,28 @@ def menu(
         alternative_menus=alternatives,
         caution_text=result.caution_text or DEFAULT_CAUTION,
         ai_call_log_id=call_log.id,
+        engine="legacy",
     )
+
+
+@router.post("/items/{item_id}/feedback", response_model=ItemFeedbackResponse)
+def item_feedback(
+    item_id: int, body: ItemFeedbackRequest, user: CurrentUser, db: DB,
+) -> ItemFeedbackResponse:
+    if not record_feedback(db, user.id, item_id, body.action, reason=body.reason):
+        raise APIError(404, "NOT_FOUND", "해당 추천 항목을 찾을 수 없습니다.")
+    return ItemFeedbackResponse(recorded=True)
+
+
+@router.post("/{log_id}/accept", response_model=AcceptResponse)
+def accept(log_id: int, body: AcceptRequest, user: CurrentUser, db: DB) -> AcceptResponse:
+    """추천 카드 탭(명시 채택) 신고 — v2 노출 로그의 해당 항목에 accepted_at 을 남긴다.
+
+    같은 카드를 다시 눌러도 200 (처음 시각 유지). 남의 로그·없는 항목은 404.
+    """
+    if not mark_accepted(db, user.id, log_id, body.name):
+        raise APIError(404, "NOT_FOUND", "해당 추천 항목을 찾을 수 없습니다.")
+    return AcceptResponse(accepted=True)
 
 
 @router.post("/location-based-menu", response_model=LocationMenuResponse)
