@@ -1039,8 +1039,22 @@ def test_started_mission_cannot_be_swapped(client, auth_headers, db_factory):
     res = client.post("/v1/game/missions/" + started["code"] + "/swap", headers=auth_headers)
     assert res.status_code == 409
     assert res.json()["error"]["code"] == "MISSION_ALREADY_STARTED"
-    # 실패한 바꾸기는 오늘의 1회를 소모하지 않는다
-    assert missions(client, auth_headers)["swap_available"] is True
+    # 실패한 바꾸기는 오늘의 1회를 소모하지 않는다.
+    # swap_available 은 "아직 시작 안 한 일일 미션이 남아 있을 때"만 참이라 그날 미션 구성에 따라
+    # (기록 하나로 셋 다 진행되는 날) False 일 수 있다 — 소모 여부는 원장으로 직접 확인한다.
+    from sqlalchemy import select
+
+    from app.models import User
+    from app.services.game_missions import swap_used_today
+
+    db = db_factory()
+    try:
+        assert swap_used_today(db, db.scalar(select(User.id)), today) is False
+    finally:
+        db.close()
+    view = missions(client, auth_headers)
+    unstarted = any(m["scope"] == "daily" and m["progress"] == 0 for m in view["missions"])
+    assert view["swap_available"] is unstarted
 
 
 # --- 이벤트 (스탬프 · 완료 미션 수) ---
