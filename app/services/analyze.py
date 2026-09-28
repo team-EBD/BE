@@ -32,6 +32,7 @@ from app.services.matching import (
     match_food_name,
     normalize_name,
 )
+from app.services.recommend.groups import load_group_index
 
 
 logger = logging.getLogger("eatlog.analyze")
@@ -94,7 +95,23 @@ def _bbox_of(cand) -> BoundingBox | None:
 _SERVING_MIN, _SERVING_MAX = 0.1, 10.0
 
 
-def _reconcile_serving(cand, matched) -> float:
+# 상품 기준량이 군 1인분 대표량과 이 배수 넘게 어긋나면 상품 값 대신 군 대표량으로 나눈다.
+# '평양냉면'(식약처 가공식품, 200g 면 사리 기준) 에 사진의 한 그릇 650g 을 나누면 3.25인분이 됐다 —
+# 같은 군 '물냉면' 대표량 600g 으로 나누면 1.08인분. kcal 은 상품의 1인분 값을 그대로 쓴다.
+_GROUP_BASE_TOLERANCE = 1.5
+
+
+def _serving_base(matched, group_base: float | None) -> float:
+    base = float(matched.base_amount or 0)
+    if getattr(matched, "serving_basis", None) == "per_100g" or not group_base or base <= 0:
+        return base
+    ratio = base / group_base
+    if ratio > _GROUP_BASE_TOLERANCE or ratio < 1 / _GROUP_BASE_TOLERANCE:
+        return float(group_base)
+    return base
+
+
+def _reconcile_serving(cand, matched, group_base: float | None = None) -> float:
     """AI 의 절대량(g)을 **우리 영양DB 기준량**으로 나눠 배수로 바꾼다.
 
     AI 는 우리 DB 의 1인분이 몇 g 인지 모른다. 그래서 AI 가 준 배수
@@ -103,11 +120,12 @@ def _reconcile_serving(cand, matched) -> float:
     볼 수 있다. 절대량이 오면 그것을 기준으로 다시 계산한다.
 
     절대량이 없거나(구버전 AI·추정 실패) 매칭된 항목이 없으면 기존 배수를 쓴다.
+    group_base(군 1인분 대표량)가 있고 상품 기준량이 그와 크게 어긋나면 군 대표량으로 나눈다.
     """
     grams = getattr(cand, "estimated_serving_g", None)
     if grams is None or matched is None:
         return float(cand.estimated_serving)
-    base = float(matched.base_amount or 0)
+    base = _serving_base(matched, group_base)
     if base <= 0:
         return float(cand.estimated_serving)
     serving = grams / base
@@ -234,6 +252,7 @@ def _postprocess(
         )
 
     factor, applied = habit_factor(habit)
+    group_index = load_group_index(db)  # 군 대표량 — 상품 기준량이 튈 때 인분 환산 기준
     candidates: list[AnalyzeCandidate] = []
     for rank, (food_index, cand) in enumerate(
         _grouped_candidates(result.candidates, max_per_food), start=1
@@ -247,7 +266,11 @@ def _postprocess(
         confidence = float(cand.confidence)
         if match_path == "fuzzy":
             confidence = round(max(confidence - FUZZY_CONFIDENCE_PENALTY, 0.0), 4)
-        serving = _reconcile_serving(cand, matched)
+        group = (
+            group_index.by_id.get(matched.food_group_id)
+            if matched is not None and matched.food_group_id is not None else None
+        )
+        serving = _reconcile_serving(cand, matched, group.base_amount if group else None)
         row = FoodCandidate(
             meal_image_id=meal_image_id,
             ai_call_log_id=call_log.id,
