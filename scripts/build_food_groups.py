@@ -35,6 +35,7 @@ from scripts.food_group_taxonomy import (
     DEFAULT_COMPANION,
     EXTRA_GROUPS,
     GROUP_ROLE_OVERRIDE,
+    NAME_GROUP_OVERRIDE,
     LOW_KCAL_MEAL_TO_EXCLUDE,
     ROLE_MEAL,
     SYNONYM_ALIASES,
@@ -270,6 +271,7 @@ def upsert_aliases(
 def assign_items(db: Session, groups: dict[str, FoodGroup], tax: Taxonomy) -> Counter:
     stats: Counter = Counter()
     alias_map = {a.alias: a.group_id for a in db.scalars(select(FoodGroupAlias))}
+    _name_override = {norm(k): v for k, v in NAME_GROUP_OVERRIDE.items()}
     group_by_norm = {norm(name): name for name in groups}
     gid = {name: g.id for name, g in groups.items()}
 
@@ -285,7 +287,10 @@ def assign_items(db: Session, groups: dict[str, FoodGroup], tax: Taxonomy) -> Co
             continue
         group_name: str | None = None
         how = None
-        if ext and ext in tax.code_group:  # P/D — 식약처 코드
+        override = _name_override.get(norm(name) if name else normalized)
+        if override and override in gid:  # 이름 고정 배정 — 코드보다 우선 (평양냉면 → 물냉면)
+            group_name, how = override, "override"
+        elif ext and ext in tax.code_group:  # P/D — 식약처 코드
             group_name, how = tax.code_group[ext], "code"
         else:  # rep:/gen:/시드 — 이름
             key = norm(name) if name else normalized

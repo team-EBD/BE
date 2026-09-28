@@ -32,6 +32,7 @@ class GroupInfo:
     carbs: float | None
     protein: float | None
     fat: float | None
+    base_amount: float | None = None  # 군 1인분 대표량(g/ml) — 상품 기준량이 튈 때 인분 환산의 기준
 
     @property
     def has_macros(self) -> bool:
@@ -95,6 +96,7 @@ def load_group_index(db: Session) -> GroupIndex:
             carbs=float(g.carbs) if g.carbs is not None else None,
             protein=float(g.protein) if g.protein is not None else None,
             fat=float(g.fat) if g.fat is not None else None,
+            base_amount=float(g.base_amount) if g.base_amount is not None else None,
         )
         for g in db.scalars(select(FoodGroup))
     ]
