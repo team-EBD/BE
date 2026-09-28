@@ -21,7 +21,6 @@
 """
 from __future__ import annotations
 
-import csv
 import statistics
 import sys
 from pathlib import Path
@@ -30,11 +29,14 @@ from sqlalchemy import select
 
 from app.core.database import SessionLocal
 from app.models import NutritionItem
+from app.services.recommend.groups import load_group_index
 from scripts.import_public_nutrition import (
     display_name_from_raw as _display_name,  # 표시명 규칙의 정의처는 import 쪽 하나다
+    majority_group_id,
     normalize_name,
     read_rows,
     strip_variant_markers,
+    source_group_id,
 )
 
 # 대표식품명별 1인분 기준(g) — 대분류보다 **먼저** 적용한다 (PM 확정 2026-08-04).
@@ -162,10 +164,14 @@ def run(csv_path: Path, session_factory=SessionLocal) -> dict:
              "not_in_db": 0, "hybrid": 0, "franchise_only": 0}
 
     with session_factory() as session:
+        index = load_group_index(session)
         # 1) 시드는 전부 대표 (이미 1인분 기준)
         seed_names = set()
         for item in session.scalars(select(NutritionItem).where(NutritionItem.source == "seed")):
             seed_names.add(item.normalized_name)
+            item.serving_basis = "per_serving"
+            seed_group = index.resolve(item.name)
+            item.food_group_id = seed_group.id if seed_group else None
             if not item.is_representative:
                 item.is_representative = True
                 stats["seed_marked"] += 1
@@ -198,7 +204,9 @@ def run(csv_path: Path, session_factory=SessionLocal) -> dict:
             if item is None:
                 stats["not_in_db"] += 1
                 continue
-            if item.is_representative:
+            item.food_group_id = majority_group_id([source_group_id(row, index) for row in group])
+            if item.is_representative and item.serving_basis in (None, "per_serving"):
+                item.serving_basis = "per_serving"
                 stats["already"] += 1
                 continue
 
@@ -239,6 +247,7 @@ def run(csv_path: Path, session_factory=SessionLocal) -> dict:
 
             item.base_amount = serving
             item.is_representative = True
+            item.serving_basis = "per_serving"
             # 온도·사이즈 변형이 한 그룹으로 합쳐지므로(normalize_name 이 마커 제거)
             # 대표의 표시명은 기본 이름으로 둔다 — "허브차 아이스(ICED) (L)" 이 대표명이면
             # 사용자가 hot/ice 를 고르는 것처럼 오해한다. 비대표 행은 원본명 유지(브랜드 검색용).

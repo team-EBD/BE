@@ -159,6 +159,7 @@ class MealCreateRequest(BaseModel):
     entry_method: EntryMethod | None = None
     # 초안을 만든 AI 호출(분석/문장 파싱). 직접 검색·생략 기록은 None.
     ai_call_log_id: int | None = None
+    recommendation_item_id: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")
     def _validate_items_by_skip(self) -> "MealCreateRequest":

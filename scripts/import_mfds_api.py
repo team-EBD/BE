@@ -1,6 +1,8 @@
 """식약처 가공식품 OpenAPI(JSONL) → nutrition_items 적재.
 
 `fetch_mfds_api.py` 가 받아둔 JSONL 을 읽어 **두 층**으로 적재한다.
+입력은 전체 가공식품 스냅샷이다. 이번 입력으로 만들 수 없는 기존 동명 대표는
+대표 자격·음식군 연결을 해제하며, id와 기존 1인분 영양값은 보존한다.
 
 1. **브랜드 제품** — 유명 제조사(BRAND_WHITELIST) 것만 개별 항목으로 넣는다.
    무명 제조사·OEM·급식업체 제품(21만 종)은 개별 검색에 노출하지 않는다. 이름만 같고
@@ -35,15 +37,18 @@ import statistics as stats
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.core.database import SessionLocal
 from app.models import NutritionItem
+from app.services.matching import per_serving_representatives
+from app.services.recommend.groups import load_group_index
 from scripts.import_public_nutrition import (
     BATCH_SIZE,
     MacroEstimator,
     _exclude_reason,
     _parse_amount,
+    majority_group_id,
     normalize_name,
     set_macro_estimator,
     strip_variant_markers,
@@ -221,6 +226,8 @@ def build_representative(name: str, members: list[dict]) -> dict | None:
         "total_weight": round(serving, 2),
         "source": "public",
         "is_representative": True,
+        "serving_basis": "per_serving",
+        "food_group_id": majority_group_id([m.get("food_group_id") for m in members]),
         **values,
     }
 
@@ -235,6 +242,8 @@ def run(path: Path, min_group: int, session_factory=SessionLocal) -> dict:
     converted: Counter = Counter()
     kept: list[dict] = []  # transform 통과분 전체 (대표값 재료)
     raw = 0
+    with session_factory() as session:
+        index = load_group_index(session)
 
     with path.open(encoding="utf-8") as fp:
         for line in fp:
@@ -251,7 +260,7 @@ def run(path: Path, min_group: int, session_factory=SessionLocal) -> dict:
             if reason:
                 excluded[reason] += 1
                 continue
-            values = transform(row)
+            values = transform(row, index)
             if values is None:
                 excluded["열량 없음"] += 1
                 continue
@@ -274,7 +283,10 @@ def run(path: Path, min_group: int, session_factory=SessionLocal) -> dict:
         if not serv or not (SERVING_MIN <= serv <= SERVING_MAX):
             continue
         base = float(v["base_amount"])
-        if base <= 0 or serv == base:
+        if base <= 0:
+            continue
+        v["serving_basis"] = "per_serving"
+        if serv == base:
             continue
         factor = serv / base
         for key in _REP_NUTRIENTS:
@@ -296,7 +308,8 @@ def run(path: Path, min_group: int, session_factory=SessionLocal) -> dict:
         existing_rep_names = set(
             session.scalars(
                 select(NutritionItem.normalized_name).where(
-                    NutritionItem.is_representative.is_(True)
+                    per_serving_representatives(),
+                    or_(NutritionItem.external_id.is_(None), NutritionItem.external_id.not_like("rep:%")),
                 )
             )
         )
@@ -333,7 +346,7 @@ def run(path: Path, min_group: int, session_factory=SessionLocal) -> dict:
                 select(NutritionItem.external_id).where(NutritionItem.external_id.is_not(None))
             )
         )
-        inserted = updated = 0
+        inserted = updated = retired = 0
         batch: list[NutritionItem] = []
         for external_id, values in payload.items():
             if external_id in existing:
@@ -351,6 +364,14 @@ def run(path: Path, min_group: int, session_factory=SessionLocal) -> dict:
                 session.flush()
                 batch = []
         session.add_all(batch)
+        refreshed_reps = {r["external_id"] for r in reps}
+        # 입력 전체에서 재계산할 수 없거나 더 좋은 대표가 생긴 이전 합성값은
+        # 추천/AI 매칭 대상에서 내린다. id·기존 1인분 영양값은 참조를 위해 보존한다.
+        for old in session.scalars(select(NutritionItem).where(NutritionItem.external_id.like("rep:%"))):
+            if old.external_id not in refreshed_reps and (old.is_representative or old.food_group_id is not None):
+                old.is_representative = False
+                old.food_group_id = None
+                retired += 1
         session.commit()
         total = session.query(NutritionItem).count()
 
@@ -366,6 +387,7 @@ def run(path: Path, min_group: int, session_factory=SessionLocal) -> dict:
         "skipped_existing": skipped_existing,
         "inserted": inserted,
         "updated": updated,
+        "retired": retired,
         "total": total,
     }
 
@@ -389,7 +411,7 @@ def main() -> None:
     print(f"[mfds]   ├ 브랜드 제품     {r['brand']:,}종 (1회섭취참고량으로 1인분 환산 {r['brand_serving']:,}종)")
     print(f"[mfds]   └ 동명 대표       {r['reps']:,}건 (동명 {args.min_group}개 이상 그룹 {r['groups']:,}개,"
           f" 기존 대표와 동명이라 스킵 {r['skipped_existing']:,}개)")
-    print(f"[mfds] 신규 {r['inserted']:,} / 갱신 {r['updated']:,} / 테이블 총 {r['total']:,}행")
+    print(f"[mfds] 신규 {r['inserted']:,} / 갱신 {r['updated']:,} / 대표 퇴역 {r['retired']:,} / 테이블 총 {r['total']:,}행")
 
 
 if __name__ == "__main__":

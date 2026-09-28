@@ -72,6 +72,13 @@ def test_base_serving_text_by_tier():
     assert base_serving_text(raw) == "100g당"
 
 
+def test_explicit_serving_basis_overrides_representative_and_source_heuristics():
+    downgraded = _item("국", is_representative=True, serving_basis="per_100g")
+    portion = _item("상품", serving_basis="per_serving")
+    assert base_serving_text(downgraded) == "100g당"
+    assert base_serving_text(portion) == "1인분(100g)"
+
+
 def test_search_kimchi(client, auth_headers):
     res = client.post(
         "/v1/foods/search", headers=auth_headers, json={"query": "김치"}

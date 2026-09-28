@@ -28,6 +28,11 @@ EXPECTED_TABLES = {
     "ai_call_logs",
     "food_candidates",
     "recommendation_logs",
+    "recommendation_items",
+    # 음식군 (docs/음식군-DB-계약.md) — 계열>군>상품 3층의 2층 + alias + 삭제 아카이브
+    "food_groups",
+    "food_group_aliases",
+    "nutrition_items_pruned",
     # 계측(텔레메트리)
     "request_logs",
     "client_events",
@@ -56,7 +61,7 @@ EXPECTED_TABLES = {
 
 def test_all_tables_registered():
     assert set(Base.metadata.tables.keys()) == EXPECTED_TABLES
-    assert len(EXPECTED_TABLES) == 36
+    assert len(EXPECTED_TABLES) == 40
 
 
 def _sqlite_factory():

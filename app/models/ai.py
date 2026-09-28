@@ -12,15 +12,17 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     ForeignKey,
+    Float,
     Integer,
     Numeric,
+    SmallInteger,
     String,
     Text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
-from app.models._common import created_at_column, pk_column
+from app.models._common import TZDateTime, created_at_column, pk_column
 
 
 class AiCallLog(Base):
@@ -82,8 +84,44 @@ class RecommendationLog(Base):
         BigInteger, ForeignKey("ai_call_logs.id", ondelete="SET NULL"), nullable=True
     )
     meal_context: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # 입력 컨텍스트
+    decision: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # 후보·특징·정책·선택확률 스냅샷
     preferred_category: Mapped[str | None] = mapped_column(String(30), nullable=True)
     recommendation_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     recommended_items: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # 3 menus+reason
     caution_text: Mapped[str | None] = mapped_column(Text, nullable=True)  # FR-REC-003
+    created_at: Mapped[datetime] = created_at_column()
+
+
+class RecommendationItem(Base):
+    """추천 항목별 행동 로그 (docs/음식군-DB-계약.md §2.5).
+
+    생성은 노출이 아니다. shown_at 은 실제 화면 노출, accepted_at 은 기록 시작 탭,
+    rejected_at 은 명시 거절, eaten_at 은 항목 ID로 연결하고 검증한 실제 식사 시각이다.
+    recommended_items JSON 에 임시로 담던 것을 행으로 옮겨 GROUP BY source 가 되게 한다.
+    """
+
+    __tablename__ = "recommendation_items"
+
+    id: Mapped[int] = pk_column()
+    log_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("recommendation_logs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    food_group_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("food_groups.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)  # 카드에 보인 이름
+    source: Mapped[str] = mapped_column(String(20), nullable=False)  # 생성 경로 (collaborative 포함)
+    rank: Mapped[int] = mapped_column(SmallInteger, nullable=False)  # 1~3
+    score: Mapped[float | None] = mapped_column(Numeric(6, 4), nullable=True)
+    features: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    selection_probability: Mapped[float | None] = mapped_column(Float, nullable=True)
+    policy_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    shown_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True, index=True)
+    accepted_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    rejected_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    reject_reason: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    eaten_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)
+    eaten_meal_record_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("meal_records.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = created_at_column()
