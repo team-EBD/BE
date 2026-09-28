@@ -267,8 +267,9 @@ class _Cand:
 
 
 class _Item:
-    def __init__(self, base_amount):
+    def __init__(self, base_amount, serving_basis="per_serving"):
         self.base_amount = base_amount
+        self.serving_basis = serving_basis
 
 
 def test_reconcile_serving_uses_grams_over_multiplier():
@@ -297,3 +298,16 @@ def test_reconcile_serving_rejects_absurd_ratio():
 
     # 1인분 5g 짜리에 3000g → 600배. 상식 밖이라 기존 배수로 되돌린다
     assert _reconcile_serving(_Cand(1.0, 3000), _Item(5)) == 1.0
+
+
+def test_reconcile_serving_uses_group_base_when_item_base_is_off():
+    from app.services.analyze import _reconcile_serving
+
+    # 평양냉면 상품은 200g(면 사리) 기준인데 사진은 한 그릇 650g → 군(물냉면) 대표량 600g 으로 나눠 1.08
+    assert _reconcile_serving(_Cand(1.0, 650), _Item(200), group_base=600) == 1.08
+    # 상품 기준량이 군과 비슷하면(1.5배 이내) 상품 값 그대로
+    assert _reconcile_serving(_Cand(1.0, 650), _Item(500), group_base=600) == 1.3
+    # 100g 당 상품은 군 대표량과 무관하게 g/100
+    assert _reconcile_serving(_Cand(1.0, 300), _Item(100, "per_100g"), group_base=600) == 3.0
+    # 군 대표량이 없으면 기존 동작
+    assert _reconcile_serving(_Cand(1.0, 650), _Item(200), group_base=None) == 3.25
