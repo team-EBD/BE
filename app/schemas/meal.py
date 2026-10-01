@@ -82,6 +82,11 @@ class AnalyzeCandidate(BaseModel):
     bbox: BoundingBox | None = None
     nutrition: CandidateNutrition | None = None
     habit_adjusted: HabitAdjusted | None = None
+    # 낱개 음식이면 AI 가 센 개수·단위(개·조각·장·줄)와 1단위가 몇 인분인지. FE 는 "8조각" 으로 보여 주고
+    # 개수를 바꾸면 quantity × serving_per_unit 으로 배수를 다시 만든다. 그릇 음식은 전부 None
+    quantity: float | None = None
+    quantity_unit: str | None = None
+    serving_per_unit: float | None = None
 
 
 class AnalyzeSuccessResponse(BaseModel):
@@ -125,6 +130,9 @@ class MealItemInput(BaseModel):
     # AI 가 추정한 섭취량. serving_amount 와 다르면 슬라이더 양 조정으로 보고
     # correction_logs(serving_adjusted) 에 전후값을 남긴다.
     estimated_serving: float | None = Field(default=None, gt=0)
+    # 사용자가 확정한 낱개 개수·단위 ("8조각"). 둘 다 있을 때만 저장한다
+    quantity: float | None = Field(default=None, ge=0)
+    quantity_unit: Literal["개", "조각", "장", "줄"] | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -211,6 +219,8 @@ class MealItemDetail(BaseModel):
     meal_item_id: int
     food_name: str
     serving_amount: float
+    quantity: float | None = None  # 낱개 개수·단위가 있으면 FE 는 "8조각" 으로 표시
+    quantity_unit: str | None = None
     correction_type: str | None
     calories: float
     carbs: float

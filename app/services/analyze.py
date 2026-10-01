@@ -32,7 +32,6 @@ from app.services.matching import (
     match_food_name,
     normalize_name,
 )
-from app.services.recommend.groups import load_group_index
 
 
 logger = logging.getLogger("eatlog.analyze")
@@ -95,42 +94,44 @@ def _bbox_of(cand) -> BoundingBox | None:
 _SERVING_MIN, _SERVING_MAX = 0.1, 10.0
 
 
-# 상품 기준량이 군 1인분 대표량과 이 배수 넘게 어긋나면 상품 값 대신 군 대표량으로 나눈다.
-# '평양냉면'(식약처 가공식품, 200g 면 사리 기준) 에 사진의 한 그릇 650g 을 나누면 3.25인분이 됐다 —
-# 같은 군 '물냉면' 대표량 600g 으로 나누면 1.08인분. kcal 은 상품의 1인분 값을 그대로 쓴다.
-_GROUP_BASE_TOLERANCE = 1.5
+# 그릇·접시 음식(낱개 단위 없음)은 g 환산이 이 범위면 '한 그릇' 으로 본다 — AI 의 g 눈대중이 ±30% 는 흔들려서
+# 라면 한 그릇이 1.2·1.3인분으로 찍히던 잡음을 없앤다. 범위 밖(반 그릇 0.5, 두 그릇 2.0)은 계산값 그대로.
+_SNAP_LOW, _SNAP_HIGH = 0.7, 1.3
 
 
-def _serving_base(matched, group_base: float | None) -> float:
-    base = float(matched.base_amount or 0)
-    if getattr(matched, "serving_basis", None) == "per_100g" or not group_base or base <= 0:
-        return base
-    ratio = base / group_base
-    if ratio > _GROUP_BASE_TOLERANCE or ratio < 1 / _GROUP_BASE_TOLERANCE:
-        return float(group_base)
-    return base
+def _is_product_row(matched) -> bool:
+    """식약처 가공식품(봉지·키트·동명 대표) 행 — 기준량이 포장 단위라 사진의 조리량(g)과 맞지 않는다.
+
+    신라면 봉지 120g 에 조리된 한 그릇 560g 을 나누면 4.7인분, 평양냉면 키트 200g 에 650g 은 3.25인분이 됐다.
+    시드·총칭·식약처 음식편 행은 조리된 요리 무게라 g 로 나눠도 된다.
+    """
+    ext = getattr(matched, "external_id", None) or ""
+    return getattr(matched, "source", None) == "public" and (ext.startswith("P") or ext.startswith("rep:"))
 
 
-def _reconcile_serving(cand, matched, group_base: float | None = None) -> float:
+def _reconcile_serving(cand, matched) -> float:
     """AI 의 절대량(g)을 **우리 영양DB 기준량**으로 나눠 배수로 바꾼다.
 
-    AI 는 우리 DB 의 1인분이 몇 g 인지 모른다. 그래서 AI 가 준 배수
-    (estimated_serving)는 "AI 가 생각하는 1인분"에 대한 배수이고, 우리 기준과
-    다르면 그대로 곱했을 때 몇 배씩 어긋난다 — 피자를 AI 는 1판, DB 는 1조각으로
-    볼 수 있다. 절대량이 오면 그것을 기준으로 다시 계산한다.
+    AI 는 우리 DB 의 1인분이 몇 g 인지 모른다. 그래서 AI 가 준 배수(estimated_serving)는 "AI 가 생각하는
+    1인분"에 대한 배수이고, 우리 기준과 다르면 몇 배씩 어긋난다(피자를 AI 는 1판, DB 는 2조각으로 본다).
+    절대량이 오면 그것을 기준으로 다시 계산한다 — 낱개 음식(count_unit)은 개수 × 1단위 g 이라 특히 믿을 만하다.
 
-    절대량이 없거나(구버전 AI·추정 실패) 매칭된 항목이 없으면 기존 배수를 쓴다.
-    group_base(군 1인분 대표량)가 있고 상품 기준량이 그와 크게 어긋나면 군 대표량으로 나눈다.
+    - 절대량이 없거나 매칭이 없으면 AI 배수 그대로.
+    - 가공식품 행은 g 을 쓰지 않는다 (포장 단위 기준량).
+    - 그릇 음식(단위 없음)은 0.7~1.3 을 1.0 으로 스냅한다. 낱개 음식은 스냅하지 않는다(2개는 2.0).
     """
+    ai_serving = float(cand.estimated_serving)
     grams = getattr(cand, "estimated_serving_g", None)
-    if grams is None or matched is None:
-        return float(cand.estimated_serving)
-    base = _serving_base(matched, group_base)
+    if grams is None or matched is None or _is_product_row(matched):
+        return ai_serving
+    base = float(matched.base_amount or 0)
     if base <= 0:
-        return float(cand.estimated_serving)
+        return ai_serving
     serving = grams / base
     if not (_SERVING_MIN <= serving <= _SERVING_MAX):
-        return float(cand.estimated_serving)
+        return ai_serving
+    if not getattr(cand, "count_unit", None) and _SNAP_LOW <= serving <= _SNAP_HIGH:
+        return 1.0
     return round(serving, 2)
 
 
@@ -252,7 +253,6 @@ def _postprocess(
         )
 
     factor, applied = habit_factor(habit)
-    group_index = load_group_index(db)  # 군 대표량 — 상품 기준량이 튈 때 인분 환산 기준
     candidates: list[AnalyzeCandidate] = []
     for rank, (food_index, cand) in enumerate(
         _grouped_candidates(result.candidates, max_per_food), start=1
@@ -266,11 +266,12 @@ def _postprocess(
         confidence = float(cand.confidence)
         if match_path == "fuzzy":
             confidence = round(max(confidence - FUZZY_CONFIDENCE_PENALTY, 0.0), 4)
-        group = (
-            group_index.by_id.get(matched.food_group_id)
-            if matched is not None and matched.food_group_id is not None else None
-        )
-        serving = _reconcile_serving(cand, matched, group.base_amount if group else None)
+        serving = _reconcile_serving(cand, matched)
+        count = getattr(cand, "count", None)
+        count_unit = getattr(cand, "count_unit", None)
+        if not count or not count_unit:  # 둘 다 있어야 낱개 음식
+            count = count_unit = None
+        grams = getattr(cand, "estimated_serving_g", None)
         row = FoodCandidate(
             meal_image_id=meal_image_id,
             ai_call_log_id=call_log.id,
@@ -279,6 +280,9 @@ def _postprocess(
             normalized_name=normalize_name(cand.food_name),
             confidence_score=confidence,
             estimated_serving=serving,
+            quantity=count,
+            quantity_unit=count_unit,
+            grams_per_unit=round(float(grams) / count, 2) if (count and grams) else None,
             rank=rank,
         )
         db.add(row)
@@ -337,6 +341,9 @@ def _postprocess(
                 bbox=_bbox_of(cand),
                 nutrition=nutrition,
                 habit_adjusted=habit_adjusted,
+                quantity=float(count) if count else None,
+                quantity_unit=count_unit,
+                serving_per_unit=round(serving / count, 4) if count else None,
             )
         )
 

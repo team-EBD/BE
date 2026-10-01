@@ -53,6 +53,10 @@ class AICandidate(BaseModel):
     # 배수(estimated_serving)만으로는 계산이 어긋나므로(피자 1판 vs 1조각) 절대량을
     # 받아 우리 기준으로 다시 나눈다. 구버전 AI 서버·추정 실패 시 None.
     estimated_serving_g: float | None = None
+    # 낱개로 셀 수 있는 음식의 사진 속 개수와 단위(개·조각·장·줄). 그릇·접시 음식과 구버전 AI 응답은 None.
+    # 개수 음식은 g ÷ 영양DB 1인분 g 으로 배수를 내고 화면엔 개수를 보여 준다 (AI 의 1인분 개념에 기대지 않는다).
+    count: int | None = None
+    count_unit: str | None = None
     # 국물/소스가 실제로 있는 음식인지 — FE 보정 버튼 노출 판단용.
     # 구버전 AI 서버 응답에는 없으므로 True(버튼 노출 유지) 기본값.
     has_soup: bool = True

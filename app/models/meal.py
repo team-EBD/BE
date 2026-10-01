@@ -84,6 +84,9 @@ class MealItem(Base):
     )
     food_name: Mapped[str] = mapped_column(String(100), nullable=False)  # 스냅샷
     serving_amount: Mapped[float] = mapped_column(Numeric(8, 2), nullable=False)  # factor/gram
+    # 사용자가 확정한 낱개 개수·단위 ("8조각"). serving_amount 는 그대로 인분 배수. 셀 수 없는 음식은 NULL
+    quantity: Mapped[float | None] = mapped_column(Numeric(8, 2), nullable=True)
+    quantity_unit: Mapped[str | None] = mapped_column(String(10), nullable=True)
     calories: Mapped[float] = mapped_column(Numeric(8, 2), nullable=False)  # 보정 반영값
     carbs: Mapped[float] = mapped_column(Numeric(8, 2), nullable=False)
     protein: Mapped[float] = mapped_column(Numeric(8, 2), nullable=False)

@@ -68,6 +68,10 @@ class FoodCandidate(Base):
     normalized_name: Mapped[str] = mapped_column(String(100), nullable=False)
     confidence_score: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False)
     estimated_serving: Mapped[float] = mapped_column(Numeric(8, 2), nullable=False)
+    # AI 가 센 낱개 개수·단위(개·조각·장·줄)와 1단위 g — 정답지용 원본. 셀 수 없는 음식은 NULL
+    quantity: Mapped[float | None] = mapped_column(Numeric(8, 2), nullable=True)
+    quantity_unit: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    grams_per_unit: Mapped[float | None] = mapped_column(Numeric(8, 2), nullable=True)
     rank: Mapped[int] = mapped_column(Integer, nullable=False)  # 1-3
     is_selected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = created_at_column()
