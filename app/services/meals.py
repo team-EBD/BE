@@ -157,6 +157,8 @@ def _insert_items(
             food_group_id=group_id,
             food_name=item.food_name,
             serving_amount=item.serving_amount,
+            quantity=item.quantity if (item.quantity is not None and item.quantity_unit) else None,
+            quantity_unit=item.quantity_unit if (item.quantity is not None and item.quantity_unit) else None,
             calories=item.calories,
             carbs=item.carbs,
             protein=item.protein,

@@ -280,6 +280,8 @@ def _detail_response(db, meal: MealRecord) -> MealDetailResponse:
                 meal_item_id=item.id,
                 food_name=item.food_name,
                 serving_amount=float(item.serving_amount),
+                quantity=float(item.quantity) if item.quantity is not None else None,
+                quantity_unit=item.quantity_unit,
                 correction_type=correction,
                 calories=float(item.calories),
                 carbs=float(item.carbs),

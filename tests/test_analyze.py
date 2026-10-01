@@ -261,15 +261,18 @@ def test_analyze_bbox_none_for_legacy_ai_server(client, auth_headers, monkeypatc
 # 나눠 배수를 다시 계산해야 한다 (피자 1판 vs 1조각처럼 몇 배씩 어긋나는 것 방지).
 
 class _Cand:
-    def __init__(self, serving=1.0, grams=None):
+    def __init__(self, serving=1.0, grams=None, count=None, count_unit=None):
         self.estimated_serving = serving
         self.estimated_serving_g = grams
+        self.count = count
+        self.count_unit = count_unit
 
 
 class _Item:
-    def __init__(self, base_amount, serving_basis="per_serving"):
+    def __init__(self, base_amount, source="seed", external_id=None):
         self.base_amount = base_amount
-        self.serving_basis = serving_basis
+        self.source = source
+        self.external_id = external_id
 
 
 def test_reconcile_serving_uses_grams_over_multiplier():
@@ -300,14 +303,92 @@ def test_reconcile_serving_rejects_absurd_ratio():
     assert _reconcile_serving(_Cand(1.0, 3000), _Item(5)) == 1.0
 
 
-def test_reconcile_serving_uses_group_base_when_item_base_is_off():
+def test_reconcile_serving_snaps_bowl_dishes_to_one_serving():
     from app.services.analyze import _reconcile_serving
 
-    # 평양냉면 상품은 200g(면 사리) 기준인데 사진은 한 그릇 650g → 군(물냉면) 대표량 600g 으로 나눠 1.08
-    assert _reconcile_serving(_Cand(1.0, 650), _Item(200), group_base=600) == 1.08
-    # 상품 기준량이 군과 비슷하면(1.5배 이내) 상품 값 그대로
-    assert _reconcile_serving(_Cand(1.0, 650), _Item(500), group_base=600) == 1.3
-    # 100g 당 상품은 군 대표량과 무관하게 g/100
-    assert _reconcile_serving(_Cand(1.0, 300), _Item(100, "per_100g"), group_base=600) == 3.0
-    # 군 대표량이 없으면 기존 동작
-    assert _reconcile_serving(_Cand(1.0, 650), _Item(200), group_base=None) == 3.25
+    # 라면 한 그릇: AI 560g, 시드 1인분 550g → 1.02 → '한 그릇' 1.0 (0.7~1.3 스냅)
+    assert _reconcile_serving(_Cand(1.0, 560), _Item(550)) == 1.0
+    assert _reconcile_serving(_Cand(1.0, 400), _Item(550)) == 1.0  # 0.73
+    # 범위 밖은 계산값 그대로 — 반 그릇·두 그릇
+    assert _reconcile_serving(_Cand(0.5, 280), _Item(550)) == 0.51
+    assert _reconcile_serving(_Cand(2.0, 1100), _Item(550)) == 2.0
+
+
+def test_reconcile_serving_counted_items_are_not_snapped():
+    from app.services.analyze import _reconcile_serving
+
+    # 피자 8조각 800g, DB 1인분 200g → 4.0 ("8조각"). 달걀 2개 100g / 50g → 2.0
+    assert _reconcile_serving(_Cand(1.0, 800, 8, "조각"), _Item(200)) == 4.0
+    assert _reconcile_serving(_Cand(1.0, 100, 2, "개"), _Item(50)) == 2.0
+    # 낱개 음식은 1.2 라도 스냅하지 않는다 (3조각 = 1.5인분 같은 값이 그대로 남아야 한다)
+    assert _reconcile_serving(_Cand(1.0, 240, 3, "조각"), _Item(200)) == 1.2
+
+
+def test_reconcile_serving_ignores_grams_for_packaged_product_rows():
+    from app.services.analyze import _reconcile_serving
+
+    # 식약처 가공식품(신라면 봉지 120g): 조리된 560g 을 나누면 4.7 → AI 배수(1.0) 를 쓴다
+    assert _reconcile_serving(_Cand(1.0, 560), _Item(120, source="public", external_id="P000123")) == 1.0
+    # 가공식품 동명 대표(rep:) — 평양냉면 키트 200g 에 650g → 3.25 가 아니라 AI 배수
+    assert _reconcile_serving(_Cand(1.0, 650), _Item(200, source="public", external_id="rep:f3")) == 1.0
+    # 식약처 음식편(D) 은 조리된 요리 무게라 g 로 나눈다
+    assert _reconcile_serving(_Cand(1.0, 800, 4, "조각"), _Item(400, source="public", external_id="D306-284")) == 2.0
+
+
+class CountedPizzaAIClient:
+    """낱개 음식(피자 8조각 800g) + 그릇 음식(라면 560g) 을 돌려주는 대역."""
+
+    def analyze(self, image_url, eating_habits=None):
+        from app.ai_client.base import AICallLogPayload, AICandidate, AnalyzeResult
+
+        return AnalyzeResult(
+            status="success",
+            draft_notice="AI가 분석한 기록 초안입니다.",
+            candidates=[
+                AICandidate(food_index=0, food_name="피자", confidence=0.9, estimated_serving=1.0,
+                            estimated_serving_g=800, count=8, count_unit="조각"),
+                AICandidate(food_index=1, food_name="라면", confidence=0.9, estimated_serving=1.0,
+                            estimated_serving_g=560),
+            ],
+            ai_call_log=AICallLogPayload(task_type="analyze", status="success", latency_ms=100),
+        )
+
+    def recommend(self, *args, **kwargs):
+        raise AssertionError("not used")
+
+
+def test_analyze_counted_food_returns_quantity_and_unit(client, auth_headers, db_factory):
+    """피자 8조각: 시드 1인분 200g → 4.0인분, quantity 8 '조각', 1조각 = 0.5인분. 라면은 스냅돼 1.0."""
+    image_id = upload_image_id(client, auth_headers)
+    app.dependency_overrides[get_ai_client] = lambda: CountedPizzaAIClient()
+    try:
+        res = client.post("/v1/meals/analyze", headers=auth_headers, json={"meal_image_id": image_id})
+    finally:
+        from app.ai_client.mock import MockAIClient
+
+        app.dependency_overrides[get_ai_client] = lambda: MockAIClient()
+    assert res.status_code == 200, res.text
+    by_name = {c["normalized_name"]: c for c in res.json()["candidates"]}
+    pizza, ramen = by_name["피자"], by_name["라면"]
+    assert pizza["estimated_serving"] == 4.0
+    assert (pizza["quantity"], pizza["quantity_unit"], pizza["serving_per_unit"]) == (8.0, "조각", 0.5)
+    assert ramen["estimated_serving"] == 1.0  # 560/550 = 1.02 → 한 그릇
+    assert ramen["quantity"] is None and ramen["quantity_unit"] is None
+
+    from sqlalchemy import select
+
+    from app.models import FoodCandidate
+
+    db = db_factory()
+    row = db.scalar(select(FoodCandidate).where(FoodCandidate.id == pizza["food_candidate_id"]))
+    assert (float(row.quantity), row.quantity_unit, float(row.grams_per_unit)) == (8.0, "조각", 100.0)
+
+
+def test_reconcile_serving_container_units_snap_like_bowls():
+    from app.services.analyze import _reconcile_serving
+
+    # 밥 1공기 250g(AI 눈대중) / 210g = 1.19 → 한 공기 1.0. 두 공기 420g → 2.0
+    assert _reconcile_serving(_Cand(1.0, 250, 1, "공기"), _Item(210)) == 1.0
+    assert _reconcile_serving(_Cand(2.0, 420, 2, "공기"), _Item(210)) == 2.0
+    # 콜라 1캔 250ml 가 100g 당 행에 걸리면 2.5 — 화면엔 "1캔", kcal 은 2.5배
+    assert _reconcile_serving(_Cand(1.0, 250, 1, "캔"), _Item(100)) == 2.5
