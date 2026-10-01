@@ -329,3 +329,34 @@ def test_update_meal_items_keeps_bbox(client, auth_headers):
     assert res.json()["items"][0]["bbox"] == {
         "x": 0.0, "y": 0.0, "width": 1.0, "height": 1.0,
     }
+
+
+def test_meal_item_quantity_and_unit_round_trip(client, auth_headers):
+    """낱개 개수·단위는 저장 → 상세 → 수정까지 그대로 따라간다. 단위 없는 항목은 null."""
+    payload = {
+        **MEAL_PAYLOAD,
+        "items": [
+            {**MEAL_PAYLOAD["items"][0], "food_name": "피자", "serving_amount": 4.0, "quantity": 8, "quantity_unit": "조각"},
+            {**MEAL_PAYLOAD["items"][1]},
+        ],
+    }
+    meal_id = create_meal(client, auth_headers, payload)["meal_id"]
+    detail = client.get(f"/v1/meals/{meal_id}", headers=auth_headers).json()
+    by_name = {i["food_name"]: i for i in detail["items"]}
+    assert (by_name["피자"]["quantity"], by_name["피자"]["quantity_unit"]) == (8.0, "조각")
+    assert by_name["공기밥"]["quantity"] is None and by_name["공기밥"]["quantity_unit"] is None
+
+    # 수정: 6조각(3.0인분)으로
+    items = [
+        {**payload["items"][0], "serving_amount": 3.0, "quantity": 6},
+        payload["items"][1],
+    ]
+    res = client.patch(f"/v1/meals/{meal_id}", headers=auth_headers, json={"items": items})
+    assert res.status_code == 200, res.text
+    detail = client.get(f"/v1/meals/{meal_id}", headers=auth_headers).json()
+    pizza = next(i for i in detail["items"] if i["food_name"] == "피자")
+    assert (pizza["serving_amount"], pizza["quantity"], pizza["quantity_unit"]) == (3.0, 6.0, "조각")
+
+    # 단위가 틀리면 400
+    bad = {**payload, "items": [{**payload["items"][0], "quantity_unit": "그릇"}]}
+    assert client.post("/v1/meals", headers=auth_headers, json=bad).status_code == 400
