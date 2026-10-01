@@ -97,6 +97,9 @@ _SERVING_MIN, _SERVING_MAX = 0.1, 10.0
 # 그릇·접시 음식(낱개 단위 없음)은 g 환산이 이 범위면 '한 그릇' 으로 본다 — AI 의 g 눈대중이 ±30% 는 흔들려서
 # 라면 한 그릇이 1.2·1.3인분으로 찍히던 잡음을 없앤다. 범위 밖(반 그릇 0.5, 두 그릇 2.0)은 계산값 그대로.
 _SNAP_LOW, _SNAP_HIGH = 0.7, 1.3
+# 낱개 단위 — 개수가 곧 양이라 스냅하지 않는다(3조각 = 1.5인분 그대로). 용기 단위(공기·잔·캔·병)는 한 그릇처럼 스냅.
+COUNTABLE_UNITS = frozenset({"개", "조각", "장", "줄"})
+CONTAINER_UNITS = frozenset({"공기", "잔", "캔", "병"})
 
 
 def _is_product_row(matched) -> bool:
@@ -118,7 +121,7 @@ def _reconcile_serving(cand, matched) -> float:
 
     - 절대량이 없거나 매칭이 없으면 AI 배수 그대로.
     - 가공식품 행은 g 을 쓰지 않는다 (포장 단위 기준량).
-    - 그릇 음식(단위 없음)은 0.7~1.3 을 1.0 으로 스냅한다. 낱개 음식은 스냅하지 않는다(2개는 2.0).
+    - 그릇 음식(단위 없음)과 용기 단위(공기·잔·캔·병)는 0.7~1.3 을 1.0 으로 스냅한다. 낱개(개·조각·장·줄)는 스냅하지 않는다.
     """
     ai_serving = float(cand.estimated_serving)
     grams = getattr(cand, "estimated_serving_g", None)
@@ -130,8 +133,9 @@ def _reconcile_serving(cand, matched) -> float:
     serving = grams / base
     if not (_SERVING_MIN <= serving <= _SERVING_MAX):
         return ai_serving
-    if not getattr(cand, "count_unit", None) and _SNAP_LOW <= serving <= _SNAP_HIGH:
-        return 1.0
+    unit = getattr(cand, "count_unit", None)
+    if unit not in COUNTABLE_UNITS and _SNAP_LOW <= serving <= _SNAP_HIGH:
+        return 1.0  # 그릇 요리·용기 단위: 한 그릇/한 공기/한 잔
     return round(serving, 2)
 
 

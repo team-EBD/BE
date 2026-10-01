@@ -382,3 +382,13 @@ def test_analyze_counted_food_returns_quantity_and_unit(client, auth_headers, db
     db = db_factory()
     row = db.scalar(select(FoodCandidate).where(FoodCandidate.id == pizza["food_candidate_id"]))
     assert (float(row.quantity), row.quantity_unit, float(row.grams_per_unit)) == (8.0, "조각", 100.0)
+
+
+def test_reconcile_serving_container_units_snap_like_bowls():
+    from app.services.analyze import _reconcile_serving
+
+    # 밥 1공기 250g(AI 눈대중) / 210g = 1.19 → 한 공기 1.0. 두 공기 420g → 2.0
+    assert _reconcile_serving(_Cand(1.0, 250, 1, "공기"), _Item(210)) == 1.0
+    assert _reconcile_serving(_Cand(2.0, 420, 2, "공기"), _Item(210)) == 2.0
+    # 콜라 1캔 250ml 가 100g 당 행에 걸리면 2.5 — 화면엔 "1캔", kcal 은 2.5배
+    assert _reconcile_serving(_Cand(1.0, 250, 1, "캔"), _Item(100)) == 2.5

@@ -132,7 +132,7 @@ class MealItemInput(BaseModel):
     estimated_serving: float | None = Field(default=None, gt=0)
     # 사용자가 확정한 낱개 개수·단위 ("8조각"). 둘 다 있을 때만 저장한다
     quantity: float | None = Field(default=None, ge=0)
-    quantity_unit: Literal["개", "조각", "장", "줄"] | None = None
+    quantity_unit: Literal["개", "조각", "장", "줄", "공기", "잔", "캔", "병"] | None = None
 
     @model_validator(mode="before")
     @classmethod
