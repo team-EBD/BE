@@ -1,6 +1,8 @@
 """Phase 7 DoD — 일간/주간/월간 요약 (LLM 미사용, 규칙 기반)."""
 from __future__ import annotations
 
+from datetime import timedelta
+
 from tests.test_meals import MEAL_PAYLOAD, create_meal
 
 
@@ -130,7 +132,9 @@ def test_weekly_summary_extended_fields(client, auth_headers):
     assert len(body["days"]) == 7
     by_date = {d["date"]: d for d in body["days"]}
     assert by_date["2026-06-27"] == {
-        "date": "2026-06-27", "calories": 524, "meal_count": 1, "achieved": True,
+        "date": "2026-06-27", "calories": 524, "meal_count": 1, "record_count": 1,
+        "filled": False,  # 1끼만 기록 → '채운 날' 아님
+        "achieved": True,
         "in_progress": False,  # 과거 주라 집계 중인 날 없음
     }
     assert by_date["2026-06-23"]["meal_count"] == 0
@@ -457,3 +461,112 @@ def test_monthly_achievement_rate_uses_elapsed_days(client, auth_headers):
     assert body["days_counted"] == elapsed
     assert body["recorded_days"] == 2  # 오늘 기록은 제외
     assert body["achievement_rate"] == round(2 / elapsed, 2)
+
+
+# ------------------------------------------- 리포트 열람 조건 (SCRUM-275, report_readiness)
+#
+# 리포트는 마감된 기간 + 기록이 충분할 때만 통계를 보여 준다. 2026-06 은 과거라 전부 마감됨.
+# 채운 날 = 하루 기록 2건 이상(끼니 생략 체크 포함).
+
+
+def skipped_on(day: str, hour: int = 8) -> dict:
+    """해당 KST 날짜의 끼니 생략 기록 — 영양 합계는 0 이지만 '기록했다'는 행동이다."""
+    return {
+        "meal_type": "breakfast",
+        "eaten_at": f"{day}T{hour:02d}:00:00+09:00",
+        "is_skipped": True,
+        "items": [],
+    }
+
+
+def _readiness(client, auth_headers, path: str, **params) -> dict:
+    res = client.get(f"/v1/nutrition/{path}", headers=auth_headers, params=params)
+    assert res.status_code == 200
+    return res.json()["report_readiness"]
+
+
+def test_daily_readiness_insufficient_then_ready(client, auth_headers):
+    create_meal(client, auth_headers, meal_on("2026-06-27"))
+    r = _readiness(client, auth_headers, "daily-summary", date="2026-06-27")
+    assert r["status"] == "insufficient"
+    assert (r["filled"], r["required"], r["min_records_per_day"]) == (1, 2, 2)
+    assert r["closes_at"] == "2026-06-28T06:00:00+09:00"  # 다음 날 06시(하루 경계)에 마감
+
+    # 두 번째 기록이 끼니 생략이어도 조건을 채운다
+    create_meal(client, auth_headers, skipped_on("2026-06-27"))
+    r = _readiness(client, auth_headers, "daily-summary", date="2026-06-27")
+    assert (r["status"], r["filled"]) == ("ready", 2)
+
+
+def test_daily_readiness_pending_for_today_and_future(client, auth_headers):
+    today = _kst_today()
+    create_meal(client, auth_headers, meal_on(today.isoformat()))
+    create_meal(client, auth_headers, skipped_on(today.isoformat()))
+    r = _readiness(client, auth_headers, "daily-summary", date=today.isoformat())
+    assert r["status"] == "pending"  # 조건을 채웠어도 마감 전에는 보여 주지 않는다
+    assert r["filled"] == 2
+    tomorrow = today + timedelta(days=1)
+    assert _readiness(client, auth_headers, "daily-summary", date=tomorrow.isoformat())["status"] == "pending"
+
+
+def test_daily_readiness_deleted_record_does_not_count(client, auth_headers):
+    create_meal(client, auth_headers, meal_on("2026-06-27"))
+    meal_id = create_meal(client, auth_headers, skipped_on("2026-06-27"))["meal_id"]
+    client.delete(f"/v1/meals/{meal_id}", headers=auth_headers)
+    r = _readiness(client, auth_headers, "daily-summary", date="2026-06-27")
+    assert (r["status"], r["filled"]) == ("insufficient", 1)
+
+
+def test_weekly_readiness_counts_filled_days(client, auth_headers):
+    # 2026-06-21(일) ~ 06-27(토). 2끼 채운 날 2일 + 1끼만 기록한 날 1일 → 미달
+    for day in ("2026-06-22", "2026-06-24"):
+        create_meal(client, auth_headers, meal_on(day))
+        create_meal(client, auth_headers, skipped_on(day))
+    create_meal(client, auth_headers, meal_on("2026-06-26"))
+    body = client.get(
+        "/v1/nutrition/weekly-summary", headers=auth_headers, params={"week_start": "2026-06-21"}
+    ).json()
+    r = body["report_readiness"]
+    assert (r["status"], r["filled"], r["required"]) == ("insufficient", 2, 3)
+    assert r["closes_at"] == "2026-06-28T06:00:00+09:00"  # 일요일 06시
+    by_date = {d["date"]: (d["record_count"], d["filled"]) for d in body["days"]}
+    assert by_date["2026-06-22"] == (2, True)
+    assert by_date["2026-06-26"] == (1, False)
+    assert by_date["2026-06-23"] == (0, False)
+
+    create_meal(client, auth_headers, skipped_on("2026-06-26", hour=19))
+    r = _readiness(client, auth_headers, "weekly-summary", week_start="2026-06-21")
+    assert (r["status"], r["filled"]) == ("ready", 3)
+
+
+def test_weekly_readiness_pending_while_week_in_progress(client, auth_headers):
+    today = _kst_today()
+    week_start = today - timedelta(days=(today.weekday() + 1) % 7)  # 이번 주 일요일
+    for offset in range(3):
+        day = week_start + timedelta(days=offset)
+        if day > today:
+            break
+        create_meal(client, auth_headers, meal_on(day.isoformat()))
+        create_meal(client, auth_headers, skipped_on(day.isoformat()))
+    r = _readiness(client, auth_headers, "weekly-summary", week_start=week_start.isoformat())
+    assert r["status"] == "pending"
+    assert r["closes_at"] == f"{(week_start + timedelta(days=7)).isoformat()}T06:00:00+09:00"
+
+
+def test_monthly_readiness_requires_ten_filled_days(client, auth_headers):
+    for day in range(1, 10):  # 9일 채움
+        create_meal(client, auth_headers, meal_on(f"2026-06-{day:02d}"))
+        create_meal(client, auth_headers, skipped_on(f"2026-06-{day:02d}"))
+    r = _readiness(client, auth_headers, "monthly-summary", month="2026-06")
+    assert (r["status"], r["filled"], r["required"]) == ("insufficient", 9, 10)
+    assert r["closes_at"] == "2026-07-01T06:00:00+09:00"
+
+    create_meal(client, auth_headers, meal_on("2026-06-10"))
+    create_meal(client, auth_headers, skipped_on("2026-06-10"))
+    assert _readiness(client, auth_headers, "monthly-summary", month="2026-06")["status"] == "ready"
+
+
+def test_monthly_readiness_pending_for_current_month(client, auth_headers):
+    today = _kst_today()
+    r = _readiness(client, auth_headers, "monthly-summary", month=today.strftime("%Y-%m"))
+    assert r["status"] == "pending"
