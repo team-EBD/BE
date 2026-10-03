@@ -9,6 +9,9 @@
 주간 리포트 알림(weekly_report_enabled)이 켜진 사용자다. 설정 행이 없는
 사용자는 기본값(둘 다 켬, api/v1/users.py `_notification_response`)으로 간주한다.
 
+리포트 열람 조건(SCRUM-275): 직전 주가 '채운 날 3일 이상'을 못 채우면 리포트 화면이
+통계 대신 "데이터 부족" 안내를 보여 주므로, 그 사용자에게는 '리포트 도착' 푸시를 보내지
+않는다(눌렀는데 리포트가 없는 알림 방지). 기록 재시작 유도 알림은 이 푸시의 역할이 아니다.
 트리거: main.py lifespan 의 분 단위 체크 루프. 발송 여부는 프로세스 메모리로
 중복 방지하므로, 발송 시각 이후 같은 날 재기동하면 한 번 더 나갈 수 있다
 (주 1회 알림이라 허용 — 정확히 1회가 필요해지면 발송 이력 테이블로 승격).
@@ -24,6 +27,7 @@ from sqlalchemy.orm import Session
 from app.core.timeutil import now_utc, to_kst
 from app.models import NotificationSetting, PushToken
 from app.push_client.base import PushClient
+from app.services.report_readiness import WEEKLY_REQUIRED_FILLED_DAYS, count_filled_days
 from app.services.summary import aggregate_range
 
 logger = logging.getLogger("eatlog.weekly_report_push")
@@ -99,10 +103,22 @@ def weekly_report_push_recipients(db: Session) -> dict[int, list[str]]:
     return recipients
 
 
+def week_record_stats(db: Session, user_id: int, week_start: date) -> tuple[int, bool]:
+    """해당 주(일~토)의 (기록 있는 날 수, 리포트 열람 가능 여부).
+
+    기록 있는 날 수는 리포트 화면의 recorded_days 와 같은 기준(먹은 기록이 있는 날).
+    열람 가능 여부는 report_readiness 와 같은 기준(2끼 이상 기록한 날이 3일 이상).
+    """
+    week_end = week_start + timedelta(days=6)
+    day_totals = aggregate_range(db, user_id, week_start, week_end)
+    recorded_days = sum(1 for total in day_totals.values() if total["meal_count"] > 0)
+    report_ready = count_filled_days(day_totals, week_start, week_end) >= WEEKLY_REQUIRED_FILLED_DAYS
+    return recorded_days, report_ready
+
+
 def recorded_days_in_week(db: Session, user_id: int, week_start: date) -> int:
     """해당 주(일~토)에 식사 기록이 있는 날 수 — 리포트 화면의 recorded_days 와 동일 기준."""
-    day_totals = aggregate_range(db, user_id, week_start, week_start + timedelta(days=6))
-    return sum(1 for total in day_totals.values() if total["meal_count"] > 0)
+    return week_record_stats(db, user_id, week_start)[0]
 
 
 def send_weekly_report_push(
@@ -121,8 +137,12 @@ def send_weekly_report_push(
     success = failure = 0
     invalid_tokens: list[str] = []
 
+    skipped = 0
     for user_id, tokens in recipients.items():
-        recorded_days = recorded_days_in_week(db, user_id, week_start)
+        recorded_days, report_ready = week_record_stats(db, user_id, week_start)
+        if not report_ready:
+            skipped += 1  # 리포트 화면이 열리지 않는 사용자 — 도착 알림을 보내지 않는다
+            continue
         title, body = build_push_content(recorded_days)
         report = client.send(tokens, title, body, PUSH_DATA)
         success += report.success_count
@@ -139,10 +159,11 @@ def send_weekly_report_push(
         logger.info("등록 해제된 푸시 토큰 %d건 정리", len(stale))
 
     logger.info(
-        "주간 리포트 푸시 발송: 성공 %d / 실패 %d (사용자 %d명, week_start=%s)",
+        "주간 리포트 푸시 발송: 성공 %d / 실패 %d (사용자 %d명, 리포트 조건 미달로 건너뜀 %d명, week_start=%s)",
         success,
         failure,
         len(recipients),
+        skipped,
         week_start.isoformat(),
     )
     return success
