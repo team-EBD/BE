@@ -263,3 +263,51 @@ def test_v2_cards_carry_prefill_foods_for_main_and_companion(client, auth_header
     assert set(card["food"]) >= {"base_serving", "calories", "carbs", "protein", "fat"}
     assert card["companion_name"] == "쌀밥" and card["companion_food"]["nutrition_item_id"] == 8
     assert "예산" not in card["reason"]
+
+
+def test_refresh_excludes_cards_already_provided_today(client, auth_headers, db_factory, v2_engine):
+    """'다시 추천받기'와 식사량 전환은 오늘 이 끼니에 이미 보여 준 카드를 빼고 고른다 — any·light·hearty 가 서로 다르다."""
+    db = db_factory()
+    uid = _user_id(db)
+    _history(db, uid, [("김치찌개", 320, 18, 22, 16)])
+    _history(db, uid, [("제육볶음", 480, 20, 30, 30)], days=(4, 5))
+    _history(db, uid, [("된장찌개", 280, 15, 18, 12)], days=(6, 7))
+
+    def names(body):
+        res = client.post("/v1/recommendations/menu", headers=auth_headers, json=body)
+        assert res.status_code == 200, res.text
+        return {m["name"] for m in res.json()["recommended_menus"]}
+
+    first = names({"meal_type": "lunch"})
+    refreshed = names({"meal_type": "lunch", "refresh": True})
+    assert first and refreshed and refreshed.isdisjoint(first)
+    light = names({"meal_type": "lunch", "mood": "light", "refresh": True})
+    assert light and light.isdisjoint(first | refreshed)
+    logs = db.scalars(select(RecommendationLog).order_by(RecommendationLog.id)).all()
+    assert [log.decision["refresh"] for log in logs[-3:]] == [False, True, True]
+
+
+def test_rejection_excludes_only_for_the_rest_of_the_day(client, auth_headers, db_factory):
+    """'별로예요'·'지금은 다른 메뉴' 모두 그날만 제외한다 — 어제 거절은 오늘 다시 나올 수 있다."""
+    from app.services.recommend.feedback import excluded_keys, rejection_window_start
+
+    db = db_factory()
+    uid = _user_id(db)
+    now = datetime.now(UTC)
+    today = min(rejection_window_start(now) + timedelta(minutes=1), now)
+    yesterday = rejection_window_start(now) - timedelta(minutes=1)
+
+    def rejected(name, at, reason):
+        log = RecommendationLog(user_id=uid, meal_context={"meal_type": "lunch"})
+        db.add(log)
+        db.flush()
+        db.add(RecommendationItem(log_id=log.id, name=name, source="personal", rank=1,
+                                  shown_at=at, rejected_at=at, reject_reason=reason))
+        db.commit()
+
+    rejected("김치찌개", today, "dislike")
+    rejected("된장찌개", today, "not_now")  # 4시간이 지나도 그날 안이면 계속 제외
+    rejected("제육볶음", yesterday, "dislike")  # 어제 → 더는 제외하지 않는다 (90일 규칙 폐기)
+    keys = excluded_keys(db, uid, now=now)
+    assert any("김치찌개" in k for k in keys) and any("된장찌개" in k for k in keys)
+    assert not any("제육볶음" in k for k in keys)

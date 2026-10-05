@@ -17,7 +17,8 @@ from typing import TYPE_CHECKING
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.core.timeutil import from_db, now_utc
+from app.core.config import get_settings
+from app.core.timeutil import from_db, kst_date_of, kst_day_bounds, now_utc
 from app.models import MealItem, MealRecord, RecommendationItem, RecommendationLog, User
 from app.services.matching import normalize_name
 
@@ -35,8 +36,6 @@ ATTRIBUTION_GRACE = timedelta(minutes=5)
 # 채택률 계산 구간과, 비율을 신뢰하기 위한 최소 노출 수
 ACCEPTANCE_WINDOW_DAYS = 60
 MIN_EXPOSURES_FOR_RATE = 3
-DISLIKE_WINDOW_DAYS = 90
-NOT_NOW_WINDOW_HOURS = 4
 
 
 def _row_key(row: RecommendationItem, index: GroupIndex) -> str:
@@ -238,10 +237,24 @@ def reconcile_meal_feedback(db: Session, meal: MealRecord, *, now: datetime | No
     db.flush()
 
 
+def rejection_window_start(now: datetime) -> datetime:
+    """거절('별로예요'·'지금은 다른 메뉴')과 '제공한 카드'가 효력을 갖는 구간의 시작 — 그날의 시작.
+
+    '그날'은 앱 전체와 같은 KST 논리 하루(day_start_hour 경계)다.
+    """
+    day_start_hour = get_settings().day_start_hour
+    start, _ = kst_day_bounds(kst_date_of(now, day_start_hour), day_start_hour)
+    return start
+
+
 def excluded_keys(
     db: Session, user_id: int, *, now: datetime, index: GroupIndex | None = None,
 ) -> set[str]:
-    """명시 비선호는 90일, '지금은 다른 메뉴'는 4시간 동안 같은 음식군을 제외한다."""
+    """'별로예요'든 '지금은 다른 메뉴'든, 거절한 그날 동안만 같은 음식군을 제외한다.
+
+    이전의 90일 제외는 탭 한 번이 한 계절을 막아 너무 셌다(2026-10-05 결정). 비선호 학습은
+    랭킹의 채택률 항이 맡고, 하드 제외는 하루로 끝낸다.
+    """
     index = index or load_group_index(db)
     excluded: set[str] = set()
     rows = db.scalars(
@@ -250,18 +263,39 @@ def excluded_keys(
         .where(
             RecommendationLog.user_id == user_id,
             RecommendationItem.shown_at <= now,
-            RecommendationItem.rejected_at >= now - timedelta(days=DISLIKE_WINDOW_DAYS),
+            RecommendationItem.rejected_at >= rejection_window_start(now),
             RecommendationItem.rejected_at <= now,
+            RecommendationItem.reject_reason.in_(("dislike", "not_now")),
         )
     )
     for row in rows:
         if _occurred(row.eaten_at, now) and from_db(row.eaten_at) > from_db(row.rejected_at):
             continue
-        if row.reject_reason == "dislike" or (
-            row.reject_reason == "not_now" and from_db(row.rejected_at) >= now - timedelta(hours=NOT_NOW_WINDOW_HOURS)
-        ):
-            excluded.add(_row_key(row, index))
+        excluded.add(_row_key(row, index))
     return excluded
+
+
+def provided_keys(
+    db: Session, user_id: int, *, now: datetime, meal_type: str, index: GroupIndex | None = None,
+) -> set[str]:
+    """'다시 추천받기'·식사량 전환용 — 오늘 이 끼니에 이미 제공한 카드의 음식군 전부.
+
+    노출 신고(shown_at) 여부와 무관하게 응답에 실어 보낸 카드는 모두 '제공'으로 본다. 홈은 1장만
+    보여 주지만 나머지 2장도 탭으로 넘어가며 그대로 보이기 때문이다. 끼니가 다르면 제외하지 않는다.
+    """
+    index = index or load_group_index(db)
+    logs = db.scalars(
+        select(RecommendationLog).where(
+            RecommendationLog.user_id == user_id,
+            RecommendationLog.created_at >= rejection_window_start(now),
+            RecommendationLog.created_at <= now + CLOCK_SKEW_TOLERANCE,
+        )
+    ).all()
+    log_ids = [log.id for log in logs if (log.meal_context or {}).get("meal_type") == meal_type]
+    if not log_ids:
+        return set()
+    rows = db.scalars(select(RecommendationItem).where(RecommendationItem.log_id.in_(log_ids)))
+    return {_row_key(row, index) for row in rows}
 
 
 def _items_in_window(

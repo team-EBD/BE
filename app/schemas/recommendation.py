@@ -44,6 +44,8 @@ class MenuRequest(BaseModel):
     location_enabled: bool | None = None
     # v2 전용 — 예산을 가볍게(×0.8)/든든하게(×1.2) 조정. legacy 는 무시한다
     mood: Mood = "any"
+    # v2 전용 — '다시 추천받기'·식사량 전환. 오늘 이 끼니에 이미 제공한 카드를 빼고 나머지에서 고른다
+    refresh: bool = False
 
 
 class MenuItem(BaseModel):

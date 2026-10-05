@@ -24,7 +24,7 @@ from .candidates import (
     popular,
 )
 from .explain import reason
-from .feedback import acceptance_rates, excluded_keys
+from .feedback import acceptance_rates, excluded_keys, provided_keys
 from .bandit import learn, select_cards
 from .collaborative import collaborative_candidates
 from .groups import ROLE_MEAL, GroupIndex, GroupInfo, load_group_index
@@ -112,12 +112,17 @@ def recommend(
     index: GroupIndex | None = None,
     rng: random.Random | None = None,
     surface: str = "recommendation",
+    refresh: bool = False,
 ) -> RecommendationResult:
     now = now or now_utc()
     settings = get_settings()
     meal_type = meal_type or meal_type_for_hour(to_kst(now).hour)
     index = index or load_group_index(db)
     blocked = excluded_keys(db, user_id, now=now, index=index)
+    if refresh:
+        # '다시 추천받기'·식사량 전환: 오늘 이 끼니에 이미 보여 준 카드는 빼고 나머지에서 고른다.
+        # 같은 입력이면 엔진은 결정론적이라, 이 제외가 없으면 같은 3장이 돌아온다.
+        blocked = blocked | provided_keys(db, user_id, now=now, meal_type=meal_type, index=index)
 
     budget = meal_budget(
         db, user_id, meal_type, now=now, day_start_hour=settings.day_start_hour, mood=mood
@@ -183,6 +188,7 @@ def recommend(
         "catalog": sum(c.source == "catalog" for c in candidates),
     }
     decision["excluded_count"] = len(blocked)
+    decision["refresh"] = refresh
 
     items = [
         RecommendedItem(
