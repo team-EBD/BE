@@ -47,6 +47,9 @@ class AiCallLog(Base):
     token_output: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cost_estimate: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 튜토리얼(첫 기록 연습) 중 호출 여부 — 앱이 분석 요청에 실어 보낸 값 그대로.
+    # NULL = 이 값을 보내지 않는 구버전 앱(알 수 없음). 채택률 등 품질 지표에서 연습 호출을 가려낸다.
+    is_tutorial: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[datetime] = created_at_column()
 
 
