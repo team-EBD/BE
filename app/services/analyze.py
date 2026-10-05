@@ -142,6 +142,7 @@ def _reconcile_serving(cand, matched) -> float:
 def _save_call_log(
     db: Session, user_id: int, meal_image_id: int | None, payload: AICallLogPayload,
     error_message: str | None = None,
+    is_tutorial: bool | None = None,
 ) -> AiCallLog:
     log = AiCallLog(
         user_id=user_id,
@@ -152,6 +153,7 @@ def _save_call_log(
         status=payload.status,
         latency_ms=payload.latency_ms,
         error_message=error_message,
+        is_tutorial=is_tutorial,
     )
     db.add(log)
     db.flush()
@@ -164,6 +166,7 @@ def analyze_meal_image(
     meal_image_id: int,
     ai: AIClient,
     user_text: str | None = None,
+    is_tutorial: bool | None = None,
 ) -> AnalyzeSuccessResponse | AnalyzeFailedResponse:
     started = time.perf_counter()
     image = db.get(MealImage, meal_image_id)
@@ -203,11 +206,12 @@ def analyze_meal_image(
             if depth == DEPTH_CLARIFIER
             else MAX_PREDICTIONS_PER_FOOD
         ),
+        is_tutorial=is_tutorial,
     )
 
 
 def analyze_meal_text(
-    db: Session, user: User, text: str, ai: AIClient
+    db: Session, user: User, text: str, ai: AIClient, is_tutorial: bool | None = None
 ) -> AnalyzeSuccessResponse | AnalyzeFailedResponse:
     """자연어 식사 서술 → 기록 초안 (이미지 분석과 동일한 후처리·응답 계약).
 
@@ -230,7 +234,7 @@ def analyze_meal_text(
     else:
         # 후보 없을 땐 구 시그니처 호출 — 테스트 더블·구버전 클라이언트 호환
         result = ai.parse_text(cleaned)
-    return _postprocess(db, user, habit, result, None, started)
+    return _postprocess(db, user, habit, result, None, started, is_tutorial=is_tutorial)
 
 
 def _postprocess(
@@ -241,10 +245,12 @@ def _postprocess(
     meal_image_id: int | None,
     started: float,
     max_per_food: int = MAX_PREDICTIONS_PER_FOOD,
+    is_tutorial: bool | None = None,
 ) -> AnalyzeSuccessResponse | AnalyzeFailedResponse:
     """AI 결과 공통 후처리 — 로그 기록, 영양 매칭, 식습관 보정, 후보 저장."""
     call_log = _save_call_log(
-        db, user.id, meal_image_id, result.ai_call_log, error_message=result.reason
+        db, user.id, meal_image_id, result.ai_call_log,
+        error_message=result.reason, is_tutorial=is_tutorial,
     )
 
     if result.status == "failed":

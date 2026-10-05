@@ -128,7 +128,9 @@ def analyze(
     ai: AIClient = Depends(get_ai_client),
 ) -> AnalyzeSuccessResponse | AnalyzeFailedResponse:
     enforce_daily_limit(db, user.id, "analyze")  # 일일 한도 초과 시 429
-    return analyze_meal_image(db, user, body.meal_image_id, ai, user_text=body.text)
+    return analyze_meal_image(
+        db, user, body.meal_image_id, ai, user_text=body.text, is_tutorial=body.is_tutorial
+    )
 
 
 @router.post("/parse-text", response_model=AnalyzeSuccessResponse | AnalyzeFailedResponse)
@@ -143,7 +145,7 @@ def parse_text(
     사용량은 이미지 분석과 같은 analyze 일일 한도를 공유한다.
     """
     enforce_daily_limit(db, user.id, "analyze")
-    return analyze_meal_text(db, user, body.text, ai)
+    return analyze_meal_text(db, user, body.text, ai, is_tutorial=body.is_tutorial)
 
 
 # --- 8.6 월별 캘린더 (정적 경로 — {meal_id} 보다 먼저) ---
