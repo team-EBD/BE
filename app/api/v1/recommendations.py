@@ -220,9 +220,7 @@ def _menu_v2(db: Session, user: User, body: MenuRequest) -> MenuResponse:
     alternative 로 빼지 않는다 — 엔진이 예산의 2배까지 이미 잘랐고, 남은 칼로리가 거의
     없는 날 recommended 가 비어 버리면 FE 가 아무것도 못 보여 준다.
     """
-    result = recommend_v2(
-        db, user.id, meal_type=body.meal_type, mood=body.mood, surface=body.surface, refresh=body.refresh
-    )
+    result = recommend_v2(db, user.id, meal_type=body.meal_type, mood=body.mood, surface=body.surface)
     log = log_exposure(db, user.id, result)  # commit 포함
     rows = db.scalars(
         select(RecommendationItemRow).where(RecommendationItemRow.log_id == log.id)

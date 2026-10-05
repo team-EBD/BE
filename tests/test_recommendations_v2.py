@@ -265,8 +265,8 @@ def test_v2_cards_carry_prefill_foods_for_main_and_companion(client, auth_header
     assert "예산" not in card["reason"]
 
 
-def test_refresh_excludes_cards_already_provided_today(client, auth_headers, db_factory, v2_engine):
-    """'다시 추천받기'와 식사량 전환은 오늘 이 끼니에 이미 보여 준 카드를 빼고 고른다 — any·light·hearty 가 서로 다르다."""
+def test_repeat_requests_exclude_cards_already_provided_today(client, auth_headers, db_factory, v2_engine):
+    """같은 끼니를 다시 요청하면(다시 추천받기·식사량 전환) 오늘 이미 보여 준 카드를 빼고 고른다 — any·light 가 서로 다르다."""
     db = db_factory()
     uid = _user_id(db)
     _history(db, uid, [("김치찌개", 320, 18, 22, 16)])
@@ -279,12 +279,16 @@ def test_refresh_excludes_cards_already_provided_today(client, auth_headers, db_
         return {m["name"] for m in res.json()["recommended_menus"]}
 
     first = names({"meal_type": "lunch"})
-    refreshed = names({"meal_type": "lunch", "refresh": True})
-    assert first and refreshed and refreshed.isdisjoint(first)
-    light = names({"meal_type": "lunch", "mood": "light", "refresh": True})
-    assert light and light.isdisjoint(first | refreshed)
-    logs = db.scalars(select(RecommendationLog).order_by(RecommendationLog.id)).all()
-    assert [log.decision["refresh"] for log in logs[-3:]] == [False, True, True]
+    again = names({"meal_type": "lunch"})
+    assert first and again and again.isdisjoint(first)
+    light = names({"meal_type": "lunch", "mood": "light"})
+    assert light and light.isdisjoint(first | again)
+    # 다른 끼니는 오늘 점심에 보여 준 카드의 영향을 받지 않는다
+    dinner = db.scalars(select(RecommendationLog).order_by(RecommendationLog.id)).all()
+    assert [log.decision["provided_excluded"] for log in dinner[-3:]] == [0, len(first), len(first) + len(again)]
+    names({"meal_type": "dinner"})
+    assert db.scalars(select(RecommendationLog).order_by(RecommendationLog.id.desc())).first().decision[
+        "provided_excluded"] == 0
 
 
 def test_rejection_excludes_only_for_the_rest_of_the_day(client, auth_headers, db_factory):
