@@ -80,9 +80,38 @@ class Settings(BaseSettings):
 
     # FE 스토어 배포 전에는 기존 일일 한도를 유지한다.
     ai_premium_gate: bool = False
+    # 무료 사용자의 평생 AI 사용권(분석+추천 성공 호출 합계). 'Eat로그 출시 기념'
+    # 프로모션으로 10 → 100. env FREE_CREDIT_LIMIT 로 바꾼다(코드 배포 불필요).
+    # ai_premium_gate 가 켜져 있을 때만 실제로 막는다 — 꺼져 있으면 위 일일 한도가 적용되고
+    # 이 값은 GET /usage/daily 의 free_credits 표시에만 쓰인다.
+    free_credit_limit: int = 100
     # 하루 경계 시각 (KST). 6이면 06:00~다음날 06:00 를 '하루'로 취급 —
     # 캘린더/요약(FE day_start_hour=6)과 사용량 리셋 기준을 일치시킨다.
     day_start_hour: int = 6
+
+    # --- 프로모션 이미지 (GET /promotions/active) ---
+    # 앱 시작 팝업·튜토리얼 페이월에 띄우는 원격 이미지. 전부 env/Parameter Store 로
+    # 바꿀 수 있어 이미지 교체에 앱 재배포도 서버 코드 변경도 필요 없다
+    # (docs/프로모션-이미지-교체.md).
+    promo_enabled: bool = True
+    # FE 가 '보지 않기' 기록을 id 별로 저장한다 — 이미지를 바꾸면 id 도 반드시 바꿀 것.
+    promo_id: str = "launch-100-free-2026-10"
+    # 공개 HTTPS 이미지 주소. 비어 있으면 프로모션 없음(null).
+    # 기본값은 2026-10 출시 기념 이미지(Firebase Storage). 교체는 Parameter Store 의 PROMO_IMAGE_URL 로.
+    promo_image_url: str = (
+        "https://firebasestorage.googleapis.com/v0/b/soma-temp-storage.firebasestorage.app/o/promotions%2Flaunch-100-free-2026-10-c.jpg?alt=media&token=1e24cbfa49bf440d819c1de28424e685"
+    )
+    # 이미지를 받기 전에 자리를 잡기 위한 원본 크기(px)
+    promo_image_width: int = 1024
+    promo_image_height: int = 1536
+    promo_alt_text: str = "Eat로그 출시 기념 — AI 분석 100회 무료"
+    # 이미지를 눌렀을 때: subscription(구독 화면) | url(promo_action_url 웹뷰) | none
+    promo_action: str = "subscription"
+    promo_action_url: str = ""
+    # 노출 위치(콤마 구분): launch(앱 시작 팝업), tutorial(튜토리얼 마지막 페이월)
+    promo_placements: str = "launch,tutorial"
+    # 기본은 프리미엄 구독자에게 보여주지 않는다
+    promo_show_to_premium: bool = False
 
     # --- 게이미피케이션 feature flag ---
     # '발견 돋보기'(food_clarifier): 켜면 스킬 장착+충전이 남은 사용자의 사진 분석에
