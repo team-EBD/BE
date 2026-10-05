@@ -25,6 +25,9 @@ def promo_defaults(monkeypatch):
         "promo_image_url": "",
         "promo_image_width": 1080,
         "promo_image_height": 1620,
+        "promo_tutorial_image_url": "",
+        "promo_tutorial_image_width": 1536,
+        "promo_tutorial_image_height": 1024,
         "promo_alt_text": "Eat로그 출시 기념 — AI 분석 100회 무료",
         "promo_action": "subscription",
         "promo_action_url": "",
@@ -280,3 +283,42 @@ def test_env_names_map_to_settings(monkeypatch):
     assert fresh.promo_placements == "launch"
     assert fresh.promo_show_to_premium is True
     assert fresh.free_credit_limit == 30
+
+
+TUTORIAL_IMAGE = "https://cdn.example.com/promo/tutorial-wide.png"
+
+
+def test_tutorial_placement_uses_its_own_image(client, auth_headers, with_image, monkeypatch):
+    """튜토리얼 페이월은 가로형 전용 이미지를 받는다 — 팝업(launch)은 기본 이미지 그대로."""
+    monkeypatch.setattr(settings, "promo_tutorial_image_url", TUTORIAL_IMAGE)
+    tutorial = _get(client, auth_headers, placement="tutorial").json()["promotion"]
+    assert tutorial["image_url"] == TUTORIAL_IMAGE
+    assert (tutorial["image_width"], tutorial["image_height"]) == (1536, 1024)
+    # 같은 프로모션이다 — id·동작·대체 문구는 공유한다
+    assert tutorial["id"] == "launch-100-free-2026-10"
+    assert tutorial["action"] == "subscription"
+
+    launch = _get(client, auth_headers, placement="launch").json()["promotion"]
+    assert launch["image_url"] == IMAGE
+    assert (launch["image_width"], launch["image_height"]) == (1080, 1620)
+
+
+def test_tutorial_placement_falls_back_to_main_image(client, auth_headers, with_image, monkeypatch):
+    monkeypatch.setattr(settings, "promo_tutorial_image_url", "   ")
+    tutorial = _get(client, auth_headers, placement="tutorial").json()["promotion"]
+    assert tutorial["image_url"] == IMAGE
+    assert (tutorial["image_width"], tutorial["image_height"]) == (1080, 1620)
+
+
+def test_tutorial_image_alone_does_not_enable_promotion(client, auth_headers, monkeypatch):
+    """기본 이미지가 비어 있으면(프로모션 없음) 튜토리얼 이미지만으로는 켜지지 않는다."""
+    monkeypatch.setattr(settings, "promo_tutorial_image_url", TUTORIAL_IMAGE)
+    assert _get(client, auth_headers, placement="tutorial").json() == {"promotion": None}
+
+
+def test_tutorial_image_bad_size_falls_back(client, auth_headers, with_image, monkeypatch):
+    monkeypatch.setattr(settings, "promo_tutorial_image_url", TUTORIAL_IMAGE)
+    monkeypatch.setattr(settings, "promo_tutorial_image_width", 0)
+    tutorial = _get(client, auth_headers, placement="tutorial").json()["promotion"]
+    # 가로형 기본 비율로 떨어진다 (세로 포스터 비율이 아니다)
+    assert (tutorial["image_width"], tutorial["image_height"]) == (1536, 1024)

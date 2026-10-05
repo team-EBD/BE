@@ -104,6 +104,13 @@ class Settings(BaseSettings):
     # 이미지를 받기 전에 자리를 잡기 위한 원본 크기(px)
     promo_image_width: int = 1024
     promo_image_height: int = 1536
+    # 튜토리얼 마지막 페이월 전용 이미지(가로형). 히어로 자리가 낮아 세로 포스터는 작게 보인다.
+    # 비어 있으면 위 기본 이미지를 그대로 쓴다. placement=tutorial 요청에만 내려간다.
+    promo_tutorial_image_url: str = (
+        "https://firebasestorage.googleapis.com/v0/b/soma-temp-storage.firebasestorage.app/o/promotions%2Flaunch-100-free-2026-10-wide-a.jpg?alt=media&token=418c71a9c81c471fba390163de4ee8e3"
+    )
+    promo_tutorial_image_width: int = 1536
+    promo_tutorial_image_height: int = 1024
     promo_alt_text: str = "Eat로그 출시 기념 — AI 분석 100회 무료"
     # 이미지를 눌렀을 때: subscription(구독 화면) | url(promo_action_url 웹뷰) | none
     promo_action: str = "subscription"
