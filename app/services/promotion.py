@@ -24,6 +24,7 @@ logger = logging.getLogger("eatlog.promotion")
 PLACEMENTS = ("launch", "tutorial")
 ACTIONS = ("subscription", "url", "none")
 _DEFAULT_IMAGE_SIZE = (1080, 1620)
+_DEFAULT_TUTORIAL_IMAGE_SIZE = (1536, 1024)
 
 
 def configured_placements() -> list[str]:
@@ -73,6 +74,15 @@ def active_promotion(db: Session, user_id: int, placement: str) -> Promotion | N
         return None
 
     width, height = settings.promo_image_width, settings.promo_image_height
+    if placement == "tutorial":
+        # 튜토리얼 페이월은 히어로 자리가 낮다 — 전용(가로형) 이미지가 있으면 그것을 쓴다
+        tutorial_url = settings.promo_tutorial_image_url.strip()
+        if tutorial_url:
+            image_url = tutorial_url
+            width = settings.promo_tutorial_image_width
+            height = settings.promo_tutorial_image_height
+            if width <= 0 or height <= 0:
+                width, height = _DEFAULT_TUTORIAL_IMAGE_SIZE
     if width <= 0 or height <= 0:
         # FE 가 비율 계산에 쓰는 값 — 0 이하가 내려가면 레이아웃이 깨진다
         width, height = _DEFAULT_IMAGE_SIZE
