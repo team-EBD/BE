@@ -1,7 +1,8 @@
 """AI 사용량 제한 (분석/추천).
 
 기본 off 에서는 사용자당 하루(KST) 분석/추천 한도를 각각 적용한다.
-ai_premium_gate 가 켜지면 무료 사용자의 평생 성공 호출 10회를 통합 적용한다.
+ai_premium_gate 가 켜지면 무료 사용자의 평생 성공 호출 한도(settings.free_credit_limit,
+기본 100회 — 출시 기념)를 통합 적용한다.
 - 집계 원천은 ai_call_logs (별도 카운터 테이블 없이 기존 로그를 사용).
 - off 에서 프리미엄 구독자는 별도 한도(analyze/recommend_daily_limit_premium,
   기본 무제한)를 적용한다. on 에서는 프리미엄 구독자가 무제한이다.
@@ -27,8 +28,23 @@ TASK_TYPE_FAMILY: dict[str, tuple[str, ...]] = {
     "analyze": ("analyze", "analyze_clarifier"),
     "recommend": ("recommend",),
 }
-FREE_CREDIT_LIMIT = 10
 FREE_CREDIT_TASK_TYPES = TASK_TYPE_FAMILY["analyze"] + TASK_TYPE_FAMILY["recommend"]
+
+
+def free_credit_limit() -> int:
+    """무료 사용자의 평생 AI 사용권 수 (settings.free_credit_limit, env FREE_CREDIT_LIMIT).
+
+    호출 시점에 설정을 읽는다 — 값을 모듈 상수로 굳히면 설정과 어긋난다.
+    """
+    return max(int(settings.free_credit_limit), 0)
+
+
+def __getattr__(name: str):
+    # 예전 상수 이름(FREE_CREDIT_LIMIT)을 쓰는 코드가 깨지지 않게 남겨 둔다.
+    # 접근할 때마다 설정값을 돌려주므로 설정과 어긋난 값이 남지 않는다.
+    if name == "FREE_CREDIT_LIMIT":
+        return free_credit_limit()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def task_types_for(task_type: str) -> tuple[str, ...]:
@@ -110,16 +126,17 @@ def enforce_daily_limit(db: Session, user_id: int, task_type: str) -> None:
         if premium:
             return
         used = count_lifetime_success(db, user_id)
-        if used >= FREE_CREDIT_LIMIT:
+        limit = free_credit_limit()
+        if used >= limit:
             raise APIError(
                 429,
                 "TOO_MANY_REQUESTS",
-                "무료 AI 사용권 10회를 모두 사용했어요." + _FREE_SUFFIX,
+                f"무료 AI 사용권 {limit}회를 모두 사용했어요." + _FREE_SUFFIX,
                 details=[
                     {
                         "field": task_type,
                         "reason": "free_credit_exhausted",
-                        "limit": FREE_CREDIT_LIMIT,
+                        "limit": limit,
                         "used": used,
                         "upgradable": True,
                     }

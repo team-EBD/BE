@@ -128,6 +128,24 @@ BE/
 - 콘솔에서 해야 하는 1회 설정(서비스 계정·API 키·상품 등록·알림 URL)은
   [`docs/인앱결제-서버-설정.md`](docs/인앱결제-서버-설정.md) 참고.
 
+## 무료 AI 사용권 · 프로모션 이미지
+
+| 메서드 | 경로 | 설명 |
+| --- | --- | --- |
+| GET | `/v1/usage/daily` | 분석/추천 일일 사용량과 `free_credits {limit, used, remaining}` |
+| GET | `/v1/promotions/active?placement=launch\|tutorial` | 지금 보여줄 프로모션 이미지 1건. 없으면 `{"promotion": null}` |
+
+- 무료 사용권 수는 `FREE_CREDIT_LIMIT`(기본 100, 출시 기념). `AI_PREMIUM_GATE=true` 일 때만
+  실제로 막고(429 `details.reason = "free_credit_exhausted"`, `details.limit`), `false` 면
+  기능별 일일 한도가 적용되며 이 값은 `free_credits` 표시에만 쓰인다.
+- `GET /v1/promotions/active` — 인증 필요. `placement` 기본값 `launch`, 그 밖의 값은
+  400 `VALIDATION_ERROR`. 응답 `promotion`: `id`, `image_url`, `image_width`, `image_height`,
+  `alt_text`, `action`(`subscription`\|`url`\|`none`), `action_url`, `placements`.
+  프로모션이 꺼졌거나, 이미지 주소가 비었거나, 요청한 위치가 대상이 아니거나, 프리미엄
+  사용자(`PROMO_SHOW_TO_PREMIUM=false`)면 `null`.
+- 이미지·문구·노출 위치는 전부 환경변수(`PROMO_*`)라 재배포 없이 바꾼다 —
+  [`docs/프로모션-이미지-교체.md`](docs/프로모션-이미지-교체.md) 참고.
+
 ## 엔드포인트 규약
 
 - 모든 API 는 `/v1` 프리픽스.
