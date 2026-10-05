@@ -15,6 +15,12 @@ from app.core.config import settings
 from app.core.timeutil import kst_date_of, kst_day_bounds, now_utc
 from app.models import DailyNutritionSummary, MealImage, MealItem, MealRecord, UserProfile
 from app.services.image_retention import retention_cutoff_utc
+from app.services.report_readiness import (
+    daily_readiness,
+    is_filled_day,
+    monthly_readiness,
+    weekly_readiness,
+)
 
 # 목표 미설정 사용자 기본값 (명세서 9.1 예시 준용)
 DEFAULT_GOALS = {"calories": 2000, "carbs": 250, "protein": 120, "fat": 65}
@@ -80,6 +86,8 @@ def aggregate_day(
 
     끼니 수(meal_count)는 실제로 먹은 기록만 센다 — 생략(is_skipped) 기록은
     영양 합계(0)에는 무해하지만 '몇 끼 먹었는지'에는 포함하면 안 된다.
+    기록 수(record_count)는 생략 기록까지 포함한 '기록했다는 행동'의 수 —
+    리포트 열람 조건(report_readiness)의 기준이다.
 
     기본 경계는 settings.day_start_hour (KST 06:00)이다.
     day_start_hour 로 다른 경계를 지정할 수 있다.
@@ -94,6 +102,7 @@ def aggregate_day(
             func.coalesce(
                 func.sum(case((MealRecord.is_skipped.is_(False), 1), else_=0)), 0
             ),
+            func.count(MealRecord.id),
         ).where(
             MealRecord.user_id == user_id,
             MealRecord.deleted_at.is_(None),
@@ -107,6 +116,7 @@ def aggregate_day(
         "protein": round(float(row[2]), 2),
         "fat": round(float(row[3]), 2),
         "meal_count": int(row[4]),
+        "record_count": int(row[5]),
     }
 
 
@@ -119,13 +129,14 @@ def aggregate_range(
     31일치를 날짜별 개별 쿼리로 도는 대신 기간 전체를 한 번에 읽고
     파이썬에서 KST 날짜로 group-by 한다 (DB 방언 무관하게 KST 경계 보장).
     필터 조건은 aggregate_day 와 동일: soft delete 제외, meal_count 는
-    is_skipped=False 인 기록만 센다.
+    is_skipped=False 인 기록만, record_count 는 생략 기록까지 센다.
     """
     start, _ = kst_day_bounds(start_day, day_start_hour)
     _, end = kst_day_bounds(end_day, day_start_hour)
     days: dict[date, dict] = {
         start_day + timedelta(days=i): {
-            "calories": 0.0, "carbs": 0.0, "protein": 0.0, "fat": 0.0, "meal_count": 0
+            "calories": 0.0, "carbs": 0.0, "protein": 0.0, "fat": 0.0,
+            "meal_count": 0, "record_count": 0,
         }
         for i in range((end_day - start_day).days + 1)
     }
@@ -152,6 +163,7 @@ def aggregate_range(
         total["carbs"] += float(carbs)
         total["protein"] += float(protein)
         total["fat"] += float(fat)
+        total["record_count"] += 1
         if not is_skipped:
             total["meal_count"] += 1
     for total in days.values():
@@ -311,6 +323,7 @@ def daily_summary_response(
     """
     total = aggregate_day(db, user_id, day, day_start_hour)
     goals = get_goals(db, user_id)
+    today = kst_date_of(now_utc(), day_start_hour)
     progress = {
         k: round(total[k] / goals[k], 2) if goals[k] else 0.0
         for k in ("calories", "carbs", "protein", "fat")
@@ -324,6 +337,8 @@ def daily_summary_response(
         "summary_text": build_summary_text(total, goals, total["meal_count"]),
         "streak_days": streak_days(db, user_id, day, day_start_hour),
         "macro_ratio": macro_ratio(total["carbs"], total["protein"], total["fat"]),
+        # 리포트 화면 열람 조건 (SCRUM-275). 홈 화면은 이 필드를 쓰지 않는다
+        "report_readiness": daily_readiness(day, today, total, day_start_hour),
     }
 
 
@@ -371,6 +386,8 @@ def _week_stats(
                 "date": day.isoformat(),
                 "calories": round(total["calories"]),
                 "meal_count": total["meal_count"],
+                "record_count": total["record_count"],
+                "filled": is_filled_day(total),  # 2끼 이상 기록(생략 포함)한 날
                 "achieved": achieved,
                 # 오늘(집계 중)만 True — 미래 날짜는 데이터가 없어 FE 가 구분 불필요
                 "in_progress": today is not None and day == today,
@@ -458,6 +475,7 @@ def weekly_summary_response(
                 and day_totals[today]["meal_count"] > 0
             ),
         ),
+        "report_readiness": weekly_readiness(week_start, today, day_totals, day_start_hour),
     }
 
 
@@ -638,4 +656,5 @@ def monthly_summary_response(
         },
         "insights": build_monthly_insights(weeks),
         "summary_text": build_monthly_summary_text(stats, prev_stats),
+        "report_readiness": monthly_readiness(first, last, today, day_totals, day_start_hour),
     }

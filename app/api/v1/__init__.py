@@ -10,6 +10,7 @@ from app.api.v1 import (
     health,
     meals,
     nutrition,
+    promotions,
     push_tokens,
     recommendations,
     subscriptions,
@@ -31,3 +32,4 @@ api_router.include_router(usage.router)
 api_router.include_router(subscriptions.router)
 api_router.include_router(client_events.router)
 api_router.include_router(game.router)
+api_router.include_router(promotions.router)

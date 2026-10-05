@@ -15,10 +15,10 @@ from app.core.config import settings
 from app.core.deps import DB, CurrentUser
 from app.services.subscription import is_premium
 from app.services.usage_limit import (
-    FREE_CREDIT_LIMIT,
     count_lifetime_success,
     count_today_success,
     daily_limit,
+    free_credit_limit,
     is_limit_exempt,
 )
 
@@ -62,13 +62,14 @@ def get_daily_usage(user: CurrentUser, db: DB) -> DailyUsageResponse:
     # 새 정책에는 기능별 일일 한도가 없고, 무료 크레딧만 통합 적용한다.
     analyze_limit = 0 if settings.ai_premium_gate else daily_limit("analyze", premium)
     recommend_limit = 0 if settings.ai_premium_gate else daily_limit("recommend", premium)
+    free_limit = free_credit_limit()
     return DailyUsageResponse(
         analyze=_quota(db, user.id, "analyze", analyze_limit),
         recommend=_quota(db, user.id, "recommend", recommend_limit),
         free_credits=UsageQuota(
-            limit=FREE_CREDIT_LIMIT,
+            limit=free_limit,
             used=free_used,
-            remaining=max(FREE_CREDIT_LIMIT - free_used, 0),
+            remaining=max(free_limit - free_used, 0),
         ),
         is_premium=premium,
     )

@@ -1,6 +1,6 @@
 """계정 역할(users.role: user/tester/admin) — AI 한도 면제와 '서버에서만 지정' 원칙.
 
-tester·admin 은 AI 사용 한도(무료 10회 게이트·일일 한도)를 받지 않는다. 구독 상태는 그대로다.
+tester·admin 은 AI 사용 한도(무료 사용권 게이트·일일 한도)를 받지 않는다. 구독 상태는 그대로다.
 역할은 어떤 API 로도 바뀌지 않고 응답에도 실리지 않는다.
 """
 from __future__ import annotations
@@ -11,7 +11,11 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.config import settings
 from app.models import AI_LIMIT_EXEMPT_ROLES, User, UserRole
-from tests.test_ai_premium_gate import _post, seed_ai_logs  # noqa: F401 (fixture 재사용)
+from tests.test_ai_premium_gate import (  # noqa: F401 (fixture 재사용)
+    _post,
+    credit_limit_10,
+    seed_ai_logs,
+)
 
 AI_PATHS = [
     "/v1/meals/analyze",
@@ -61,8 +65,10 @@ def test_exempt_roles_are_tester_and_admin_only():
 
 
 @pytest.mark.parametrize("path", AI_PATHS)
-def test_user_is_blocked_after_free_credits(client, auth_headers, seed_ai_logs, monkeypatch, path):
-    """기준선 — 일반 사용자는 게이트가 켜지면 10회 뒤 429."""
+def test_user_is_blocked_after_free_credits(
+    client, auth_headers, seed_ai_logs, monkeypatch, credit_limit_10, path
+):
+    """기준선 — 일반 사용자는 게이트가 켜지면 한도(여기서는 10회) 뒤 429."""
     monkeypatch.setattr(settings, "ai_premium_gate", True)
     seed_ai_logs("analyze", 10)
     res = _call(client, auth_headers, path)
@@ -73,7 +79,7 @@ def test_user_is_blocked_after_free_credits(client, auth_headers, seed_ai_logs, 
 @pytest.mark.parametrize("role", [UserRole.TESTER, UserRole.ADMIN])
 @pytest.mark.parametrize("path", AI_PATHS)
 def test_exempt_roles_pass_the_gate_on_every_ai_path(
-    client, auth_headers, seed_ai_logs, set_role, monkeypatch, role, path
+    client, auth_headers, seed_ai_logs, set_role, monkeypatch, credit_limit_10, role, path
 ):
     monkeypatch.setattr(settings, "ai_premium_gate", True)
     seed_ai_logs("analyze", 25)
@@ -94,7 +100,7 @@ def test_exempt_role_also_skips_daily_limit_when_gate_is_off(
 
 
 def test_usage_api_reports_unlimited_for_tester_but_keeps_is_premium_truthful(
-    client, auth_headers, seed_ai_logs, set_role, monkeypatch
+    client, auth_headers, seed_ai_logs, set_role, monkeypatch, credit_limit_10
 ):
     monkeypatch.setattr(settings, "ai_premium_gate", True)
     seed_ai_logs("analyze", 12)

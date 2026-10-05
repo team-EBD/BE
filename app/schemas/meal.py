@@ -30,12 +30,15 @@ class AnalyzeRequest(BaseModel):
     meal_image_id: int
     # 사진과 함께 적은 식사 설명 (선택) — AI 식별·수량 힌트
     text: str | None = Field(default=None, max_length=200)
+    # 튜토리얼(첫 기록 연습) 중 호출인지 — ai_call_logs.is_tutorial 로 저장. 구버전 앱은 생략(NULL)
+    is_tutorial: bool | None = None
 
 
 class ParseTextRequest(BaseModel):
     """자연어 식사 서술 ("김밥 한 줄이랑 라면 반 개")."""
 
     text: str = Field(min_length=1, max_length=200)
+    is_tutorial: bool | None = None  # AnalyzeRequest.is_tutorial 과 같은 의미
 
 
 class CandidateNutrition(BaseModel):

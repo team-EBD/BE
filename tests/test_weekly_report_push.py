@@ -1,4 +1,8 @@
-"""주간 리포트 도착 푸시 — 발송 시점·직전 주 계산·기록 일수별 개인화·토큰 정리."""
+"""주간 리포트 도착 푸시 — 발송 시점·직전 주 계산·기록 일수별 개인화·토큰 정리.
+
+리포트 열람 조건(SCRUM-275): 직전 주에 2끼 이상 기록한 날이 3일 미만이면 리포트가
+열리지 않으므로 푸시도 보내지 않는다. 아래 '발송되는' 사용자는 모두 그 조건을 채운다.
+"""
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
@@ -14,6 +18,7 @@ from app.services.weekly_report_push import (
     last_completed_week_start,
     recorded_days_in_week,
     send_weekly_report_push,
+    week_record_stats,
     weekly_push_due,
     weekly_report_push_recipients,
 )
@@ -88,16 +93,23 @@ def _add_token(db, user_id: int, token: str) -> None:
     db.commit()
 
 
-def _add_meal(db, user_id: int, eaten_at: datetime) -> None:
+def _add_meal(db, user_id: int, eaten_at: datetime, *, is_skipped: bool = False) -> None:
     db.add(
         MealRecord(
             user_id=user_id,
             meal_type="lunch",
             eaten_at=eaten_at,
-            total_calories=500,
+            total_calories=0 if is_skipped else 500,
+            is_skipped=is_skipped,
         )
     )
     db.commit()
+
+
+def _fill_day(db, user_id: int, day: date, *, hours=(8, 12)) -> None:
+    """하루를 '채운 날'(기록 2건)로 만든다."""
+    for hour in hours:
+        _add_meal(db, user_id, datetime(day.year, day.month, day.day, hour, 0, tzinfo=KST))
 
 
 def test_recipients_respect_notification_settings(db_factory):
@@ -131,25 +143,43 @@ def test_recipients_respect_notification_settings(db_factory):
 def test_send_personalizes_body_per_user(db_factory):
     db = db_factory()
 
-    # 지난주(07-19~25) 3일 기록한 사용자 vs 기록 없는 사용자
+    # 지난주(07-19~25) 3일을 2끼씩 채운 사용자(리포트 열림) vs 하루 1끼씩 3일 기록한 사용자(조건 미달)
     active = _make_user(db, "active")
     _add_token(db, active.id, "t-active")
     for day in (19, 21, 23):
-        _add_meal(db, active.id, datetime(2026, 7, day, 12, 0, tzinfo=KST))
+        _fill_day(db, active.id, date(2026, 7, day))
     # 이번 주(진행 중) 기록은 직전 완결 주 집계에 포함되면 안 된다
     _add_meal(db, active.id, datetime(2026, 7, 26, 8, 0, tzinfo=KST))
+
+    light = _make_user(db, "light")
+    _add_token(db, light.id, "t-light")
+    for day in (19, 21, 23):
+        _add_meal(db, light.id, datetime(2026, 7, day, 12, 0, tzinfo=KST))
 
     silent = _make_user(db, "silent")
     _add_token(db, silent.id, "t-silent")
 
     client = MockPushClient()
-    assert send_weekly_report_push(db, client, now=_SUNDAY_0900) == 2
-    assert len(client.sent) == 2  # 사용자별 개별 발송
+    assert send_weekly_report_push(db, client, now=_SUNDAY_0900) == 1
+    assert [m["tokens"] for m in client.sent] == [["t-active"]]  # 리포트가 열리는 사용자만
+    assert "3일" in client.sent[0]["body"]
+    assert client.sent[0]["data"] == {"type": "weekly_report"}
+    db.close()
 
-    by_token = {m["tokens"][0]: m for m in client.sent}
-    assert "3일" in by_token["t-active"]["body"]
-    assert "기록이 없었어요" in by_token["t-silent"]["body"]
-    assert all(m["data"] == {"type": "weekly_report"} for m in client.sent)
+
+def test_skipped_meals_count_toward_report_readiness(db_factory):
+    """끼니 '건너뜀' 체크도 기록으로 세어 채운 날이 된다."""
+    db = db_factory()
+    user = _make_user(db, "skipper")
+    _add_token(db, user.id, "t-skipper")
+    for day in (20, 22, 24):
+        _add_meal(db, user.id, datetime(2026, 7, day, 8, 0, tzinfo=KST), is_skipped=True)
+        _add_meal(db, user.id, datetime(2026, 7, day, 12, 0, tzinfo=KST))
+
+    recorded_days, report_ready = week_record_stats(db, user.id, date(2026, 7, 19))
+    assert (recorded_days, report_ready) == (3, True)
+    client = MockPushClient()
+    assert send_weekly_report_push(db, client, now=_SUNDAY_0900) == 1
     db.close()
 
 
@@ -157,12 +187,15 @@ def test_early_sunday_meal_counts_in_previous_week_push(db_factory):
     db = db_factory()
     user = _make_user(db, "early-sunday")
     _add_token(db, user.id, "t-early-sunday")
-    # 일요일 03:00 KST는 논리 날짜상 직전 토요일(07-25)이다.
+    _fill_day(db, user.id, date(2026, 7, 20))
+    _fill_day(db, user.id, date(2026, 7, 22))
+    # 일요일 03:00 KST는 논리 날짜상 직전 토요일(07-25)이다 — 토요일 저녁 기록과 합쳐 3일째 '채운 날'
+    _add_meal(db, user.id, datetime(2026, 7, 25, 19, 0, tzinfo=KST))
     _add_meal(db, user.id, to_utc(datetime(2026, 7, 26, 3, 0, tzinfo=KST)))
 
     client = MockPushClient()
     assert send_weekly_report_push(db, client, now=_SUNDAY_0900) == 1
-    assert "지난주 1일 기록했어요" in client.sent[0]["body"]
+    assert "지난주 3일 기록" in client.sent[0]["body"]
     db.close()
 
 
@@ -191,6 +224,8 @@ def test_send_purges_unregistered_tokens(db_factory):
     user = _make_user(db, "purge")
     _add_token(db, user.id, "t-live")
     _add_token(db, user.id, "t-dead")
+    for day in (19, 20, 21):
+        _fill_day(db, user.id, date(2026, 7, day))
 
     client = InvalidatingPushClient(invalid=["t-dead"])
     assert send_weekly_report_push(db, client, now=_SUNDAY_0900) == 1
