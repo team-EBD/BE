@@ -92,8 +92,9 @@ def _bbox_of(cand) -> BoundingBox | None:
         return None
 
 
-# 포장 단위 — 포장 용량(355ml·98g)을 알면 AI 의 g 눈대중 대신 용량 × 개수를 쓴다
-PACKAGE_UNITS = frozenset({"개", "캔", "병"})
+# 포장 단위 — 포장 용량(355ml·98g)을 알면 AI 의 g 눈대중 대신 용량 × 개수를 쓴다.
+# '개' 는 봉지 속 낱개(미니샌드 4개)일 수도 있어 1개일 때만 포장으로 본다 — 4개 × 봉지 100g = 1,560kcal 사고(2026-10-06 평가)
+CONTAINER_UNITS = frozenset({"캔", "병"})
 _NUTRIENTS = ("calories", "carbs", "protein", "fat")
 
 
@@ -145,7 +146,7 @@ def resolve_nutrition(cand, matched) -> ResolvedNutrition:
     package_size = (getattr(package, "size_g", None) if package is not None else None) or (
         getattr(label, "package_size_g", None) if label is not None else None
     )
-    if package_size and (unit is None or unit in PACKAGE_UNITS):
+    if package_size and (unit is None or unit in CONTAINER_UNITS or (unit == "개" and float(count or 1.0) == 1.0)):
         grams = float(package_size) * float(count or 1.0)
     if grams is None and matched is not None and matched.base_amount:
         grams = float(matched.base_amount) * float(getattr(cand, "estimated_serving", 1.0) or 1.0)

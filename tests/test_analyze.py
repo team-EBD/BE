@@ -335,6 +335,11 @@ def test_resolve_label_wins_and_package_size_replaces_ai_grams():
     assert r.source == "label" and r.grams == 355 and round(r.nutrition.calories, 1) == 5.0 and r.sources == ["https://a"]
     bag = resolve_nutrition(_Cand(grams=40, count=1, unit="개", per_100g=_Per100(500), package=_Package(98)), None)
     assert bag.grams == 98 and bag.nutrition.calories == 490.0
+    # 봉지 속 낱개 4개는 '봉지 4개'가 아니다 — 포장 용량은 1개(한 포장)일 때만, 아니면 AI 가 본 전체 g
+    minis = resolve_nutrition(_Cand(grams=120, count=4, unit="개", label=_Label(390, 100)), None)
+    assert minis.grams == 120 and round(minis.nutrition.calories * 4) == 468
+    cans = resolve_nutrition(_Cand(grams=500, count=2, unit="캔", label=_Label(42, 355)), None)
+    assert cans.grams == 710  # 캔·병은 개수 × 용량
     # 사진 속 포장(40g 파우치)이 검색이 찾은 묶음 포장(280g)보다 우선
     pouch = resolve_nutrition(_Cand(grams=40, count=1, unit="개", label=_Label(385, 280), package=_Package(40)), None)
     assert pouch.grams == 40 and pouch.nutrition.calories == 154.0
