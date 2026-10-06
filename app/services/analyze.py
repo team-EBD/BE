@@ -152,8 +152,32 @@ def resolve_nutrition(cand, matched) -> ResolvedNutrition:
         grams = float(matched.base_amount) * float(getattr(cand, "estimated_serving", 1.0) or 1.0)
     grams = round(float(grams), 1) if grams else None
 
-    # 3) 영양값
+    # 3) 영양값 — 포장에 인쇄된 열량("9g(45 kcal)")이 읽혔으면 그것이 가장 정확하다: kcal 은 인쇄값 × 개수,
+    #    탄단지는 밀도 × g (g 을 모르면 밀도 비율로 인쇄 kcal 에 맞춘다)
     nutrition: CandidateNutrition | None = None
+    printed = getattr(package, "printed_kcal", None) if package is not None else None
+    if printed and (unit is None or unit in CONTAINER_UNITS or unit == "개"):
+        units = float(count or 1.0)
+        if density is not None and grams:
+            macros = {k: density[k] * grams / 100.0 for k in ("carbs", "protein", "fat")}
+        elif density is not None and density.get("calories"):
+            ratio = printed * units / density["calories"]  # 인쇄 kcal 에 해당하는 g/100
+            macros = {k: density[k] * ratio for k in ("carbs", "protein", "fat")}
+        else:
+            macros = {k: 0.0 for k in ("carbs", "protein", "fat")}
+        per_div = units if count else 1.0
+        size_txt = f"({grams / units:g}g)" if grams else ""
+        nutrition = CandidateNutrition(
+            base_serving=(f"1{unit}{size_txt}" if count else f"포장 1개{size_txt}"),
+            calories=round(printed, 1), **{k: round(v / per_div, 1) for k, v in macros.items()},
+        )
+        source = "printed"
+        return ResolvedNutrition(
+            grams=grams, source=source, count=float(count) if count else None, count_unit=unit,
+            estimated_serving=round(float(count) if count else 1.0, 2), nutrition=nutrition,
+            grams_per_unit=round(grams / float(count), 2) if (count and grams) else None,
+            per_100g={k: round(v, 2) for k, v in density.items()} if density else None, sources=sources,
+        )
     if density is not None and grams:
         total = {k: density[k] * grams / 100.0 for k in _NUTRIENTS}
         per = {k: v / float(count) for k, v in total.items()} if count else total

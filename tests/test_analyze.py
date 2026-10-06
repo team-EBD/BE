@@ -292,8 +292,20 @@ class _Label:
 
 
 class _Package:
-    def __init__(self, size_g=None):
-        self.size_g = size_g
+    def __init__(self, size_g=None, printed_kcal=None):
+        self.size_g, self.printed_kcal = size_g, printed_kcal
+
+
+def test_resolve_printed_kcal_on_package_wins():
+    """참쌀설병 낱개 '9g(45 kcal)' 이 읽히면 검색이 찾은 봉지(128g) 값 대신 인쇄 열량 그대로. 2개면 90."""
+    from app.services.analyze import resolve_nutrition
+
+    r = resolve_nutrition(_Cand(grams=9, count=1, unit="개", per_100g=_Per100(475), label=_Label(475, 128), package=_Package(9, 45)), None)
+    assert r.source == "printed" and r.nutrition.calories == 45.0 and r.grams == 9 and r.estimated_serving == 1.0
+    two = resolve_nutrition(_Cand(grams=18, count=2, unit="개", per_100g=_Per100(475), package=_Package(9, 45)), None)
+    assert two.nutrition.calories == 45.0 and two.estimated_serving == 2.0  # 1개 값 × 개수는 FE 가 곱한다
+    cup = resolve_nutrition(_Cand(grams=300, count=1, unit="잔", per_100g=_Per100(60), package=_Package(300, 180)), None)
+    assert cup.source == "ai" and cup.nutrition.calories == 180.0  # 잔은 포장 단위가 아니라 밀도 경로 (300 × 0.6)
 
 
 def test_resolve_bowl_dish_uses_db_density_times_grams_and_is_one_visible_serving():

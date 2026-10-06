@@ -60,6 +60,7 @@ class AIPackageInfo(BaseModel):
     size_text: str | None = None
     label_text: str | None = None
     size_g: float | None = None
+    printed_kcal: float | None = None  # 포장에 인쇄된 총 열량 ("9g(45 kcal)" → 45)
 
 
 class AILabelInfo(BaseModel):
