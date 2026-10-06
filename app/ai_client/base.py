@@ -42,6 +42,36 @@ class AIBoundingBox(BaseModel):
     height: float
 
 
+class AINutritionPer100g(BaseModel):
+    """100g(ml) 당 영양값 — AI 추정 또는 표시 성분 검색 결과."""
+
+    calories: float
+    carbs: float
+    protein: float
+    fat: float
+
+
+class AIPackageInfo(BaseModel):
+    """포장 글자에서 읽은 제품 정보 (포장 제품일 때만)."""
+
+    brand: str | None = None
+    product_name: str | None = None
+    variant: str | None = None
+    size_text: str | None = None
+    label_text: str | None = None
+    size_g: float | None = None
+
+
+class AILabelInfo(BaseModel):
+    """검색 그라운딩으로 찾은 표시 영양성분."""
+
+    product_name: str
+    per_100g: AINutritionPer100g
+    package_size_g: float | None = None
+    sources: list[str] = []
+    confidence: float = 0.0
+
+
 class AICandidate(BaseModel):
     # 사진 속 몇 번째 음식에 대한 예측인지 (0부터). 같은 food_index 후보들은
     # "같은 음식에 대한 대체 예측"이다. 구버전 AI 서버 응답에는 없으므로 기본 0.
@@ -55,7 +85,7 @@ class AICandidate(BaseModel):
     estimated_serving_g: float | None = None
     # 낱개로 셀 수 있는 음식의 사진 속 개수와 단위(개·조각·장·줄). 그릇·접시 음식과 구버전 AI 응답은 None.
     # 개수 음식은 g ÷ 영양DB 1인분 g 으로 배수를 내고 화면엔 개수를 보여 준다 (AI 의 1인분 개념에 기대지 않는다).
-    count: int | None = None
+    count: float | None = None  # 0.5 단위 (반 개)
     count_unit: str | None = None
     # 국물/소스가 실제로 있는 음식인지 — FE 보정 버튼 노출 판단용.
     # 구버전 AI 서버 응답에는 없으므로 True(버튼 노출 유지) 기본값.
@@ -64,6 +94,10 @@ class AICandidate(BaseModel):
     # 사진 속 위치. 구버전 AI 서버·좌표 판별 실패 시 None.
     bbox: AIBoundingBox | None = None
     nutrition: AINutritionEstimate | None = None
+    # 100g 당 영양(AI 추정), 포장 글자, 표시 성분 검색 결과 — 2026-10 이후 AI 서버. 구버전은 None
+    nutrition_per_100g: AINutritionPer100g | None = None
+    package: AIPackageInfo | None = None
+    label: AILabelInfo | None = None
 
 
 class AnalyzeResult(BaseModel):

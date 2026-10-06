@@ -1,225 +1,106 @@
-"""SCRUM-246 — AI 음식명 매칭 부분일치 단계의 유사도(트라이그램) 매칭 전환.
+"""AI 음식명 매칭 — 정확 일치만 (2026-10-06). 포함·유사도 추측 매칭은 삭제됐다.
 
-매칭 사다리: ① 정확 일치 → ② 유사도 단계(포함 후보 우선, 없으면 컷·격차
-통과한 fuzzy) → ③ 포기(None → 호출부가 AI 추정 폴백). fuzzy 매칭 건은
-confidence 를 FUZZY_CONFIDENCE_PENALTY 만큼 감산해 내려보낸다.
+사과→사과차, 당근→당근칩, 무→무밥(530kcal) 처럼 다른 음식을 집던 단계라 틀린 매칭보다 미매칭(AI 추정)이 낫다.
 """
 from __future__ import annotations
 
-import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.ai_client import get_ai_client
-from app.ai_client.base import AICallLogPayload, AICandidate, AINutritionEstimate, AnalyzeResult
+from app.ai_client.base import AICallLogPayload, AICandidate, AnalyzeResult
 from app.main import app
 from app.models import Base, NutritionItem
-from app.services.matching import (
-    SIMILARITY_CUT,
-    db_candidates_for_text,
-    match_food_name,
-    trigram_similarity,
-)
+from app.services.matching import SIMILARITY_CUT, density_per_100g, match_food_name, trigram_similarity
 
 
 def _session_with(items: list[NutritionItem]):
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)
-    factory = sessionmaker(bind=engine, expire_on_commit=False)
-    session = factory()
+    session = sessionmaker(bind=engine, expire_on_commit=False)()
     session.add_all(items)
     session.commit()
     return session
 
 
+_seq = iter(range(1, 10_000))
+
+
 def _item(name: str, **kw) -> NutritionItem:
-    defaults = dict(
-        name=name,
-        normalized_name=name.replace(" ", ""),
-        base_amount=400,
-        base_unit="g",
-        calories=300,
-        carbs=20,
-        protein=15,
-        fat=10,
-        source="seed",
-        is_representative=True,
-    )
+    defaults = dict(name=name, normalized_name=name.replace(" ", ""), base_amount=400, base_unit="g",
+                    calories=320, carbs=18, protein=22, fat=16, source="public", is_representative=True,
+                    serving_basis="per_serving", external_id=f"D{next(_seq)}")
     defaults.update(kw)
     return NutritionItem(**defaults)
 
 
-# ------------------------------- 트라이그램 유사도 자체
-
-
-def test_trigram_similarity_typo_above_cut_sibling_below():
-    """끝 글자 오타는 컷 위, 이름만 형제인 다른 음식은 컷 아래 — 컷 설계 근거."""
+def test_trigram_helper_still_available():
     assert trigram_similarity("김치찌게", "김치찌개") >= SIMILARITY_CUT
-    assert trigram_similarity("물냉면", "비빔냉면") < SIMILARITY_CUT
 
 
-# ------------------------------- ① 정확 일치 (기존 동작 불변)
+def test_exact_match_and_marker_normalization():
+    s = _session_with([_item("김치찌개"), _item("허브차")])
+    assert match_food_name(s, "김치찌개")[1] == "exact"
+    assert match_food_name(s, "허브차 아이스(ICED) (L)")[0].name == "허브차"
 
 
-def test_exact_match_unchanged():
-    session = _session_with([_item("김치찌개"), _item("참치김치찌개")])
-    matched, path = match_food_name(session, "김치찌개")
-    assert matched.name == "김치찌개"
-    assert path == "exact"
+def test_no_substring_or_fuzzy_guessing():
+    """사과→사과차, 무→무밥, 김치찌게(오타)→김치찌개 모두 매칭하지 않는다."""
+    s = _session_with([_item("사과차"), _item("무밥", calories=531, base_amount=300), _item("김치찌개")])
+    assert match_food_name(s, "사과") == (None, "none")
+    assert match_food_name(s, "무") == (None, "none")
+    assert match_food_name(s, "김치찌게") == (None, "none")
 
 
-def test_exact_match_normalizes_markers():
-    session = _session_with([_item("허브차")])
-    matched, path = match_food_name(session, "허브차 아이스(ICED) (L)")
-    assert matched.name == "허브차"
-    assert path == "exact"
-
-
-# ------------------------------- ② 포함(substring) 후보 — 구 부분일치 계승
-
-
-def test_substring_backward_compat_shortest_then_id():
-    """구 부분일치 케이스: 동률(같은 유사도·길이)이면 낮은 id — 기존과 동일 항목."""
-    session = _session_with([_item("참치김밥"), _item("야채김밥")])
-    matched, path = match_food_name(session, "김밥")
-    assert matched.name == "참치김밥"  # 유사도·길이 동률 → 먼저 넣은(낮은 id) 행
-    assert path == "substring"
-
-
-def test_substring_has_no_cut():
-    """포함 후보는 유사도가 낮아도 버리지 않는다 — 구 동작 보존."""
-    session = _session_with([_item("참치김밥")])
-    assert trigram_similarity("김밥", "참치김밥") < SIMILARITY_CUT
-    matched, path = match_food_name(session, "김밥")
-    assert matched.name == "참치김밥"
-    assert path == "substring"
-
-
-def test_substring_ranked_by_similarity():
-    """정렬 기준이 이름 길이 → 유사도 점수로 바뀜: 같은 길이면 더 가까운 이름."""
-    session = _session_with([_item("참치김밥"), _item("김밥나라")])
-    matched, path = match_food_name(session, "김밥")
-    # 접두 일치(김밥나라)가 접미 일치(참치김밥)보다 트라이그램 겹침이 크다
-    assert matched.name == "김밥나라"
-    assert path == "substring"
-
-
-# ------------------------------- ② fuzzy — 오타 커버 + 컷·격차 안전장치
-
-
-def test_fuzzy_matches_typo():
-    session = _session_with([_item("김치찌개"), _item("된장찌개")])
-    matched, path = match_food_name(session, "김치찌게")
-    assert matched.name == "김치찌개"
-    assert path == "fuzzy"
-
-
-def test_fuzzy_cut_rejects_unrelated():
-    session = _session_with([_item("김치찌개"), _item("공기밥")])
-    matched, path = match_food_name(session, "타코야키")
-    assert matched is None
-    assert path == "none"
-
-
-def test_fuzzy_margin_rejects_ambiguous():
-    """상위 두 후보의 점수가 근소하면 자동 연결하지 않는다 — 오연결 방지."""
-    session = _session_with([_item("소고기김치찌개"), _item("닭고기김치찌개")])
-    matched, path = match_food_name(session, "돼지고기김치찌개")
-    assert matched is None
-    assert path == "none"
-
-
-def test_fuzzy_single_candidate_passes():
-    """격차 비교 상대가 없으면(후보 1개) 컷만 넘으면 매칭된다."""
-    session = _session_with([_item("소고기김치찌개")])
-    matched, path = match_food_name(session, "돼지고기김치찌개")
-    assert matched is not None
-    assert matched.name == "소고기김치찌개"
-    assert path == "fuzzy"
-
-
-def test_fuzzy_margin_ignores_same_name_duplicates():
-    """동명 중복(브랜드 행)은 같은 음식 — 격차 규칙의 비교 대상이 아니다."""
-    session = _session_with(
-        [_item("소고기김치찌개", brand="A사"), _item("소고기김치찌개", brand="B사")]
-    )
-    matched, path = match_food_name(session, "돼지고기김치찌개")
-    assert matched is not None
-    assert path == "fuzzy"
-
-
-def test_only_representative_items_matched():
-    """비대표 공공 항목(100g당)은 유사도 단계에서도 제외 — SCRUM-216 원칙 유지."""
-    session = _session_with([_item("김치찌개", is_representative=False, source="public")])
-    matched, path = match_food_name(session, "김치찌게")
-    assert matched is None
-    assert path == "none"
-
-
-@pytest.mark.parametrize("query", ["김치찌개", "찌개", "김치찌게"])
-def test_per_100g_representative_is_not_treated_as_one_serving(query):
-    """기준량 감사로 강등돼도 대표 플래그는 유지된다 — 모든 매칭 경로에서 제외해야 한다."""
-    session = _session_with([
-        _item("김치찌개", serving_basis="per_100g", base_amount=100, calories=80),
+def test_per_100g_rows_match_and_rep_rows_are_excluded():
+    s = _session_with([
+        _item("달걀 삶은것", base_amount=100, calories=150, is_representative=False, serving_basis="per_100g", external_id="D327"),
+        _item("두유", base_amount=200, calories=230.67, external_id="rep:abc"),
     ])
-    assert match_food_name(session, query) == (None, "none")
-    assert db_candidates_for_text(session, "김치찌개 먹었어") == []
+    egg, path = match_food_name(s, "달걀 삶은것")
+    assert path == "exact" and density_per_100g(egg)["calories"] == 150.0
+    assert match_food_name(s, "두유") == (None, "none")  # 동명 대표 행은 제외 → AI 100g 당 값으로
 
 
-def test_explicit_per_serving_item_remains_matchable():
-    session = _session_with([_item("김치찌개", serving_basis="per_serving")])
-    matched, path = match_food_name(session, "김치찌개")
-    assert matched.name == "김치찌개" and path == "exact"
-    assert [item.name for item in db_candidates_for_text(session, "김치찌개 먹었어")] == ["김치찌개"]
+def test_duplicate_names_prefer_seed_then_dish_then_product():
+    s = _session_with([
+        _item("김치", external_id="P9001", calories=1), _item("김치", external_id="D9001", calories=2),
+        _item("김치", source="seed", external_id=None, calories=3),
+    ])
+    assert float(match_food_name(s, "김치")[0].calories) == 3.0
+    s2 = _session_with([_item("김치", external_id="P9002", calories=1), _item("김치", external_id="D9002", calories=2)])
+    assert float(match_food_name(s2, "김치")[0].calories) == 2.0
 
 
-# ------------------------------- confidence 감산 (분석 흐름 통합)
+def test_density_handles_missing_base():
+    assert density_per_100g(_item("x", base_amount=0)) is None
+    assert density_per_100g(_item("x", base_amount=50, calories=100))["calories"] == 200.0
 
 
-def _stub_parse_result(food_name: str, confidence: float) -> AnalyzeResult:
-    return AnalyzeResult(
-        status="success",
-        draft_notice="문장에서 추출한 기록 초안입니다.",
-        candidates=[
-            AICandidate(
-                food_index=0, food_name=food_name, confidence=confidence,
-                estimated_serving=1.0, has_soup=True, has_sauce=False,
-                nutrition=AINutritionEstimate(
-                    base_serving="1인분(300g)", calories=999, carbs=1, protein=1, fat=1
-                ),
-            )
-        ],
-        ai_call_log=AICallLogPayload(
-            provider="google", model_name="stub", task_type="analyze",
-            status="success", latency_ms=1,
-        ),
-    )
+class _OneCandidateAI:
+    def __init__(self, name):
+        self.name = name
+
+    def analyze(self, image_url, eating_habits=None, **kw):
+        return AnalyzeResult(status="success", draft_notice="x", candidates=[
+            AICandidate(food_name=self.name, confidence=0.9, estimated_serving=1.0, estimated_serving_g=300)],
+            ai_call_log=AICallLogPayload(task_type="analyze", status="success", latency_ms=1))
+
+    def recommend(self, *a, **k):
+        raise AssertionError
 
 
-def _parse_with_stub(client, headers, food_name: str, confidence: float = 0.9):
-    class StubClient:
-        def parse_text(self, text, db_candidates=None):
-            return _stub_parse_result(food_name, confidence)
+def test_api_unmatched_name_keeps_confidence_and_reports_source(client, auth_headers):
+    """유사도 감산이 없어졌으니 confidence 는 AI 값 그대로. 미매칭이면 nutrition_source 가 db 가 아니다."""
+    from tests.test_analyze import upload_image_id
 
-    app.dependency_overrides[get_ai_client] = lambda: StubClient()
+    image_id = upload_image_id(client, auth_headers)
+    app.dependency_overrides[get_ai_client] = lambda: _OneCandidateAI("김치찌게")
     try:
-        return client.post(
-            "/v1/meals/parse-text", headers=headers, json={"text": food_name}
-        )
+        res = client.post("/v1/meals/analyze", headers=auth_headers, json={"meal_image_id": image_id})
     finally:
         from app.ai_client.mock import MockAIClient
 
         app.dependency_overrides[get_ai_client] = lambda: MockAIClient()
-
-
-def test_fuzzy_match_reduces_confidence(client, auth_headers):
-    """fuzzy 매칭 건은 confidence 를 감산해 내려보낸다 (별도 UI 대신 기존 채널)."""
-    body = _parse_with_stub(client, auth_headers, "김치찌게", confidence=0.9).json()
-    top = body["candidates"][0]
-    assert top["nutrition"]["calories"] != 999  # DB(시드 김치찌개) 값으로 대체됨
-    assert top["confidence_score"] == 0.7
-
-
-def test_exact_match_keeps_confidence(client, auth_headers):
-    body = _parse_with_stub(client, auth_headers, "김치찌개", confidence=0.9).json()
-    assert body["candidates"][0]["confidence_score"] == 0.9
+    [c] = res.json()["candidates"]
+    assert c["confidence_score"] == 0.9 and c["nutrition_item_id"] is None and c["nutrition_source"] != "db"

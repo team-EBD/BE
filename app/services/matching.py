@@ -199,22 +199,64 @@ def trigram_similarity(a: str, b: str) -> float:
     return len(ta & tb) / len(ta | tb)
 
 
+def density_per_100g(item: NutritionItem) -> dict[str, float] | None:
+    """행의 영양값을 100g(ml) 당으로. 기준량이 없으면 None.
+
+    섭취 영양은 AI 가 본 g × 이 값으로 계산한다 — 행마다 다른 '1인분'(제품 1회 제공량 5g, 건면 중량,
+    요리 1인분 400g, 100g 당)에 기대지 않는다 (2026-10-06 결정).
+    """
+    try:
+        base = float(item.base_amount or 0)
+    except (TypeError, ValueError):
+        return None
+    if base <= 0:
+        return None
+    factor = 100.0 / base
+    return {
+        "calories": float(item.calories) * factor,
+        "carbs": float(item.carbs) * factor,
+        "protein": float(item.protein) * factor,
+        "fat": float(item.fat) * factor,
+    }
+
+
+def _match_priority(item: NutritionItem) -> tuple[int, int]:
+    """동명 행이 여럿이면 시드 → 식약처 음식(D) → 식재료·그 밖 → 가공식품(P) 순, 같은 층은 낮은 id."""
+    ext = item.external_id or ""
+    if item.source == "seed":
+        tier = 0
+    elif ext.startswith("D"):
+        tier = 1
+    elif ext.startswith("P"):
+        tier = 3
+    else:
+        tier = 2
+    return (tier, item.id)
+
+
 def match_food_name(db: Session, food_name: str) -> tuple[NutritionItem | None, str]:
-    """AI 후보 음식명을 영양 DB 1건에 매칭. (item, path) 를 반환한다.
+    """AI 음식명을 영양 DB 1건에 매칭. (item, path) 를 반환한다. path: "exact" | "none".
 
-    path: "exact"(정확 일치) | "substring"(DB 이름이 AI 이름을 포함) |
-    "fuzzy"(트라이그램 유사도) | "none"(매칭 포기 → 호출부가 AI 추정 폴백).
-    fuzzy 매칭은 호출부에서 confidence 를 감산해 내려보낸다 (SCRUM-246 —
-    별도 "유사 매칭" UI 없이 기존 확신도 채널로 불확실성을 전달).
+    **정확 일치만** 한다 (2026-10-06). 이전의 포함(부분일치)·유사도 단계는 사과→사과차, 당근→당근칩,
+    무→무밥(530kcal), 계란볶음밥→참깨라면계란볶음밥처럼 다른 음식을 집어 kcal 을 통째로 틀리게 했다.
+    매칭이 안 되면 호출부가 AI 의 100g 당 추정값을 쓴다 — 틀린 매칭보다 AI 추정이 낫다.
 
-    매칭 대상은 **대표(is_representative) 중 per_100g 로 판정되지 않은 항목만**이다. 분석 흐름은 매칭값을
-    1인분 기준으로 간주해 AI 추정치를 대체하는데, 대표 항목(시드 + 큐레이션)만
-    1인분 기준으로 환산돼 있다. 비대표 공공 항목은 100g/100ml 당 값이라
-    그대로 쓰면 "김치찌개 19kcal" 같은 오답이 된다 — 검색 화면에서만 노출한다.
+    - 100g 당 행(per_100g)도 대상이다. 호출부가 밀도(100g 당)로 계산하므로 기준량 종류가 상관없다.
+    - 8월 적재 때 만든 동명 대표(`rep:`) 행은 제외한다 — 집계 오류(두유 231kcal/200ml)가 있고,
+      같은 역할은 AI 추정값이 더 안정적이다.
     """
     normalized = normalize_name(food_name)
     if not normalized:
         return None, "none"
+    rows = db.scalars(
+        select(NutritionItem).where(
+            NutritionItem.normalized_name == normalized,
+            or_(NutritionItem.external_id.is_(None), NutritionItem.external_id.not_like("rep:%")),
+        )
+    ).all()
+    if not rows:
+        return None, "none"
+    return min(rows, key=_match_priority), "exact"
     representative_only = per_serving_representatives()
     exact = db.scalar(
         select(NutritionItem)
