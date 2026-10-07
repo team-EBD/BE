@@ -32,9 +32,13 @@ MACRO_SPLIT = {"carbs": (0.5, 4), "protein": (0.3, 4), "fat": (0.2, 9)}
 # - diet(감량): 근손실 방지 위해 상향 / maintain(유지): Morton 2018 플래토 ~1.6
 # - bulk(증량): 잉여열량에서 근합성 지원
 PROTEIN_G_PER_KG = {"diet": 2.0, "maintain": 1.6, "bulk": 1.8}
-# 지방은 목표 칼로리의 25%(기본), 하한 20% — 20% 미만은 호르몬·필수지방산 저하 (AND/DC/ACSM 2016)
+# 지방은 목표 칼로리의 25% (AND/DC/ACSM 2016 — 20% 미만은 호르몬·필수지방산 저하)
 FAT_ENERGY_RATIO = 0.25
-FAT_ENERGY_RATIO_MIN = 0.20
+# 단백질 열량 비중의 허용 범위 (AMDR 10~35%). 체중 기반 단백질 g 은 목표 칼로리와 무관하게 나오므로
+# 500kcal 같은 낮은 목표에선 단백질 128g(512kcal)만으로 목표를 넘겨 탄수가 0 으로 찍혔다(2026-10-07).
+# 상한으로 자르고, 아주 높은 목표에선 하한으로 단백질이 같이 늘게 한다. 지방 25% + 단백질 ≤35% 라 탄수는 늘 40% 이상.
+PROTEIN_ENERGY_RATIO_MIN = 0.10
+PROTEIN_ENERGY_RATIO_MAX = 0.35
 
 
 def derive_macro_goals(
@@ -42,7 +46,7 @@ def derive_macro_goals(
 ) -> dict[str, int]:
     """목표 칼로리에서 탄단지 목표(g)를 유도한다.
 
-    체중이 있으면 '단백질(체중당 g) 먼저 → 지방(칼로리 %, 하한 20%) → 탄수 나머지' 순으로
+    체중이 있으면 '단백질(체중당 g, 열량의 10~35% 안으로) 먼저 → 지방 25% → 탄수 나머지' 순으로
     목표 유형(감량/유지/증량)에 맞춰 산정한다. 체중이 없으면(신체정보 부족) 기존 비율(50:30:20)로
     폴백한다. (스포츠영양 근거: ref/설계/영양_목표_산정_근거_v1.md)
     """
@@ -53,17 +57,15 @@ def derive_macro_goals(
         }
 
     coef = PROTEIN_G_PER_KG.get(meal_goal or "maintain", PROTEIN_G_PER_KG["maintain"])
-    protein_g = round(float(weight) * coef)
-    protein_kcal = protein_g * 4
-
-    fat_kcal = goal_calories * FAT_ENERGY_RATIO
-    # 마른 체형 + 큰 적자에서 단백질+지방이 목표를 넘으면 지방을 하한(20%)까지 낮춘다
-    if protein_kcal + fat_kcal > goal_calories:
-        fat_kcal = goal_calories * FAT_ENERGY_RATIO_MIN
-    fat_g = round(fat_kcal / 9)
-
-    carbs_kcal = max(goal_calories - protein_kcal - fat_g * 9, 0)
-    carbs_g = round(carbs_kcal / 4)
+    # 체중 기반 단백질 열량을 목표 칼로리의 10~35% 안으로 묶는다 — 낮은 목표에서 단백질만으로 목표를 넘지 않게
+    protein_kcal = min(
+        max(float(weight) * coef * 4, goal_calories * PROTEIN_ENERGY_RATIO_MIN),
+        goal_calories * PROTEIN_ENERGY_RATIO_MAX,
+    )
+    protein_g = round(protein_kcal / 4)
+    fat_g = round(goal_calories * FAT_ENERGY_RATIO / 9)
+    # 탄수 = 나머지. 단백질 ≤35% + 지방 25% 라 40% 이상 남는다
+    carbs_g = max(round((goal_calories - protein_g * 4 - fat_g * 9) / 4), 0)
     return {"carbs": carbs_g, "protein": protein_g, "fat": fat_g}
 
 
