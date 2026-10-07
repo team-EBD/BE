@@ -41,6 +41,11 @@ STATE_TOKENS = frozenset({
     "조린것", "절인것", "염장", "훈제", "냉동", "통조림", "가루", "즙", "건조", "동결건조",
 })
 _MONTH_RE = re.compile(r"^\d{1,2}월$")
+_PAREN_RE = re.compile(r"\(.*?\)")
+# 부위 토큰 — 기본 총칭('달걀')을 낼 때 제외한다 (난황 326kcal 이 섞이면 달걀이 175 가 된다)
+PART_TOKENS = frozenset({"난황", "난백", "내장", "껍질", "뼈", "머리", "꼬리", "지느러미", "알"})
+# 등급·원산지 토큰 — 이름에 넣지 않는다 ("소고기 한우(1++등급)" 은 아무도 안 쓴다)
+_GRADE_RE = re.compile(r"등급|수입산|국내산|한우|육우|한돈|토종|성계|영계|오골계|해당없음")
 _NUTRIENTS = ("calories", "carbs", "protein", "fat")
 _OPTIONAL = ("sugar", "fiber", "sodium", "cholesterol", "saturated_fat", "trans_fat")
 
@@ -63,15 +68,29 @@ def _last_token(raw: str) -> str:
     return raw.split("_")[-1] if raw else ""
 
 
+def _clean(token: str) -> str:
+    """'삼겹살(삼겹살)' → '삼겹살', '가슴(껍질 제거)' → '가슴'."""
+    return _PAREN_RE.sub("", token or "").strip()
+
+
+def _is_part(token: str) -> bool:
+    return _clean(token) in PART_TOKENS
+
+
 def generic_keys(api_row: dict) -> list[tuple[str, str]]:
     """이 행이 기여하는 총칭 (external 코드, 이름) 목록 — 대표식품명, 대표식품명+중분류."""
     lv4 = base_name(api_row.get("foodLv4Nm") or "")
     if not lv4:
         return []
     keys = [(f"R-gen:{api_row.get('foodLv4Cd') or lv4}", lv4)]
-    lv5 = (api_row.get("foodLv5Nm") or "").strip()
-    if lv5 and not _is_state(lv5) and normalize_name(lv5) != normalize_name(lv4):
-        keys.append((f"R-gen:{api_row.get('foodLv5Cd') or lv4 + lv5}", f"{lv4} {lv5}"))
+    for level in ("5", "6"):
+        tok = _clean(api_row.get(f"foodLv{level}Nm") or "")
+        if not tok or _is_state(tok) or _GRADE_RE.search(tok) or _is_part(tok):
+            continue
+        if normalize_name(tok) == normalize_name(lv4):
+            continue
+        code = api_row.get(f"foodLv{level}Cd") or (lv4 + tok)
+        keys.append((f"R-gen:{code}", f"{lv4} {tok}"))
     return keys
 
 
@@ -81,6 +100,9 @@ def build_generics(members: list[tuple[dict, dict]]) -> dict[str, dict]:
     names: dict[str, str] = {}
     for api_row, values in members:
         for ext, name in generic_keys(api_row):
+            # 기본 총칭(대표식품명 하나)에는 부위 행(난황·난백·내장)을 섞지 않는다
+            if " " not in name and any(_is_part(api_row.get(f"foodLv{lv}Nm") or "") for lv in ("5", "6")):
+                continue
             groups[ext].append((api_row, values))
             names[ext] = name
     out: dict[str, dict] = {}
