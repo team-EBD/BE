@@ -198,9 +198,21 @@ def _pick_brand(row: dict) -> str | None:
 #   표본 미달 99종은 사람 검증 참조표(data/manual_macro_shares.json)가 담당한다.
 
 _MANUAL_SHARES_PATH = Path(__file__).resolve().parent / "data" / "manual_macro_shares.json"
-MACRO_RATIOS_ARTIFACT = (
-    Path(__file__).resolve().parents[3] / "ref" / "source" / "macro_ratios_computed.json"
-)
+
+
+def workspace_ref(*parts: str, here: Path | None = None) -> Path:
+    """저장소 밖 작업공간 `ref/source/` 의 파일 경로 (<workspace>/EBD/BE/scripts/… 레이아웃에서 <workspace>/ref/source/…).
+
+    컨테이너(/app/scripts/…)처럼 위로 세 단계가 없으면 저장소 안의 (없는) 경로를 돌려준다 — 호출부가
+    FileNotFoundError 로 처리한다. 모듈 로드 시점에 IndexError 로 죽어 운영에서
+    `python -m scripts.import_mfds_material` 이 시작도 못 하던 문제의 원인(2026-10-07).
+    """
+    here = (here or Path(__file__)).resolve()
+    base = here.parents[3] if len(here.parents) > 3 else here.parents[-1]
+    return base.joinpath("ref", "source", *parts)
+
+
+MACRO_RATIOS_ARTIFACT = workspace_ref("macro_ratios_computed.json")
 _MIN_SAMPLES = 10  # 그룹 실측 비율을 인정하는 최소 표본 (2026-08-05 PM 확정)
 
 

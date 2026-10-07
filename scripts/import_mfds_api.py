@@ -53,9 +53,10 @@ from scripts.import_public_nutrition import (
     set_macro_estimator,
     strip_variant_markers,
     transform,
+    workspace_ref,
 )
 
-DEFAULT_JSONL = Path(__file__).resolve().parents[3] / "ref" / "source" / "mfds_processed.jsonl"
+DEFAULT_JSONL = workspace_ref("mfds_processed.jsonl")
 
 # API 필드 → 표준데이터 CSV 컬럼명. transform()/_exclude_reason() 을 그대로 재사용하기 위한 어댑터.
 # 계층 매핑은 실제 데이터 대조로 확인했다 (2026-08-04):
