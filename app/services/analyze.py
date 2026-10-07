@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import logging
 import time
+
+from app.core.config import get_settings
 from dataclasses import dataclass
 
 from pydantic import ValidationError
@@ -125,6 +127,9 @@ def resolve_nutrition(cand, matched) -> ResolvedNutrition:
     unit = getattr(cand, "count_unit", None)
     if not count or not unit:  # 둘 다 있어야 낱개
         count = unit = None
+    if count and not get_settings().count_half_steps and float(count) != int(float(count)):
+        # 구 앱 호환: 0.5 단위는 정수로 접는다(최소 1). g 은 그대로라 kcal 은 변하지 않고 1단위 값만 달라진다
+        count = max(1, int(round(float(count))))
     grams = getattr(cand, "estimated_serving_g", None)
     label = getattr(cand, "label", None)
     package = getattr(cand, "package", None)

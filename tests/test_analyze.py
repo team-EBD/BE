@@ -325,8 +325,17 @@ def test_resolve_counted_food_reports_per_unit_values_and_count_as_serving():
     r = resolve_nutrition(_Cand(grams=800, count=8, unit="조각"), _Item(200, 530))
     assert (r.count, r.count_unit, r.estimated_serving, r.grams_per_unit) == (8.0, "조각", 8.0, 100.0)
     assert r.nutrition.calories == 265.0 and r.nutrition.base_serving == "1조각(100g)"
+    # 0.5 단위는 앱이 지원할 때만(count_half_steps). 기본은 구 앱 호환으로 정수로 접되 kcal 총량은 같다
     half = resolve_nutrition(_Cand(grams=45, count=0.5, unit="개"), _Item(90, 270))
-    assert half.estimated_serving == 0.5 and half.nutrition.calories == 270.0  # 1개 90g 값, 개수 0.5
+    assert half.estimated_serving == 1.0 and half.nutrition.calories == 135.0 and half.grams == 45
+    from app.core.config import settings
+
+    settings.count_half_steps = True
+    try:
+        half = resolve_nutrition(_Cand(grams=45, count=0.5, unit="개"), _Item(90, 270))
+        assert half.estimated_serving == 0.5 and half.nutrition.calories == 270.0  # 1개 90g 값, 개수 0.5
+    finally:
+        settings.count_half_steps = False
 
 
 def test_resolve_unmatched_uses_ai_per_100g_and_tiny_base_rows_no_longer_inflate():
