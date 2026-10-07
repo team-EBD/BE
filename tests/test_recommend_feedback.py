@@ -241,11 +241,13 @@ def test_acceptance_rates_scope_by_user(db_factory):
     b = _user(db, "b", email="b@gmail.com")
     for u in (a, b):
         _history(db, u, ("김치찌개", 320, 18, 22, 16), [1, 3, 5])
-    for _ in range(3):
-        log, _r = _expose(db, a.id, NOW - timedelta(hours=5))
-        _rows(db, log.id)[0].accepted_at = NOW - timedelta(hours=4)
-    for _ in range(3):
-        _expose(db, b.id, NOW - timedelta(hours=5))
+    # 같은 카드가 세 번 노출되려면 날이 달라야 한다 — 같은 날 재요청은 보여 준 카드를 제외한다 (2026-10-05)
+    for d in range(3):
+        shown = NOW - timedelta(days=d, hours=5)
+        log, _r = _expose(db, a.id, shown)
+        _rows(db, log.id)[0].accepted_at = shown + timedelta(hours=1)
+    for d in range(3):
+        _expose(db, b.id, NOW - timedelta(days=d, hours=5))
     db.flush()
     assert any(rate > 0 for rate in acceptance_rates(db, a.id, now=NOW).values())
     b_rates = acceptance_rates(db, b.id, now=NOW)

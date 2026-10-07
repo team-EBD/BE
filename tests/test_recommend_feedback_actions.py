@@ -11,8 +11,14 @@ from app.schemas.meal import MealCreateRequest, MealUpdateRequest
 from app.services.meals import create_meal, delete_meal, update_meal
 from app.services.recommend import recommend
 from app.services.recommend.feedback import (
-    acceptance_rates, excluded_keys, log_exposure, mark_eaten, outcome_reward,
-    record_feedback, source_stats,
+    acceptance_rates,
+    excluded_keys,
+    log_exposure,
+    mark_eaten,
+    outcome_reward,
+    record_feedback,
+    rejection_window_start,
+    source_stats,
 )
 from tests.test_recommend_feedback import NOW, _meal, _rows, _user
 
@@ -151,7 +157,8 @@ def test_meal_edits_and_deletion_reconcile_reward(db_factory, autoflush):
     assert outcome_reward(row, now=NOW + timedelta(hours=5)) == 0
 
 
-def test_not_now_expires_and_dislike_excludes_catalog_fallback(db_factory):
+def test_rejections_exclude_for_the_rest_of_the_day_only(db_factory):
+    """'지금은 다른 메뉴'도 '별로예요'도 그날만 제외한다 — 4시간/90일 규칙은 폐기 (2026-10-05)."""
     db = db_factory()
     user = _user(db, "dislike")
     temporary = _card(db, user, name="김밥")
@@ -159,10 +166,15 @@ def test_not_now_expires_and_dislike_excludes_catalog_fallback(db_factory):
     record_feedback(db, user.id, temporary.id, "reject", reason="not_now", now=NOW, commit=False)
     record_feedback(db, user.id, persistent.id, "reject", reason="dislike", now=NOW, commit=False)
     assert excluded_keys(db, user.id, now=NOW) == {"김밥", "라면"}
-    assert excluded_keys(db, user.id, now=NOW + timedelta(hours=5)) == {"라면"}
     result = recommend(db, user.id, meal_type="dinner", now=NOW)
     assert not ({c.key for c in result.candidates} & {"김밥", "라면"})
     assert result.items  # 거절을 우회하지 않고 다른 기본 메뉴로 채운다
+    # 5시간 뒤: 같은 날이면 둘 다 그대로(4시간 만료 없음), 날이 바뀌었으면 둘 다 풀린다
+    later = NOW + timedelta(hours=5)
+    same_day = rejection_window_start(later) == rejection_window_start(NOW)
+    assert excluded_keys(db, user.id, now=later) == ({"김밥", "라면"} if same_day else set())
+    next_day = rejection_window_start(NOW) + timedelta(days=1, minutes=1)
+    assert excluded_keys(db, user.id, now=next_day) == set()
     assert excluded_keys(db, user.id, now=NOW + timedelta(days=91)) == set()
 
 

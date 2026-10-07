@@ -62,6 +62,26 @@ class BoundingBox(BaseModel):
     height: float = Field(gt=0, le=1)
 
 
+class NutritionPer100g(BaseModel):
+    """100g(ml) 당 영양값 — 섭취 영양 = grams × 이 값 / 100."""
+
+    calories: float
+    carbs: float
+    protein: float
+    fat: float
+
+
+class PackageInfo(BaseModel):
+    """포장 글자에서 읽은 제품 정보 (포장 제품일 때만)."""
+
+    brand: str | None = None
+    product_name: str | None = None
+    variant: str | None = None
+    size_text: str | None = None
+    label_text: str | None = None
+    size_g: float | None = None
+
+
 class HabitAdjusted(BaseModel):
     applied_factor: float
     applied_corrections: list[str]
@@ -90,6 +110,14 @@ class AnalyzeCandidate(BaseModel):
     quantity: float | None = None
     quantity_unit: str | None = None
     serving_per_unit: float | None = None
+    # 2026-10-06 g × 100g 당 모델: AI 가 본 양(g/ml), 영양 출처(label/db/ai/ai_serving/none),
+    # 매칭된 DB 행 이름(FE 가 "기준: ○○" 으로 보여 틀린 매칭이 드러나게), 100g 당 값, 포장 정보, 표시 성분 출처 URL
+    grams: float | None = None
+    nutrition_source: str | None = None
+    matched_name: str | None = None
+    per_100g: NutritionPer100g | None = None
+    package: PackageInfo | None = None
+    label_sources: list[str] = []
 
 
 class AnalyzeSuccessResponse(BaseModel):

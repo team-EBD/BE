@@ -9,6 +9,9 @@ from __future__ import annotations
 import logging
 import time
 
+from app.core.config import get_settings
+from dataclasses import dataclass
+
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -23,10 +26,13 @@ from app.schemas.meal import (
     BoundingBox,
     CandidateNutrition,
     HabitAdjusted,
+    NutritionPer100g,
+    PackageInfo,
 )
 from app.services.correction import FACTORS, habit_factor
 from app.services.game_skills import DEPTH_CLARIFIER, candidate_depth
 from app.services.matching import (
+    density_per_100g,
     base_serving_text,
     db_candidates_for_text,
     match_food_name,
@@ -46,7 +52,6 @@ MAX_PREDICTIONS_PER_FOOD_CLARIFIER = MAX_PREDICTIONS_PER_FOOD + 1
 # 유사도(fuzzy) 매칭은 확신도를 한 단계 감산해 내려보낸다 (SCRUM-246).
 # 별도 "유사 매칭" UI 를 만들지 않고 기존 confidence 채널로 불확실성을 전달
 # — 이미지 분석의 정답률 표시와 신호가 이원화되지 않게 한다 (PM 결정 08-11).
-FUZZY_CONFIDENCE_PENALTY = 0.2
 
 
 def _grouped_candidates(
@@ -89,54 +94,117 @@ def _bbox_of(cand) -> BoundingBox | None:
         return None
 
 
-# 환산 결과 상한 — food_candidates.estimated_serving 은 Numeric(8,2) 이고
-# 사용자가 보정 슬라이더로 다시 만지므로 상식 범위를 벗어나면 1인분으로 되돌린다.
-_SERVING_MIN, _SERVING_MAX = 0.1, 10.0
+# 포장 단위 — 포장 용량(355ml·98g)을 알면 AI 의 g 눈대중 대신 용량 × 개수를 쓴다.
+# '개' 는 봉지 속 낱개(미니샌드 4개)일 수도 있어 1개일 때만 포장으로 본다 — 4개 × 봉지 100g = 1,560kcal 사고(2026-10-06 평가)
+CONTAINER_UNITS = frozenset({"캔", "병"})
+_NUTRIENTS = ("calories", "carbs", "protein", "fat")
 
 
-# 그릇·접시 음식(낱개 단위 없음)은 g 환산이 이 범위면 '한 그릇' 으로 본다 — AI 의 g 눈대중이 ±30% 는 흔들려서
-# 라면 한 그릇이 1.2·1.3인분으로 찍히던 잡음을 없앤다. 범위 밖(반 그릇 0.5, 두 그릇 2.0)은 계산값 그대로.
-_SNAP_LOW, _SNAP_HIGH = 0.7, 1.3
-# 낱개 단위 — 개수가 곧 양이라 스냅하지 않는다(3조각 = 1.5인분 그대로). 용기 단위(공기·잔·캔·병)는 한 그릇처럼 스냅.
-COUNTABLE_UNITS = frozenset({"개", "조각", "장", "줄"})
-CONTAINER_UNITS = frozenset({"공기", "잔", "캔", "병"})
+@dataclass
+class ResolvedNutrition:
+    """후보 하나의 양·영양 계산 결과 (2026-10-06 g × 100g 당 모델).
 
-
-def _is_product_row(matched) -> bool:
-    """식약처 가공식품(봉지·키트·동명 대표) 행 — 기준량이 포장 단위라 사진의 조리량(g)과 맞지 않는다.
-
-    신라면 봉지 120g 에 조리된 한 그릇 560g 을 나누면 4.7인분, 평양냉면 키트 200g 에 650g 은 3.25인분이 됐다.
-    시드·총칭·식약처 음식편 행은 조리된 요리 무게라 g 로 나눠도 된다.
+    - grams: 섭취 양(g/ml). AI 가 본 양, 포장 제품은 용량 × 개수
+    - density: 100g 당 영양. 출처(source)는 label(표시 성분 검색) > db(정확 일치 행) > ai(AI 추정)
+    - count/count_unit: 셀 수 있으면 개수(0.5 단위)·단위. 이때 nutrition 은 **1단위** 값, estimated_serving = 개수
+    - 그릇 요리는 nutrition 이 **보이는 양 전체** 값, estimated_serving = 1.0 ("1인분 = 사진에 보이는 한 접시")
+    - 구 AI 서버(1인분형 nutrition 만 있음)는 ai_serving 으로 폴백해 이전 동작 유지
     """
-    ext = getattr(matched, "external_id", None) or ""
-    return getattr(matched, "source", None) == "public" and (ext.startswith("P") or ext.startswith("rep:"))
+
+    grams: float | None
+    source: str
+    count: float | None
+    count_unit: str | None
+    estimated_serving: float
+    nutrition: CandidateNutrition | None
+    grams_per_unit: float | None
+    per_100g: dict | None
+    sources: list[str]
 
 
-def _reconcile_serving(cand, matched) -> float:
-    """AI 의 절대량(g)을 **우리 영양DB 기준량**으로 나눠 배수로 바꾼다.
-
-    AI 는 우리 DB 의 1인분이 몇 g 인지 모른다. 그래서 AI 가 준 배수(estimated_serving)는 "AI 가 생각하는
-    1인분"에 대한 배수이고, 우리 기준과 다르면 몇 배씩 어긋난다(피자를 AI 는 1판, DB 는 2조각으로 본다).
-    절대량이 오면 그것을 기준으로 다시 계산한다 — 낱개 음식(count_unit)은 개수 × 1단위 g 이라 특히 믿을 만하다.
-
-    - 절대량이 없거나 매칭이 없으면 AI 배수 그대로.
-    - 가공식품 행은 g 을 쓰지 않는다 (포장 단위 기준량).
-    - 그릇 음식(단위 없음)과 용기 단위(공기·잔·캔·병)는 0.7~1.3 을 1.0 으로 스냅한다. 낱개(개·조각·장·줄)는 스냅하지 않는다.
-    """
-    ai_serving = float(cand.estimated_serving)
-    grams = getattr(cand, "estimated_serving_g", None)
-    if grams is None or matched is None or _is_product_row(matched):
-        return ai_serving
-    base = float(matched.base_amount or 0)
-    if base <= 0:
-        return ai_serving
-    serving = grams / base
-    if not (_SERVING_MIN <= serving <= _SERVING_MAX):
-        return ai_serving
+def resolve_nutrition(cand, matched) -> ResolvedNutrition:
+    count = getattr(cand, "count", None)
     unit = getattr(cand, "count_unit", None)
-    if unit not in COUNTABLE_UNITS and _SNAP_LOW <= serving <= _SNAP_HIGH:
-        return 1.0  # 그릇 요리·용기 단위: 한 그릇/한 공기/한 잔
-    return round(serving, 2)
+    if not count or not unit:  # 둘 다 있어야 낱개
+        count = unit = None
+    if count and not get_settings().count_half_steps and float(count) != int(float(count)):
+        # 구 앱 호환: 0.5 단위는 정수로 접는다(최소 1). g 은 그대로라 kcal 은 변하지 않고 1단위 값만 달라진다
+        count = max(1, int(round(float(count))))
+    grams = getattr(cand, "estimated_serving_g", None)
+    label = getattr(cand, "label", None)
+    package = getattr(cand, "package", None)
+    sources = list(getattr(label, "sources", []) or []) if label is not None else []
+
+    # 1) 100g 당 영양과 출처
+    density: dict | None = None
+    source = "none"
+    db_density = density_per_100g(matched) if matched is not None else None
+    if label is not None and label.per_100g is not None:
+        density, source = label.per_100g.model_dump(), "label"
+    elif db_density is not None:
+        density, source = db_density, "db"
+    elif getattr(cand, "nutrition_per_100g", None) is not None:
+        density, source = cand.nutrition_per_100g.model_dump(), "ai"
+
+    # 2) 양 — 포장 용량을 알면 그것 × 개수, 아니면 AI 가 본 g. 둘 다 없고 매칭 행이 있으면 구 방식(배수 × 기준량)
+    #    사진에서 읽은 용량(40g 파우치)이 검색이 찾은 용량(280g 7개입 묶음)보다 우선 — 사진 속 포장이 기준이다
+    package_size = (getattr(package, "size_g", None) if package is not None else None) or (
+        getattr(label, "package_size_g", None) if label is not None else None
+    )
+    if package_size and (unit is None or unit in CONTAINER_UNITS or (unit == "개" and float(count or 1.0) == 1.0)):
+        grams = float(package_size) * float(count or 1.0)
+    if grams is None and matched is not None and matched.base_amount:
+        grams = float(matched.base_amount) * float(getattr(cand, "estimated_serving", 1.0) or 1.0)
+    grams = round(float(grams), 1) if grams else None
+
+    # 3) 영양값 — 포장에 인쇄된 열량("9g(45 kcal)")이 읽혔으면 그것이 가장 정확하다: kcal 은 인쇄값 × 개수,
+    #    탄단지는 밀도 × g (g 을 모르면 밀도 비율로 인쇄 kcal 에 맞춘다)
+    nutrition: CandidateNutrition | None = None
+    printed = getattr(package, "printed_kcal", None) if package is not None else None
+    if printed and (unit is None or unit in CONTAINER_UNITS or unit == "개"):
+        units = float(count or 1.0)
+        if density is not None and grams:
+            macros = {k: density[k] * grams / 100.0 for k in ("carbs", "protein", "fat")}
+        elif density is not None and density.get("calories"):
+            ratio = printed * units / density["calories"]  # 인쇄 kcal 에 해당하는 g/100
+            macros = {k: density[k] * ratio for k in ("carbs", "protein", "fat")}
+        else:
+            macros = {k: 0.0 for k in ("carbs", "protein", "fat")}
+        per_div = units if count else 1.0
+        size_txt = f"({grams / units:g}g)" if grams else ""
+        nutrition = CandidateNutrition(
+            base_serving=(f"1{unit}{size_txt}" if count else f"포장 1개{size_txt}"),
+            calories=round(printed, 1), **{k: round(v / per_div, 1) for k, v in macros.items()},
+        )
+        source = "printed"
+        return ResolvedNutrition(
+            grams=grams, source=source, count=float(count) if count else None, count_unit=unit,
+            estimated_serving=round(float(count) if count else 1.0, 2), nutrition=nutrition,
+            grams_per_unit=round(grams / float(count), 2) if (count and grams) else None,
+            per_100g={k: round(v, 2) for k, v in density.items()} if density else None, sources=sources,
+        )
+    if density is not None and grams:
+        total = {k: density[k] * grams / 100.0 for k in _NUTRIENTS}
+        per = {k: v / float(count) for k, v in total.items()} if count else total
+        base_text = f"1{unit}({grams / float(count):g}g)" if count else f"보이는 양({grams:g}g)"
+        nutrition = CandidateNutrition(base_serving=base_text, **{k: round(per[k], 1) for k in _NUTRIENTS})
+        estimated_serving = float(count) if count else 1.0
+    elif getattr(cand, "nutrition", None) is not None:
+        n = cand.nutrition  # 구 AI 서버: 1인분형 추정치 + 배수 그대로
+        nutrition = CandidateNutrition(
+            base_serving=n.base_serving, calories=float(n.calories), carbs=float(n.carbs),
+            protein=float(n.protein), fat=float(n.fat),
+        )
+        source = "ai_serving"
+        estimated_serving = float(count) if count else float(getattr(cand, "estimated_serving", 1.0) or 1.0)
+    else:
+        estimated_serving = float(count) if count else float(getattr(cand, "estimated_serving", 1.0) or 1.0)
+    return ResolvedNutrition(
+        grams=grams, source=source, count=float(count) if count else None, count_unit=unit,
+        estimated_serving=round(estimated_serving, 2), nutrition=nutrition,
+        grams_per_unit=round(grams / float(count), 2) if (count and grams) else None,
+        per_100g={k: round(v, 2) for k, v in density.items()} if density else None, sources=sources,
+    )
 
 
 def _save_call_log(
@@ -268,20 +336,13 @@ def _postprocess(
         _grouped_candidates(result.candidates, max_per_food), start=1
     ):
         matched, match_path = match_food_name(db, cand.food_name)
-        # 경로별 비율(exact/substring/fuzzy/none)이 유사도 컷 튜닝의 근거 (SCRUM-246)
+        # 경로별 비율(exact/none)과 영양 출처(label/db/ai)가 매칭 품질 지표 (2026-10-06 정확 일치만)
+        resolved = resolve_nutrition(cand, matched)
         logger.info(
-            "nutrition_match path=%s food=%s item_id=%s",
-            match_path, cand.food_name, matched.id if matched else None,
+            "nutrition_match path=%s source=%s food=%s item_id=%s grams=%s",
+            match_path, resolved.source, cand.food_name, matched.id if matched else None, resolved.grams,
         )
         confidence = float(cand.confidence)
-        if match_path == "fuzzy":
-            confidence = round(max(confidence - FUZZY_CONFIDENCE_PENALTY, 0.0), 4)
-        serving = _reconcile_serving(cand, matched)
-        count = getattr(cand, "count", None)
-        count_unit = getattr(cand, "count_unit", None)
-        if not count or not count_unit:  # 둘 다 있어야 낱개 음식
-            count = count_unit = None
-        grams = getattr(cand, "estimated_serving_g", None)
         row = FoodCandidate(
             meal_image_id=meal_image_id,
             ai_call_log_id=call_log.id,
@@ -289,35 +350,20 @@ def _postprocess(
             food_name=cand.food_name,
             normalized_name=normalize_name(cand.food_name),
             confidence_score=confidence,
-            estimated_serving=serving,
-            quantity=count,
-            quantity_unit=count_unit,
-            grams_per_unit=round(float(grams) / count, 2) if (count and grams) else None,
+            estimated_serving=resolved.estimated_serving,
+            quantity=resolved.count,
+            quantity_unit=resolved.count_unit,
+            grams_per_unit=resolved.grams_per_unit,
+            estimated_grams=resolved.grams,
+            nutrition_source=resolved.source,
+            food_index=food_index,
             rank=rank,
         )
         db.add(row)
         db.flush()
 
-        # 영양값 우선순위: ① 영양 DB 매칭(정확) ② AI 추정치(초안 fallback).
-        # 시드 DB에 없는 음식도 사용자가 수정 가능한 초안으로 기록을 이어갈 수 있다.
-        nutrition = None
+        nutrition = resolved.nutrition
         habit_adjusted = None
-        if matched is not None:
-            nutrition = CandidateNutrition(
-                base_serving=base_serving_text(matched),
-                calories=float(matched.calories),
-                carbs=float(matched.carbs),
-                protein=float(matched.protein),
-                fat=float(matched.fat),
-            )
-        elif cand.nutrition is not None:
-            nutrition = CandidateNutrition(
-                base_serving=cand.nutrition.base_serving,
-                calories=float(cand.nutrition.calories),
-                carbs=float(cand.nutrition.carbs),
-                protein=float(cand.nutrition.protein),
-                fat=float(cand.nutrition.fat),
-            )
         # 식습관 보정 중 국물/소스 관련 항목은 그 음식에 국물/소스가 있을 때만
         # 적용한다 (예: soup_preference=leave 여도 공기밥엔 no_soup 미적용).
         cand_applied = [
@@ -338,6 +384,7 @@ def _postprocess(
                 applied_corrections=cand_applied,
                 calories=round(nutrition.calories * cand_factor, 1),
             )
+        package = getattr(cand, "package", None)
         candidates.append(
             AnalyzeCandidate(
                 food_candidate_id=row.id,
@@ -345,15 +392,21 @@ def _postprocess(
                 food_index=food_index,
                 normalized_name=row.normalized_name,
                 confidence_score=confidence,
-                estimated_serving=serving,
+                estimated_serving=resolved.estimated_serving,
                 has_soup=cand.has_soup,
                 has_sauce=cand.has_sauce,
                 bbox=_bbox_of(cand),
                 nutrition=nutrition,
                 habit_adjusted=habit_adjusted,
-                quantity=float(count) if count else None,
-                quantity_unit=count_unit,
-                serving_per_unit=round(serving / count, 4) if count else None,
+                quantity=resolved.count,
+                quantity_unit=resolved.count_unit,
+                serving_per_unit=1.0 if resolved.count else None,
+                grams=resolved.grams,
+                nutrition_source=resolved.source,
+                matched_name=matched.name if matched else None,
+                per_100g=NutritionPer100g(**resolved.per_100g) if resolved.per_100g else None,
+                package=PackageInfo(**package.model_dump()) if package is not None else None,
+                label_sources=resolved.sources,
             )
         )
 

@@ -24,7 +24,7 @@ from .candidates import (
     popular,
 )
 from .explain import reason
-from .feedback import acceptance_rates, excluded_keys
+from .feedback import acceptance_rates, excluded_keys, provided_keys
 from .bandit import learn, select_cards
 from .collaborative import collaborative_candidates
 from .groups import ROLE_MEAL, GroupIndex, GroupInfo, load_group_index
@@ -118,6 +118,13 @@ def recommend(
     meal_type = meal_type or meal_type_for_hour(to_kst(now).hour)
     index = index or load_group_index(db)
     blocked = excluded_keys(db, user_id, now=now, index=index)
+    # 오늘 이 끼니에 이미 보여 준 카드는 항상 빼고 나머지에서 고른다 (2026-10-05 결정).
+    # 같은 입력이면 엔진은 결정론적이라 이 제외가 없으면 '다시 추천받기'가 같은 3장을 돌려줬다.
+    # 앱은 쓸 수 있는 캐시가 없을 때만 서버를 부르므로(첫 요청·다시 추천받기·식사량 전환·식단 변경·4시간 경과)
+    # 서버에 닿은 요청은 전부 "새 카드가 필요한 요청"이다 — 별도 플래그 없이 서버만 고쳐도 된다.
+    # 식사량(가볍게/든든하게) 묶음도 서로 겹치지 않아 사실상 9장이 된다.
+    provided = provided_keys(db, user_id, now=now, meal_type=meal_type, index=index)
+    blocked = blocked | provided
 
     budget = meal_budget(
         db, user_id, meal_type, now=now, day_start_hour=settings.day_start_hour, mood=mood
@@ -183,6 +190,7 @@ def recommend(
         "catalog": sum(c.source == "catalog" for c in candidates),
     }
     decision["excluded_count"] = len(blocked)
+    decision["provided_excluded"] = len(provided)
 
     items = [
         RecommendedItem(

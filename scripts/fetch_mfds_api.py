@@ -7,6 +7,7 @@ JSONL 로 저장한다. 저장 결과는 `import_public_nutrition.py` 가 소비
 사용법:
     python -m scripts.fetch_mfds_api food        # 음식편
     python -m scripts.fetch_mfds_api processed   # 가공식품편
+    python -m scripts.fetch_mfds_api material    # 원재료성식품편 (2026-10 추가)
     python -m scripts.fetch_mfds_api processed --out /tmp/p.jsonl
 
 인증키는 BE/.env 의 MFDS_API_KEY (공공데이터포털 계정 단위 — 승인받은 모든 API 공용).
@@ -39,6 +40,7 @@ BASE = "https://api.data.go.kr/openapi"
 DATASETS = {
     "food": f"{BASE}/tn_pubr_public_nutri_food_info_api",  # 전국통합식품영양성분정보(음식)
     "processed": f"{BASE}/tn_pubr_public_nutri_process_info_api",  # 〃 (가공식품)
+    "material": f"{BASE}/tn_pubr_public_nutri_material_info_api",  # 〃 (원재료성식품 — 사과·당근·무 같은 농축수산물)
 }
 
 PAGE_SIZE = 1000  # API 상한

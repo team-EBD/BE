@@ -75,6 +75,11 @@ class FoodCandidate(Base):
     quantity: Mapped[float | None] = mapped_column(Numeric(8, 2), nullable=True)
     quantity_unit: Mapped[str | None] = mapped_column(String(10), nullable=True)
     grams_per_unit: Mapped[float | None] = mapped_column(Numeric(8, 2), nullable=True)
+    # 2026-10-06 g × 100g 당 모델 — AI 가 본 양(g/ml), 영양 출처(label/db/ai/ai_serving/none),
+    # 사진 속 몇 번째 음식인지(같은 번호 = 대체 예측). 분석 품질 지표와 사후 리뷰용
+    estimated_grams: Mapped[float | None] = mapped_column(Numeric(8, 2), nullable=True)
+    nutrition_source: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    food_index: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     rank: Mapped[int] = mapped_column(Integer, nullable=False)  # 1-3
     is_selected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = created_at_column()
