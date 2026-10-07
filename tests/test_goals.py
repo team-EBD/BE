@@ -87,12 +87,36 @@ def test_macro_fat_default_25pct_and_carbs_remainder():
     assert m["carbs"] == round((2000 - m["protein"] * 4 - m["fat"] * 9) / 4)
 
 
-def test_macro_fat_floor_prevents_negative_carbs():
-    # 극단(큰 체중 + 낮은 칼로리): 단백질+지방25%가 목표를 넘으면 지방을 20%로 낮추고
-    # 탄수는 0 밑으로 내려가지 않는다
-    m = derive_macro_goals(900, 100, "diet")  # 단백질 200g=800kcal, 25%지방이면 초과
-    assert m["fat"] == round(900 * 0.20 / 9)  # 하한 20% 적용
-    assert m["carbs"] >= 0
+def test_macro_protein_capped_at_35pct_for_low_goal():
+    # 80kg 유지 500kcal: 체중 기반 128g(512kcal)이 목표를 넘겨 탄수 0 으로 찍히던 버그(2026-10-07)
+    # → 단백질은 열량의 35% 상한 44g, 지방 25%, 탄수는 나머지 50g. 합계 ≈ 목표
+    m = derive_macro_goals(500, 80, "maintain")
+    assert m["protein"] == round(500 * 0.35 / 4)  # 44
+    assert m["fat"] == round(500 * 0.25 / 9)  # 14
+    assert m["carbs"] == 50
+    assert abs(m["protein"] * 4 + m["fat"] * 9 + m["carbs"] * 4 - 500) <= 10
+
+
+def test_macro_protein_follows_goal_when_capped_then_weight_based():
+    # 상한에 걸리는 구간에선 목표 칼로리가 오르면 단백질도 오른다(고정 아님).
+    # 체중 기반 값(128g)이 35% 안에 들어오는 목표부터는 체중 기반 그대로
+    p = [derive_macro_goals(g, 80, "maintain")["protein"] for g in (500, 800, 1000, 1200)]
+    assert p == [44, 70, 88, 105]
+    assert derive_macro_goals(2000, 80, "maintain")["protein"] == 128
+
+
+def test_macro_protein_floor_10pct_for_high_goal():
+    # 아주 높은 목표에선 단백질이 열량의 10% 밑으로 떨어지지 않는다 (128g=512kcal 는 6000 의 8.5%)
+    assert derive_macro_goals(6000, 80, "maintain")["protein"] == round(6000 * 0.10 / 4)  # 150
+
+
+def test_macro_sum_matches_goal_and_carbs_positive_across_range():
+    for goal in (500, 700, 900, 1200, 2000, 3500, 6000, 10000):
+        for w in (45, 70, 100):
+            for mg in ("diet", "maintain", "bulk"):
+                m = derive_macro_goals(goal, w, mg)
+                assert m["carbs"] > 0, (goal, w, mg, m)
+                assert abs(m["protein"] * 4 + m["fat"] * 9 + m["carbs"] * 4 - goal) <= 10, (goal, w, mg, m)
 
 
 def test_macro_fallback_ratio_without_weight():
