@@ -88,6 +88,9 @@ class Settings(BaseSettings):
     # 하루 경계 시각 (KST). 6이면 06:00~다음날 06:00 를 '하루'로 취급 —
     # 캘린더/요약(FE day_start_hour=6)과 사용량 리셋 기준을 일치시킨다.
     day_start_hour: int = 6
+    # 개수 0.5 단위를 앱에 내려 보낼지. 1.16 이하 앱은 개수를 정수로 반올림해 그리므로 0.5개가 "1개"로 보이면서
+    # kcal 은 반 개 치가 된다. 소수 입력을 지원하는 앱(FE #137)이 배포되기 전까지는 서버가 정수로 접는다.
+    count_half_steps: bool = False
 
     # --- 프로모션 이미지 (GET /promotions/active) ---
     # 앱 시작 팝업·튜토리얼 페이월에 띄우는 원격 이미지. 전부 env/Parameter Store 로

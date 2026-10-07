@@ -261,78 +261,124 @@ def test_analyze_bbox_none_for_legacy_ai_server(client, auth_headers, monkeypatc
 # 나눠 배수를 다시 계산해야 한다 (피자 1판 vs 1조각처럼 몇 배씩 어긋나는 것 방지).
 
 class _Cand:
-    def __init__(self, serving=1.0, grams=None, count=None, count_unit=None):
+    def __init__(self, serving=1.0, grams=None, count=None, unit=None, per_100g=None, nutrition=None, label=None, package=None):
         self.estimated_serving = serving
         self.estimated_serving_g = grams
-        self.count = count
-        self.count_unit = count_unit
+        self.count, self.count_unit = count, unit
+        self.nutrition_per_100g = per_100g
+        self.nutrition = nutrition
+        self.label, self.package = label, package
+        self.has_soup = self.has_sauce = False
 
 
 class _Item:
-    def __init__(self, base_amount, source="seed", external_id=None):
-        self.base_amount = base_amount
-        self.source = source
-        self.external_id = external_id
+    def __init__(self, base_amount, calories, source="public", external_id="D1", name="행"):
+        self.base_amount, self.calories = base_amount, calories
+        self.carbs = self.protein = self.fat = 1.0
+        self.source, self.external_id, self.name, self.id = source, external_id, name, 1
 
 
-def test_reconcile_serving_uses_grams_over_multiplier():
-    from app.services.analyze import _reconcile_serving
+class _Per100:
+    def __init__(self, calories):
+        self.calories, self.carbs, self.protein, self.fat = calories, 1.0, 1.0, 1.0
 
-    # 사진에 240g, 우리 1인분은 120g → 2인분. AI 가 준 배수(0.27)는 무시된다.
-    assert _reconcile_serving(_Cand(0.27, 240), _Item(120)) == 2.0
-
-
-def test_reconcile_serving_falls_back_without_grams():
-    from app.services.analyze import _reconcile_serving
-
-    # 구버전 AI 서버·추정 실패 → 기존 배수 그대로
-    assert _reconcile_serving(_Cand(1.5, None), _Item(120)) == 1.5
+    def model_dump(self):
+        return {"calories": self.calories, "carbs": self.carbs, "protein": self.protein, "fat": self.fat}
 
 
-def test_reconcile_serving_falls_back_without_match():
-    from app.services.analyze import _reconcile_serving
-
-    # 영양DB 매칭 실패 시 나눌 기준이 없다
-    assert _reconcile_serving(_Cand(1.5, 240), None) == 1.5
+class _Label:
+    def __init__(self, calories_per_100, package_size_g=None, sources=()):
+        self.per_100g, self.package_size_g, self.sources = _Per100(calories_per_100), package_size_g, list(sources)
 
 
-def test_reconcile_serving_rejects_absurd_ratio():
-    from app.services.analyze import _reconcile_serving
-
-    # 1인분 5g 짜리에 3000g → 600배. 상식 밖이라 기존 배수로 되돌린다
-    assert _reconcile_serving(_Cand(1.0, 3000), _Item(5)) == 1.0
+class _Package:
+    def __init__(self, size_g=None, printed_kcal=None):
+        self.size_g, self.printed_kcal = size_g, printed_kcal
 
 
-def test_reconcile_serving_snaps_bowl_dishes_to_one_serving():
-    from app.services.analyze import _reconcile_serving
+def test_resolve_printed_kcal_on_package_wins():
+    """참쌀설병 낱개 '9g(45 kcal)' 이 읽히면 검색이 찾은 봉지(128g) 값 대신 인쇄 열량 그대로. 2개면 90."""
+    from app.services.analyze import resolve_nutrition
 
-    # 라면 한 그릇: AI 560g, 시드 1인분 550g → 1.02 → '한 그릇' 1.0 (0.7~1.3 스냅)
-    assert _reconcile_serving(_Cand(1.0, 560), _Item(550)) == 1.0
-    assert _reconcile_serving(_Cand(1.0, 400), _Item(550)) == 1.0  # 0.73
-    # 범위 밖은 계산값 그대로 — 반 그릇·두 그릇
-    assert _reconcile_serving(_Cand(0.5, 280), _Item(550)) == 0.51
-    assert _reconcile_serving(_Cand(2.0, 1100), _Item(550)) == 2.0
-
-
-def test_reconcile_serving_counted_items_are_not_snapped():
-    from app.services.analyze import _reconcile_serving
-
-    # 피자 8조각 800g, DB 1인분 200g → 4.0 ("8조각"). 달걀 2개 100g / 50g → 2.0
-    assert _reconcile_serving(_Cand(1.0, 800, 8, "조각"), _Item(200)) == 4.0
-    assert _reconcile_serving(_Cand(1.0, 100, 2, "개"), _Item(50)) == 2.0
-    # 낱개 음식은 1.2 라도 스냅하지 않는다 (3조각 = 1.5인분 같은 값이 그대로 남아야 한다)
-    assert _reconcile_serving(_Cand(1.0, 240, 3, "조각"), _Item(200)) == 1.2
+    r = resolve_nutrition(_Cand(grams=9, count=1, unit="개", per_100g=_Per100(475), label=_Label(475, 128), package=_Package(9, 45)), None)
+    assert r.source == "printed" and r.nutrition.calories == 45.0 and r.grams == 9 and r.estimated_serving == 1.0
+    two = resolve_nutrition(_Cand(grams=18, count=2, unit="개", per_100g=_Per100(475), package=_Package(9, 45)), None)
+    assert two.nutrition.calories == 45.0 and two.estimated_serving == 2.0  # 1개 값 × 개수는 FE 가 곱한다
+    cup = resolve_nutrition(_Cand(grams=300, count=1, unit="잔", per_100g=_Per100(60), package=_Package(300, 180)), None)
+    assert cup.source == "ai" and cup.nutrition.calories == 180.0  # 잔은 포장 단위가 아니라 밀도 경로 (300 × 0.6)
 
 
-def test_reconcile_serving_ignores_grams_for_packaged_product_rows():
-    from app.services.analyze import _reconcile_serving
+def test_resolve_bowl_dish_uses_db_density_times_grams_and_is_one_visible_serving():
+    """라면 560g × (DB 500g 당 500kcal → 100kcal/100g) = 560kcal. 1인분 = 보이는 한 그릇, 스냅 없음."""
+    from app.services.analyze import resolve_nutrition
 
-    # 식약처 가공식품(신라면 봉지 120g): 조리된 560g 을 나누면 4.7 → AI 배수(1.0) 를 쓴다
-    assert _reconcile_serving(_Cand(1.0, 560), _Item(120, source="public", external_id="P000123")) == 1.0
-    # 가공식품 동명 대표(rep:) — 평양냉면 키트 200g 에 650g → 3.25 가 아니라 AI 배수
-    assert _reconcile_serving(_Cand(1.0, 650), _Item(200, source="public", external_id="rep:f3")) == 1.0
-    # 식약처 음식편(D) 은 조리된 요리 무게라 g 로 나눈다
-    assert _reconcile_serving(_Cand(1.0, 800, 4, "조각"), _Item(400, source="public", external_id="D306-284")) == 2.0
+    r = resolve_nutrition(_Cand(grams=560), _Item(500, 500))
+    assert r.source == "db" and r.grams == 560 and r.estimated_serving == 1.0
+    assert r.nutrition.calories == 560.0 and r.nutrition.base_serving == "보이는 양(560g)"
+    assert r.count is None and r.grams_per_unit is None
+
+
+def test_resolve_counted_food_reports_per_unit_values_and_count_as_serving():
+    """피자 8조각 800g → 1조각 100g 값, estimated_serving 8 (0.5 단위 개수도 그대로)."""
+    from app.services.analyze import resolve_nutrition
+
+    r = resolve_nutrition(_Cand(grams=800, count=8, unit="조각"), _Item(200, 530))
+    assert (r.count, r.count_unit, r.estimated_serving, r.grams_per_unit) == (8.0, "조각", 8.0, 100.0)
+    assert r.nutrition.calories == 265.0 and r.nutrition.base_serving == "1조각(100g)"
+    # 0.5 단위는 앱이 지원할 때만(count_half_steps). 기본은 구 앱 호환으로 정수로 접되 kcal 총량은 같다
+    half = resolve_nutrition(_Cand(grams=45, count=0.5, unit="개"), _Item(90, 270))
+    assert half.estimated_serving == 1.0 and half.nutrition.calories == 135.0 and half.grams == 45
+    from app.core.config import settings
+
+    settings.count_half_steps = True
+    try:
+        half = resolve_nutrition(_Cand(grams=45, count=0.5, unit="개"), _Item(90, 270))
+        assert half.estimated_serving == 0.5 and half.nutrition.calories == 270.0  # 1개 90g 값, 개수 0.5
+    finally:
+        settings.count_half_steps = False
+
+
+def test_resolve_unmatched_uses_ai_per_100g_and_tiny_base_rows_no_longer_inflate():
+    """미매칭이면 AI 100g 당 값. 땅콩버터 5g 기준 행이어도 kcal 은 g × 밀도라 '10인분' 같은 왜곡이 없다."""
+    from app.services.analyze import resolve_nutrition
+
+    r = resolve_nutrition(_Cand(grams=120, per_100g=_Per100(150)), None)
+    assert r.source == "ai" and r.nutrition.calories == 180.0 and r.estimated_serving == 1.0
+    pb = resolve_nutrition(_Cand(grams=15, per_100g=_Per100(600)), _Item(5, 30.5))
+    assert pb.source == "db" and pb.nutrition.calories == 91.5 and pb.estimated_serving == 1.0
+
+
+def test_resolve_label_wins_and_package_size_replaces_ai_grams():
+    """표시 성분 검색 결과가 있으면 그 밀도, 용량 355ml × 1캔. 오징어땅콩 1봉 98g 도 봉지 용량으로."""
+    from app.services.analyze import resolve_nutrition
+
+    r = resolve_nutrition(_Cand(grams=200, count=1, unit="캔", label=_Label(1.4, 355, ["https://a"])), _Item(100, 40))
+    assert r.source == "label" and r.grams == 355 and round(r.nutrition.calories, 1) == 5.0 and r.sources == ["https://a"]
+    bag = resolve_nutrition(_Cand(grams=40, count=1, unit="개", per_100g=_Per100(500), package=_Package(98)), None)
+    assert bag.grams == 98 and bag.nutrition.calories == 490.0
+    # 봉지 속 낱개 4개는 '봉지 4개'가 아니다 — 포장 용량은 1개(한 포장)일 때만, 아니면 AI 가 본 전체 g
+    minis = resolve_nutrition(_Cand(grams=120, count=4, unit="개", label=_Label(390, 100)), None)
+    assert minis.grams == 120 and round(minis.nutrition.calories * 4) == 468
+    cans = resolve_nutrition(_Cand(grams=500, count=2, unit="캔", label=_Label(42, 355)), None)
+    assert cans.grams == 710  # 캔·병은 개수 × 용량
+    # 사진 속 포장(40g 파우치)이 검색이 찾은 묶음 포장(280g)보다 우선
+    pouch = resolve_nutrition(_Cand(grams=40, count=1, unit="개", label=_Label(385, 280), package=_Package(40)), None)
+    assert pouch.grams == 40 and pouch.nutrition.calories == 154.0
+
+
+def test_resolve_legacy_ai_without_grams_or_per_100g_keeps_old_behavior():
+    """구 AI 서버(배수 + 1인분형 추정치): 매칭 행이면 기준량 × 배수, 아니면 추정치와 배수를 그대로."""
+    from app.services.analyze import resolve_nutrition
+
+    class _N:
+        base_serving, calories, carbs, protein, fat = "1인분(250g)", 520.0, 32.0, 24.0, 33.0
+
+    r = resolve_nutrition(_Cand(serving=0.5), _Item(400, 320))
+    assert r.source == "db" and r.grams == 200 and r.nutrition.calories == 160.0 and r.estimated_serving == 1.0
+    legacy = resolve_nutrition(_Cand(serving=0.5, nutrition=_N()), None)
+    assert legacy.source == "ai_serving" and legacy.nutrition.calories == 520.0 and legacy.estimated_serving == 0.5
+    nothing = resolve_nutrition(_Cand(serving=1.0), None)
+    assert nothing.source == "none" and nothing.nutrition is None
 
 
 class CountedPizzaAIClient:
@@ -358,7 +404,7 @@ class CountedPizzaAIClient:
 
 
 def test_analyze_counted_food_returns_quantity_and_unit(client, auth_headers, db_factory):
-    """피자 8조각: 시드 1인분 200g → 4.0인분, quantity 8 '조각', 1조각 = 0.5인분. 라면은 스냅돼 1.0."""
+    """피자 8조각 800g: 1조각(100g) 값 × 개수 8. 라면 560g: 보이는 한 그릇 = 1인분, kcal 은 560g 치."""
     image_id = upload_image_id(client, auth_headers)
     app.dependency_overrides[get_ai_client] = lambda: CountedPizzaAIClient()
     try:
@@ -370,25 +416,20 @@ def test_analyze_counted_food_returns_quantity_and_unit(client, auth_headers, db
     assert res.status_code == 200, res.text
     by_name = {c["normalized_name"]: c for c in res.json()["candidates"]}
     pizza, ramen = by_name["피자"], by_name["라면"]
-    assert pizza["estimated_serving"] == 4.0
-    assert (pizza["quantity"], pizza["quantity_unit"], pizza["serving_per_unit"]) == (8.0, "조각", 0.5)
-    assert ramen["estimated_serving"] == 1.0  # 560/550 = 1.02 → 한 그릇
-    assert ramen["quantity"] is None and ramen["quantity_unit"] is None
 
     from sqlalchemy import select
 
-    from app.models import FoodCandidate
+    from app.models import FoodCandidate, NutritionItem
 
     db = db_factory()
+    pizza_row = db.scalar(select(NutritionItem).where(NutritionItem.normalized_name == "피자"))
+    ramen_row = db.scalar(select(NutritionItem).where(NutritionItem.normalized_name == "라면"))
+    assert pizza["estimated_serving"] == 8.0 and pizza["grams"] == 800 and pizza["nutrition_source"] == "db"
+    assert (pizza["quantity"], pizza["quantity_unit"], pizza["serving_per_unit"]) == (8.0, "조각", 1.0)
+    assert pizza["nutrition"]["calories"] == round(float(pizza_row.calories) / float(pizza_row.base_amount) * 100, 1)
+    assert pizza["matched_name"] == pizza_row.name and pizza["per_100g"]["calories"] > 0
+    assert ramen["estimated_serving"] == 1.0 and ramen["grams"] == 560 and ramen["quantity"] is None
+    assert ramen["nutrition"]["calories"] == round(float(ramen_row.calories) / float(ramen_row.base_amount) * 560, 1)
     row = db.scalar(select(FoodCandidate).where(FoodCandidate.id == pizza["food_candidate_id"]))
-    assert (float(row.quantity), row.quantity_unit, float(row.grams_per_unit)) == (8.0, "조각", 100.0)
-
-
-def test_reconcile_serving_container_units_snap_like_bowls():
-    from app.services.analyze import _reconcile_serving
-
-    # 밥 1공기 250g(AI 눈대중) / 210g = 1.19 → 한 공기 1.0. 두 공기 420g → 2.0
-    assert _reconcile_serving(_Cand(1.0, 250, 1, "공기"), _Item(210)) == 1.0
-    assert _reconcile_serving(_Cand(2.0, 420, 2, "공기"), _Item(210)) == 2.0
-    # 콜라 1캔 250ml 가 100g 당 행에 걸리면 2.5 — 화면엔 "1캔", kcal 은 2.5배
-    assert _reconcile_serving(_Cand(1.0, 250, 1, "캔"), _Item(100)) == 2.5
+    assert (float(row.quantity), row.quantity_unit, float(row.grams_per_unit), float(row.estimated_grams), row.nutrition_source, row.food_index) == (
+        8.0, "조각", 100.0, 800.0, "db", 0)

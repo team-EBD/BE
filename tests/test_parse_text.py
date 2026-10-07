@@ -1,6 +1,7 @@
 """POST /meals/parse-text — 자연어 식사 서술 → 기록 초안 (analyze 계약 공유)."""
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import select
 
 from app.ai_client import get_ai_client
@@ -19,10 +20,13 @@ def test_parse_text_success_shares_analyze_contract(client, auth_headers):
     assert "candidates" in body and body.get("status") != "failed"
     names = [c["normalized_name"] for c in body["candidates"]]
     assert names == ["김밥", "라면"]
-    # "반 개" → serving 0.5, AI 추정 영양 fallback (시드 DB에 없는 음식)
+    # "반 개" → 서술한 양(기준량 × 0.5)이 곧 1인분. 영양은 그 양 치 (g × 100g 당, 2026-10-06)
     ramen = body["candidates"][1]
-    assert ramen["estimated_serving"] == 0.5
-    assert ramen["nutrition"]["calories"] == 500
+    assert ramen["estimated_serving"] == 1.0 and ramen["nutrition_source"] in ("db", "ai_serving")
+    if ramen["nutrition_source"] == "db":
+        assert ramen["grams"] > 0 and ramen["nutrition"]["calories"] == pytest.approx(ramen["per_100g"]["calories"] * ramen["grams"] / 100, abs=0.2)
+    else:  # 시드에 라면이 없으면 AI 1인분형 추정치와 배수 그대로
+        assert ramen["nutrition"]["calories"] == 500
     assert ramen["food_candidate_id"] > 0
 
 
