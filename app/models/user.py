@@ -139,6 +139,16 @@ class UserProfile(Base):
     birth_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     height: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
     weight: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    # 목표 세분화 (2026-10-09) — 값 목록과 계산은 app/services/goals.py. 전부 NULL 이면 예전 방식
+    # (eating_habits.meal_goal + 가벼운 활동 가정)으로 계산한다.
+    # lose_weight/maintain/gain_muscle/gain_weight/eat_healthy
+    primary_goal: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # sedentary/light/moderate/active/very_active
+    activity_level: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    target_weight: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
+    goal_pace: Mapped[str | None] = mapped_column(String(10), nullable=True)  # slow/normal/fast
+    # 특히 챙기고 싶은 것 — 쉼표로 이은 protein/overeating/skipping/balance. 펫 코칭의 우선순위에 쓴다.
+    focus_areas: Mapped[str | None] = mapped_column(String(100), nullable=True)
     updated_at: Mapped[datetime] = updated_at_column()
 
 

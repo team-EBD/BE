@@ -28,12 +28,14 @@ from app.core.errors import APIError
 from app.core.timeutil import kst_date_of, kst_day_bounds, now_utc, to_kst
 from app.models import (
     AiCallLog,
+    EatingHabit,
     LocationConsent,
     MealItem,
     MealRecord,
     RecommendationLog,
     RecommendationItem as RecommendationItemRow,
     User,
+    UserProfile,
 )
 from app.schemas.recommendation import (
     AcceptRequest,
@@ -50,6 +52,7 @@ from app.schemas.recommendation import (
     NextMealResponse,
     RecommendationItem,
 )
+from app.services.goals import resolve_primary_goal
 from app.services.recommend import recommend as recommend_v2
 from app.services.recommend.feedback import log_exposure, mark_accepted, record_feedback
 from app.services.recommend.foods import food_item_payload, representative_item
@@ -80,7 +83,13 @@ def _daily_summary_payload(db: Session, user_id: int, day: date) -> dict:
     """AI 서버 RecommendRequest.daily_summary 계약(ai-server schemas 1:1)."""
     total = aggregate_day(db, user_id, day)
     goals = get_goals(db, user_id)
+    profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user_id))
+    habit = db.scalar(select(EatingHabit).where(EatingHabit.user_id == user_id))
     return {
+        # 사용자의 목표 (2026-10-09) — AI 가 후보 점수와 추천 이유에 반영한다. 모르는 AI 서버는 무시한다
+        "goal_type": resolve_primary_goal(
+            profile.primary_goal if profile else None, habit.meal_goal if habit else None
+        ),
         "total_calories": total["calories"],
         "total_carbs": total["carbs"],
         "total_protein": total["protein"],
