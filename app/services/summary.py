@@ -31,7 +31,18 @@ MACRO_SPLIT = {"carbs": (0.5, 4), "protein": (0.3, 4), "fat": (0.2, 9)}
 # 목표 유형별 단백질 계수(체중 kg당 g). 근거: ref/설계/영양_목표_산정_근거_v1.md
 # - diet(감량): 근손실 방지 위해 상향 / maintain(유지): Morton 2018 플래토 ~1.6
 # - bulk(증량): 잉여열량에서 근합성 지원
-PROTEIN_G_PER_KG = {"diet": 2.0, "maintain": 1.6, "bulk": 1.8}
+PROTEIN_G_PER_KG = {
+    "diet": 2.0,
+    "maintain": 1.6,
+    "bulk": 1.8,
+    # 세분화한 목표(user_profiles.primary_goal, 2026-10-09). 예전 유형과 같은 표에서 찾는다.
+    # 감량·근육은 예전 diet·bulk 와 같은 값이고, 체중 증량은 유지 수준, 건강한 식습관은
+    # 운동을 전제하지 않는 일반 성인 범위(0.8~1.2)의 상단이다.
+    "lose_weight": 2.0,
+    "gain_muscle": 1.8,
+    "gain_weight": 1.6,
+    "eat_healthy": 1.2,
+}
 # 지방은 목표 칼로리의 25% (AND/DC/ACSM 2016 — 20% 미만은 호르몬·필수지방산 저하)
 FAT_ENERGY_RATIO = 0.25
 # 단백질 열량 비중의 허용 범위 (AMDR 10~35%). 체중 기반 단백질 g 은 목표 칼로리와 무관하게 나오므로
@@ -315,6 +326,27 @@ def recompute_daily_summary(db: Session, user_id: int, day: date) -> DailyNutrit
     return summary
 
 
+def _daily_coach(
+    db: Session, user_id: int, day: date, total: dict, goals: dict, now, day_start_hour: int
+) -> dict | None:
+    # coach → goals → summary 순으로 불러오므로 모듈 최상단에서 가져오면 순환한다
+    from app.models import EatingHabit
+    from app.services.coach import build_daily_coach, coach_stage
+
+    profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user_id))
+    habit = db.scalar(select(EatingHabit).where(EatingHabit.user_id == user_id))
+    return build_daily_coach(
+        total,
+        goals,
+        total["meal_count"],
+        primary_goal=profile.primary_goal if profile else None,
+        meal_goal=habit.meal_goal if habit else None,
+        focus_areas=[a for a in (profile.focus_areas or "").split(",") if a] if profile else [],
+        stage=coach_stage(day, now, day_start_hour),
+        now=now,
+    )
+
+
 def daily_summary_response(
     db: Session, user_id: int, day: date, day_start_hour: int = settings.day_start_hour
 ) -> dict:
@@ -325,7 +357,8 @@ def daily_summary_response(
     """
     total = aggregate_day(db, user_id, day, day_start_hour)
     goals = get_goals(db, user_id)
-    today = kst_date_of(now_utc(), day_start_hour)
+    now = now_utc()
+    today = kst_date_of(now, day_start_hour)
     progress = {
         k: round(total[k] / goals[k], 2) if goals[k] else 0.0
         for k in ("calories", "carbs", "protein", "fat")
@@ -337,6 +370,8 @@ def daily_summary_response(
         "progress": progress,
         "remaining_calories": max(round(goals["calories"] - total["calories"]), 0),
         "summary_text": build_summary_text(total, goals, total["meal_count"]),
+        # 펫의 하루 코칭 (2026-10-09) — 목표에 맞춘 한마디. 먹은 기록이 없으면 null
+        "coach": _daily_coach(db, user_id, day, total, goals, now, day_start_hour),
         "streak_days": streak_days(db, user_id, day, day_start_hour),
         "macro_ratio": macro_ratio(total["carbs"], total["protein"], total["fat"]),
         # 리포트 화면 열람 조건 (SCRUM-275). 홈 화면은 이 필드를 쓰지 않는다

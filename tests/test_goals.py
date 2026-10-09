@@ -215,10 +215,11 @@ def test_meal_goal_change_adjusts_auto_goal(client):
     headers = _auth_header(client, email="diet@example.com")
     before = client.get("/v1/users/me", headers=headers).json()["daily_goal_calories"]
 
-    # 감량 목표로 변경 → -500 kcal
+    # 감량 목표로 변경 → -500 kcal. 단 적자는 유지 열량의 25% 를 넘지 않는다 (2026-10-09)
     res = client.patch(
         "/v1/users/eating-habits", json={"meal_goal": "diet"}, headers=headers
     )
     assert res.status_code == 200
     after = client.get("/v1/users/me", headers=headers).json()["daily_goal_calories"]
-    assert after == before - 500
+    assert after == max(before - 500, round(before * 0.75 / 10) * 10)
+    assert after < before
