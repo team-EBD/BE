@@ -23,6 +23,7 @@ from app.models import (
 from app.schemas.user import (
     EatingHabitsResponse,
     EatingHabitsUpdateRequest,
+    GoalPlan,
     LocationConsentCreateRequest,
     LocationConsentResponse,
     LocationConsentUpdateRequest,
@@ -33,7 +34,12 @@ from app.schemas.user import (
     TermsAgreementResponse,
     UpdateMeRequest,
 )
-from app.services.goals import personalized_goals
+from app.services.goals import (
+    MEAL_GOAL_BY_PRIMARY,
+    PRIMARY_BY_MEAL_GOAL,
+    goal_plan,
+    personalized_goals,
+)
 from app.services.nickname import allocate_nickname_tag
 from app.services.summary import DEFAULT_GOALS, derive_macro_goals
 
@@ -51,8 +57,34 @@ HABIT_DEFAULTS = {
 }
 
 
+def _focus_areas(profile: UserProfile | None) -> list[str]:
+    return [a for a in (profile.focus_areas or "").split(",") if a] if profile else []
+
+
+def _goal_plan(profile: UserProfile | None, meal_goal: str | None) -> GoalPlan | None:
+    """자동 산정 목표의 근거. 저장된 목표와 지금 계산이 어긋나면(직접 설정, 또는 예전 공식으로
+    계산해 둔 값) 숫자가 맞지 않는 설명을 보여 주지 않도록 null 을 준다."""
+    if profile is None or profile.goal_source != "auto":
+        return None
+    plan = goal_plan(
+        profile.gender,
+        profile.birth_year,
+        profile.height,
+        profile.weight,
+        meal_goal,
+        primary_goal=profile.primary_goal,
+        activity_level=profile.activity_level,
+        goal_pace=profile.goal_pace,
+        target_weight=profile.target_weight,
+    )
+    if plan is None or plan["calories"] != profile.goal_calories:
+        return None
+    return GoalPlan(**{k: v for k, v in plan.items() if k != "calories"})
+
+
 def _me_response(db: DB, user) -> MeDetailResponse:
     profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user.id))
+    habit = db.scalar(select(EatingHabit).where(EatingHabit.user_id == user.id))
     return MeDetailResponse(
         id=user.id,
         email=user.email,
@@ -65,6 +97,19 @@ def _me_response(db: DB, user) -> MeDetailResponse:
         weight=float(profile.weight) if profile and profile.weight is not None else None,
         birth_year=profile.birth_year if profile else None,
         goal_source=profile.goal_source if profile else None,
+        primary_goal=profile.primary_goal if profile else None,
+        activity_level=profile.activity_level if profile else None,
+        target_weight=(
+            float(profile.target_weight)
+            if profile and profile.target_weight is not None
+            else None
+        ),
+        goal_pace=profile.goal_pace if profile else None,
+        focus_areas=_focus_areas(profile),
+        daily_goal_carbs=profile.goal_carbs if profile else None,
+        daily_goal_protein=profile.goal_protein if profile else None,
+        daily_goal_fat=profile.goal_fat if profile else None,
+        goal_plan=_goal_plan(profile, habit.meal_goal if habit else None),
         tutorial_completed_at=user.tutorial_completed_at,
         created_at=user.created_at,
     )
@@ -122,8 +167,14 @@ def update_me(body: UpdateMeRequest, user: CurrentUser, db: DB) -> MeDetailRespo
         body.weight,
         body.birth_year,
         body.goal_source,
+        body.primary_goal,
+        body.activity_level,
+        body.goal_pace,
+        body.focus_areas,
     )
-    if any(value is not None for value in profile_fields):
+    if any(value is not None for value in profile_fields) or (
+        "target_weight" in body.model_fields_set
+    ):
         profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user.id))
         if profile is None:
             goals = derive_macro_goals(body.daily_goal_calories or DEFAULT_GOALS["calories"])
@@ -149,10 +200,26 @@ def update_me(body: UpdateMeRequest, user: CurrentUser, db: DB) -> MeDetailRespo
             profile.weight = body.weight
         if body.birth_year is not None:
             profile.birth_year = body.birth_year
+        if body.activity_level is not None:
+            profile.activity_level = body.activity_level
+        if body.goal_pace is not None:
+            profile.goal_pace = body.goal_pace
+        if "target_weight" in body.model_fields_set:
+            profile.target_weight = body.target_weight
+        if body.focus_areas is not None:
+            # 중복 없이, 받은 순서대로
+            profile.focus_areas = ",".join(dict.fromkeys(body.focus_areas)) or None
 
         # 탄단지는 목표 유형(감량/유지/증량)에 따라 단백질 계수가 달라지므로 함께 읽는다
         habit = db.scalar(select(EatingHabit).where(EatingHabit.user_id == user.id))
-        meal_goal = habit.meal_goal if habit else None
+        if body.primary_goal is not None:
+            profile.primary_goal = body.primary_goal
+            # 추천·요약과 이전 앱이 읽는 예전 목표 유형도 함께 맞춘다
+            if habit is None:
+                habit = EatingHabit(user_id=user.id)
+                db.add(habit)
+            habit.meal_goal = MEAL_GOAL_BY_PRIMARY[body.primary_goal]
+        meal_goal = profile.primary_goal or (habit.meal_goal if habit else None)
         if body.daily_goal_calories is not None:
             # 사용자가 직접 설정한 목표 — 이후 신체정보가 바뀌어도 자동 재계산으로
             # 덮어쓰지 않는다 (칼로리는 수동, 탄단지는 체중·목표유형 기준 유지)
@@ -162,24 +229,45 @@ def update_me(body: UpdateMeRequest, user: CurrentUser, db: DB) -> MeDetailRespo
             profile.goal_source == "auto"
             and any(
                 value is not None
-                for value in (body.gender, body.height, body.weight, body.birth_year)
+                for value in (
+                    body.gender,
+                    body.height,
+                    body.weight,
+                    body.birth_year,
+                    body.primary_goal,
+                    body.activity_level,
+                    body.goal_pace,
+                )
             )
         ):
-            # 자동 산정 사용자의 신체정보 변경, 또는 직접 설정 목표의 자동 되돌리기
+            # 자동 산정 사용자의 신체정보·목표 변경, 또는 직접 설정 목표의 자동 되돌리기
             # — BMR/TDEE 목표를 재계산한다
             profile.goal_source = "auto"
-            goals = personalized_goals(
-                profile.gender,
-                profile.birth_year,
-                profile.height,
-                profile.weight,
-                meal_goal,
-            )
-            if goals is not None:
-                _apply_goal_calories(profile, goals["calories"], meal_goal)
+            _recalculate_auto_goals(profile, meal_goal)
+        elif body.primary_goal is not None:
+            # 칼로리를 직접 정한 사용자 — 칼로리는 그대로 두고 탄단지만 새 목표에 맞춘다
+            _apply_goal_calories(profile, profile.goal_calories, meal_goal)
 
     db.commit()
     return _me_response(db, user)
+
+
+def _recalculate_auto_goals(profile: UserProfile, meal_goal: str | None) -> None:
+    """신체정보·목표·활동량·속도로 목표 칼로리와 탄단지를 다시 계산한다 (신체정보 부족 시 유지).
+
+    meal_goal 자리에는 세분화한 목표(primary_goal)가 있으면 그 값을, 없으면 예전 목표 유형을 넘긴다.
+    """
+    goals = personalized_goals(
+        profile.gender,
+        profile.birth_year,
+        profile.height,
+        profile.weight,
+        meal_goal,
+        activity_level=profile.activity_level,
+        goal_pace=profile.goal_pace,
+    )
+    if goals is not None:
+        _apply_goal_calories(profile, goals["calories"], meal_goal)
 
 
 def _apply_goal_calories(
@@ -230,16 +318,17 @@ def update_eating_habits(
     # 목표 유형(감량/유지/증량) 변경은 자동 산정 목표 칼로리에 반영한다
     if body.meal_goal is not None:
         profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user.id))
-        if profile is not None and profile.goal_source == "auto":
-            goals = personalized_goals(
-                profile.gender,
-                profile.birth_year,
-                profile.height,
-                profile.weight,
-                body.meal_goal,
-            )
-            if goals is not None:
-                _apply_goal_calories(profile, goals["calories"], body.meal_goal)
+        if profile is not None:
+            # 세분화한 목표(primary_goal)가 이 유형과 어긋날 때만 맞춘다 — 같은 유형 안의 구분
+            # (유지 ↔ 건강한 식습관, 근육 ↔ 체중 증량)은 이전 앱의 저장으로 지워지지 않게 둔다
+            if (
+                profile.primary_goal is not None
+                and MEAL_GOAL_BY_PRIMARY.get(profile.primary_goal) != body.meal_goal
+            ):
+                profile.primary_goal = PRIMARY_BY_MEAL_GOAL[body.meal_goal]
+            goal_key = profile.primary_goal or body.meal_goal
+            if profile.goal_source == "auto":
+                _recalculate_auto_goals(profile, goal_key)
 
     db.commit()
     return _habits_response(habit)
