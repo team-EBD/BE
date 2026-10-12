@@ -28,6 +28,9 @@ settings.weekly_report_push_enabled = False
 settings.run_migrations_on_startup = False
 # 요청 타이밍 미들웨어는 실제 SessionLocal(.env DB)에 기록하므로 테스트에서 끈다
 settings.request_log_enabled = False
+# 전면 무료 기간은 달력 날짜에 따라 켜진다 — 한도 테스트가 실행 날짜에 좌우되지 않게 끄고,
+# 무료 기간 테스트(tests/test_free_access.py)가 직접 켠다.
+settings.free_access_until = ""
 from app.models import NutritionItem  # noqa: F401 — 모델 로딩 보장
 from app.social_client import SocialIdentity
 from app.storage import get_storage

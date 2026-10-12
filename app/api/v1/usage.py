@@ -3,6 +3,7 @@
 GET /v1/usage/daily — 분석/추천 각각의 오늘(KST) 사용량·한도·잔여와 평생 무료 크레딧.
 한도가 비활성(0 이하)이면 limit/remaining 은 null (무제한).
 한도 면제 역할(users.role 이 tester/admin)은 모든 항목이 무제한으로 온다.
+전면 무료 기간(settings.free_access_until)에도 모든 항목이 무제한으로 오고 free_access_until 에 마지막 날이 실린다.
 플래그가 켜지면 기능별 일일 한도는 없고 무료 크레딧만 통합 적용된다.
 """
 from __future__ import annotations
@@ -13,6 +14,7 @@ from fastapi import APIRouter
 
 from app.core.config import settings
 from app.core.deps import DB, CurrentUser
+from app.services.free_access import active_free_access_until
 from app.services.subscription import is_premium
 from app.services.usage_limit import (
     count_lifetime_success,
@@ -37,6 +39,9 @@ class DailyUsageResponse(BaseModel):
     free_credits: UsageQuota
     # FE 가 "무제한(프리미엄)" 배지와 구독 유도 CTA 중 무엇을 보일지 판단한다
     is_premium: bool = False
+    # 전면 무료 기간이면 마지막 날(KST, YYYY-MM-DD), 아니면 null.
+    # 값이 있으면 FE 는 프리미엄 기능을 모두 열고 구독 유도를 띄우지 않는다.
+    free_access_until: str | None = None
 
 
 def _quota(db, user_id: int, task_type: str, limit: int) -> UsageQuota:
@@ -50,6 +55,17 @@ def _quota(db, user_id: int, task_type: str, limit: int) -> UsageQuota:
 def get_daily_usage(user: CurrentUser, db: DB) -> DailyUsageResponse:
     premium = is_premium(db, user.id)
     free_used = count_lifetime_success(db, user.id)
+    free_until = active_free_access_until()
+    if free_until is not None:
+        # 무료 기간: 남용 방지 상한(free_access_daily_limit)은 정상 사용으로 닿지 않는 값이라
+        # 화면에 '남은 횟수'로 보여주지 않는다 — 전부 무제한으로 알린다.
+        return DailyUsageResponse(
+            analyze=_quota(db, user.id, "analyze", 0),
+            recommend=_quota(db, user.id, "recommend", 0),
+            free_credits=UsageQuota(limit=None, used=free_used, remaining=None),
+            is_premium=premium,
+            free_access_until=free_until.isoformat(),
+        )
     if is_limit_exempt(db, user.id):
         # 한도 면제 역할(tester/admin): 전부 무제한으로 알린다 — 앱이 '무료 크레딧 소진' 배지를 띄우지 않게.
         # is_premium 은 사실대로 둔다(구독 화면·결제 흐름은 일반 사용자처럼 시험할 수 있어야 한다).
