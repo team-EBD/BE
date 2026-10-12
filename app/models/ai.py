@@ -35,6 +35,8 @@ class AiCallLog(Base):
     meal_image_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("meal_images.id", ondelete="SET NULL"), nullable=True
     )
+    # 호출 시 입력 종류 스냅샷. 사진 삭제 후에도 유지하며 과거 불명 행은 NULL.
+    input_type: Mapped[str | None] = mapped_column(String(10), nullable=True)  # photo/text
     task_type: Mapped[str] = mapped_column(String(30), nullable=False)  # image_analysis/recommendation
     provider: Mapped[str] = mapped_column(String(30), nullable=False)
     model_name: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -57,9 +59,9 @@ class FoodCandidate(Base):
     __tablename__ = "food_candidates"
 
     id: Mapped[int] = pk_column()
-    # 자연어 파싱(/meals/parse-text) 후보는 이미지가 없으므로 NULL 허용
+    # 문장 분석 또는 사진 삭제 후에는 NULL. 정답지 후보 자체는 보존한다.
     meal_image_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("meal_images.id", ondelete="CASCADE"), nullable=True, index=True
+        BigInteger, ForeignKey("meal_images.id", ondelete="SET NULL"), nullable=True, index=True
     )
     ai_call_log_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("ai_call_logs.id", ondelete="SET NULL"), nullable=True
@@ -80,7 +82,9 @@ class FoodCandidate(Base):
     estimated_grams: Mapped[float | None] = mapped_column(Numeric(8, 2), nullable=True)
     nutrition_source: Mapped[str | None] = mapped_column(String(12), nullable=True)
     food_index: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
-    rank: Mapped[int] = mapped_column(Integer, nullable=False)  # 1-3
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)  # 호출 전체 후보의 통번호 (1부터)
+    # 음식 그룹 내 순위(1부터). 과거 행은 추정하지 않고 NULL 로 유지한다.
+    prediction_rank: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     is_selected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = created_at_column()
 

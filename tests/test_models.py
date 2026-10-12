@@ -64,6 +64,28 @@ def test_all_tables_registered():
     assert len(EXPECTED_TABLES) == 40
 
 
+def test_candidate_group_columns_are_nullable_without_defaults():
+    from app.models import FoodCandidate
+
+    for name in ("food_index", "prediction_rank"):
+        column = FoodCandidate.__table__.c[name]
+        assert column.nullable
+        assert column.default is None
+        assert column.server_default is None
+
+
+def test_analysis_input_snapshot_and_candidate_image_retention():
+    from app.models import AiCallLog, FoodCandidate
+
+    column = AiCallLog.__table__.c.input_type
+    assert column.nullable
+    assert column.default is None
+    assert column.server_default is None
+    image_column = FoodCandidate.__table__.c.meal_image_id
+    assert image_column.nullable
+    assert next(iter(image_column.foreign_keys)).ondelete == "SET NULL"
+
+
 def _sqlite_factory():
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)
