@@ -215,6 +215,7 @@ def _save_call_log(
     log = AiCallLog(
         user_id=user_id,
         meal_image_id=meal_image_id,
+        input_type="photo" if meal_image_id is not None else "text",
         task_type=payload.task_type,
         provider=payload.provider,
         model_name=payload.model_name,
