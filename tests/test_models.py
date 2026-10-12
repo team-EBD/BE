@@ -64,6 +64,16 @@ def test_all_tables_registered():
     assert len(EXPECTED_TABLES) == 40
 
 
+def test_candidate_group_columns_are_nullable_without_defaults():
+    from app.models import FoodCandidate
+
+    for name in ("food_index", "prediction_rank"):
+        column = FoodCandidate.__table__.c[name]
+        assert column.nullable
+        assert column.default is None
+        assert column.server_default is None
+
+
 def _sqlite_factory():
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)

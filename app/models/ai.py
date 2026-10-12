@@ -80,7 +80,9 @@ class FoodCandidate(Base):
     estimated_grams: Mapped[float | None] = mapped_column(Numeric(8, 2), nullable=True)
     nutrition_source: Mapped[str | None] = mapped_column(String(12), nullable=True)
     food_index: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
-    rank: Mapped[int] = mapped_column(Integer, nullable=False)  # 1-3
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)  # 호출 전체 후보의 통번호 (1부터)
+    # 음식 그룹 내 순위(1부터). 과거 행은 추정하지 않고 NULL 로 유지한다.
+    prediction_rank: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     is_selected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = created_at_column()
 

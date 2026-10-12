@@ -332,9 +332,11 @@ def _postprocess(
 
     factor, applied = habit_factor(habit)
     candidates: list[AnalyzeCandidate] = []
+    prediction_ranks: dict[int, int] = {}
     for rank, (food_index, cand) in enumerate(
         _grouped_candidates(result.candidates, max_per_food), start=1
     ):
+        prediction_ranks[food_index] = prediction_ranks.get(food_index, 0) + 1
         matched, match_path = match_food_name(db, cand.food_name)
         # 경로별 비율(exact/none)과 영양 출처(label/db/ai)가 매칭 품질 지표 (2026-10-06 정확 일치만)
         resolved = resolve_nutrition(cand, matched)
@@ -358,6 +360,7 @@ def _postprocess(
             nutrition_source=resolved.source,
             food_index=food_index,
             rank=rank,
+            prediction_rank=prediction_ranks[food_index],
         )
         db.add(row)
         db.flush()
