@@ -10,11 +10,14 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
     ForeignKey,
     Index,
     Numeric,
+    SmallInteger,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy import false as sa_false
@@ -72,6 +75,22 @@ class MealRecord(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(TZDateTime, nullable=True)  # soft delete
 
 
+class MealRecordImage(Base):
+    __tablename__ = "meal_record_images"
+    __table_args__ = (
+        UniqueConstraint("meal_record_id", "position", name="uq_meal_record_images_position"),
+        CheckConstraint("position BETWEEN 0 AND 2", name="ck_meal_record_images_position"),
+    )
+
+    meal_record_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("meal_records.id", ondelete="CASCADE"), primary_key=True
+    )
+    meal_image_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("meal_images.id", ondelete="CASCADE"), primary_key=True, index=True
+    )
+    position: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+
+
 class MealItem(Base):
     __tablename__ = "meal_items"
 
@@ -94,6 +113,9 @@ class MealItem(Base):
     # AI 가 준 사진 속 위치 스냅샷 {x, y, width, height} (0.0~1.0). 직접 검색으로
     # 담은 음식이나 구버전 기록은 NULL — 확대 보기에서 오버레이만 생략된다.
     bbox: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    bbox_image_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("meal_images.id", ondelete="SET NULL"), nullable=True
+    )
     # 음식군 스냅샷 (docs/음식군-DB-계약.md §3 H·I). 저장 시 nutrition_item → 군, 없으면 이름 → alias.
     # NULL = 미분류 → 추천 개인 빈도 집계는 이름 키로 폴백한다.
     food_group_id: Mapped[int | None] = mapped_column(

@@ -23,6 +23,8 @@ EXPECTED_TABLES = {
     "daily_nutrition_summaries",
     "meal_images",
     "meal_records",
+    "meal_record_images",
+    "ai_call_log_images",
     "meal_items",
     "correction_logs",
     "ai_call_logs",
@@ -59,9 +61,9 @@ EXPECTED_TABLES = {
 }
 
 
-def test_all_tables_registered():
+def test_all_42_tables_registered():
     assert set(Base.metadata.tables.keys()) == EXPECTED_TABLES
-    assert len(EXPECTED_TABLES) == 40
+    assert len(EXPECTED_TABLES) == 42
 
 
 def test_candidate_group_columns_are_nullable_without_defaults():
