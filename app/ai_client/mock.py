@@ -33,11 +33,11 @@ class MockAIClient:
         self,
         image_url: str,
         eating_habits: dict | None = None,
+        user_text: str | None = None,
+        candidate_depth: str | None = None,
         *,
         image_urls: list[str] | None = None,
         max_foods: int | None = None,
-        user_text: str | None = None,
-        candidate_depth: str | None = None,
     ) -> AnalyzeResult:
         urls = image_urls if image_urls is not None else [image_url]
         clarifier = candidate_depth == "clarifier"
