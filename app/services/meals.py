@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+from collections import Counter
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -25,7 +26,7 @@ from app.models import (
     NutritionItem,
     User,
 )
-from app.schemas.meal import MealCreateRequest, MealItemInput, MealUpdateRequest
+from app.schemas.meal import BoundingBox, MealCreateRequest, MealItemInput, MealUpdateRequest
 from app.services.game_profile import ensure_game_profile
 from app.services.game_rewards import apply_meal_rewards
 from app.services.recommend.feedback import mark_eaten as mark_recommendation_eaten
@@ -272,6 +273,32 @@ def create_meal_with_rewards(
     return meal, rewards
 
 
+def _preserve_omitted_bboxes(
+    old_items: list[MealItem], items: list[MealItemInput]
+) -> list[MealItemInput]:
+    """구 앱의 bbox 생략만 보완한다. 명시적 null 은 위치 제거로 존중한다.
+
+    양·영양값·순서는 바뀔 수 있으므로 이름이 양쪽에서 유일할 때만 대응한다.
+    상세 응답에 영양 DB ID 가 없던 앱도 지원하되, ID 충돌·동명 중복은 추측하지 않는다.
+    """
+    old_counts = Counter(item.food_name for item in old_items)
+    new_counts = Counter(item.food_name for item in items)
+    old_by_name = {item.food_name: item for item in old_items}
+    resolved = []
+    for item in items:
+        old = old_by_name.get(item.food_name)
+        if (
+            "bbox" not in item.model_fields_set
+            and old is not None
+            and old_counts[item.food_name] == new_counts[item.food_name] == 1
+            and (item.nutrition_item_id is None or item.nutrition_item_id == old.nutrition_item_id)
+            and old.bbox is not None
+        ):
+            item = item.model_copy(update={"bbox": BoundingBox.model_validate(old.bbox)})
+        resolved.append(item)
+    return resolved
+
+
 def update_meal(db: Session, user: User, meal_id: int, body: MealUpdateRequest) -> MealRecord:
     meal = get_owned_meal(db, user, meal_id)
     old_date = kst_date_of(meal.eaten_at, settings.day_start_hour)
@@ -301,11 +328,13 @@ def update_meal(db: Session, user: User, meal_id: int, body: MealUpdateRequest) 
 
     if body.items is not None:
         meal.is_skipped = False  # 항목이 담기면 생략 기록이 아니다
+        old_items = list(db.scalars(select(MealItem).where(MealItem.meal_record_id == meal.id)))
+        items = _preserve_omitted_bboxes(old_items, body.items)
         # 항목 전체 교체(기존 항목·보정 로그는 이력이므로 로그는 남기고 항목만 재구성)
-        for old in db.scalars(select(MealItem).where(MealItem.meal_record_id == meal.id)):
+        for old in old_items:
             db.delete(old)
         db.flush()
-        _insert_items(db, meal, body.items)
+        _insert_items(db, meal, items)
         _mark_selected_candidates(db, user, body.items)
         totals = _totals(body.items)
         meal.total_calories = totals["calories"]
