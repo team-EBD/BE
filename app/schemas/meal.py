@@ -26,12 +26,31 @@ class MealImageResponse(BaseModel):
 
 # --- AI 분석 (6.1) ---
 
+def _image_ids(single: int | None, multiple: list[int] | None) -> list[int]:
+    ids = multiple if multiple is not None else ([single] if single is not None else [])
+    if len(ids) > 3 or len(ids) != len(set(ids)):
+        raise ValueError("사진은 중복 없이 최대 3장까지 가능합니다.")
+    if single is not None and (not ids or ids[0] != single):
+        raise ValueError("meal_image_id 는 meal_image_ids 의 첫 값과 같아야 합니다.")
+    return ids
+
+
 class AnalyzeRequest(BaseModel):
-    meal_image_id: int
+    meal_image_id: int | None = None
+    meal_image_ids: list[int] | None = Field(default=None, min_length=1, max_length=3)
+
     # 사진과 함께 적은 식사 설명 (선택) — AI 식별·수량 힌트
     text: str | None = Field(default=None, max_length=200)
     # 튜토리얼(첫 기록 연습) 중 호출인지 — ai_call_logs.is_tutorial 로 저장. 구버전 앱은 생략(NULL)
     is_tutorial: bool | None = None
+
+    @model_validator(mode="after")
+    def _normalize_images(self):
+        self.meal_image_ids = _image_ids(self.meal_image_id, self.meal_image_ids)
+        if not self.meal_image_ids:
+            raise ValueError("분석할 사진이 필요합니다.")
+        self.meal_image_id = self.meal_image_ids[0]
+        return self
 
 
 class ParseTextRequest(BaseModel):
@@ -94,6 +113,8 @@ class AnalyzeCandidate(BaseModel):
     # 사진 속 몇 번째 음식에 대한 예측인지 (0부터). 같은 food_index 는
     # 같은 음식에 대한 대체 예측(최대 3개)이다.
     food_index: int = 0
+    image_index: int = 0
+    meal_image_id: int | None = None
     normalized_name: str
     confidence_score: float
     estimated_serving: float
@@ -121,12 +142,15 @@ class AnalyzeCandidate(BaseModel):
 
 
 class AnalyzeSuccessResponse(BaseModel):
+    image_ids: list[int] = Field(default_factory=list)
     draft_notice: str
     candidates: list[AnalyzeCandidate]
     ai_call_log_id: int
 
 
 class AnalyzeFailedResponse(BaseModel):
+    failed_image_index: int | None = None
+    failed_meal_image_id: int | None = None
     status: Literal["failed"] = "failed"
     reason: str
     fallback_action: str = "manual_food_search"
@@ -153,6 +177,7 @@ class MealItemInput(BaseModel):
     fat: float = Field(ge=0)
     # AI 분석이 준 사진 속 위치 스냅샷 (직접 검색으로 담은 음식은 None)
     bbox: BoundingBox | None = None
+    bbox_image_id: int | None = None
     before_data: NutritionSnapshot | None = None
     # --- 분석 로그(정답지)용, 모두 선택 (2026-09-11) ---
     # 이 항목이 어느 AI 후보에서 왔는지 → food_candidates.is_selected 갱신.
@@ -190,6 +215,7 @@ class MealCreateRequest(BaseModel):
     meal_type: MealType
     eaten_at: datetime
     meal_image_id: int | None = None
+    meal_image_ids: list[int] | None = Field(default=None, max_length=3)
     memo: str | None = Field(default=None, max_length=500)
     # 식사 생략(안 먹음) 기록 — true 면 items 없이 저장한다 (합계 0)
     is_skipped: bool = False
@@ -202,6 +228,10 @@ class MealCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_items_by_skip(self) -> "MealCreateRequest":
+        self.meal_image_ids = _image_ids(self.meal_image_id, self.meal_image_ids)
+        self.meal_image_id = self.meal_image_ids[0] if self.meal_image_ids else None
+        if self.is_skipped and self.meal_image_ids:
+            raise ValueError("생략한 식사에는 사진을 포함할 수 없습니다.")
         if self.is_skipped and self.items:
             raise ValueError("생략한 식사에는 items 를 포함할 수 없습니다.")
         if not self.is_skipped and not self.items:
@@ -231,7 +261,14 @@ class MealItemBrief(BaseModel):
     calories: float
 
 
+class MealRecordImageResponse(BaseModel):
+    meal_image_id: int
+    image_url: str
+    position: int
+
+
 class MealCreateResponse(BaseModel):
+    images: list[MealRecordImageResponse] = Field(default_factory=list)
     meal_id: int
     meal_type: str
     eaten_at: KSTDateTime
@@ -258,9 +295,11 @@ class MealItemDetail(BaseModel):
     protein: float
     fat: float
     bbox: BoundingBox | None = None
+    bbox_image_id: int | None = None
 
 
 class MealDetailResponse(BaseModel):
+    images: list[MealRecordImageResponse] = Field(default_factory=list)
     meal_id: int
     meal_type: str
     eaten_at: KSTDateTime
@@ -280,6 +319,7 @@ class MealDeleteResponse(BaseModel):
 
 
 class MealListEntry(BaseModel):
+    image_count: int = 0
     meal_id: int
     meal_type: str
     eaten_at: KSTDateTime

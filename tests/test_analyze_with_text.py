@@ -13,9 +13,9 @@ class RecordingAIClient(MockAIClient):
     def __init__(self):
         self.seen_user_text = "NOT_CALLED"
 
-    def analyze(self, image_url, eating_habits=None, user_text=None):
+    def analyze(self, image_url, eating_habits=None, user_text=None, *, image_urls=None, max_foods=None):
         self.seen_user_text = user_text
-        return super().analyze(image_url, eating_habits, user_text)
+        return super().analyze(image_url, eating_habits, user_text=user_text)
 
 
 def _analyze(client, headers, **extra):

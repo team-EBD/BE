@@ -77,6 +77,8 @@ class AICandidate(BaseModel):
     # 사진 속 몇 번째 음식에 대한 예측인지 (0부터). 같은 food_index 후보들은
     # "같은 음식에 대한 대체 예측"이다. 구버전 AI 서버 응답에는 없으므로 기본 0.
     food_index: int = 0
+    image_index: int = 0
+    is_in_image: bool = True
     food_name: str
     confidence: float
     estimated_serving: float = 1.0
@@ -106,6 +108,7 @@ class AnalyzeResult(BaseModel):
     draft_notice: str | None = None
     candidates: list[AICandidate] = []
     reason: str | None = None  # ai_timeout/invalid_response/provider_error/not_food
+    failed_image_index: int | None = None
     fallback_action: str | None = None
     ai_call_log: AICallLogPayload
 
@@ -132,6 +135,9 @@ class AIClient(Protocol):
         eating_habits: dict | None = None,
         user_text: str | None = None,
         candidate_depth: str | None = None,
+        *,
+        image_urls: list[str] | None = None,
+        max_foods: int | None = None,
     ) -> AnalyzeResult:
         """`/internal/analyze` 의 candidate_depth 계약: "standard" | "clarifier".
 

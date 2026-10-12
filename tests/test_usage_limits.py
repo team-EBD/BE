@@ -41,7 +41,7 @@ def test_analyze_daily_limit_429(client, auth_headers, small_limits):
 
 def test_failed_analyze_does_not_consume_quota(client, auth_headers, small_limits):
     class FailingAIClient:
-        def analyze(self, image_url, eating_habits=None):
+        def analyze(self, image_url, eating_habits=None, *, image_urls=None, max_foods=None):
             return failed_analyze("ai_timeout", latency_ms=15000)
 
         def recommend(self, *args, **kwargs):

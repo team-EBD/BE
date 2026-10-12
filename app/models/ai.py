@@ -11,6 +11,7 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
     ForeignKey,
     Float,
     Integer,
@@ -18,6 +19,7 @@ from sqlalchemy import (
     SmallInteger,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -36,6 +38,7 @@ class AiCallLog(Base):
         BigInteger, ForeignKey("meal_images.id", ondelete="SET NULL"), nullable=True
     )
     # 호출 시 입력 종류 스냅샷. 사진 삭제 후에도 유지하며 과거 불명 행은 NULL.
+    input_image_count: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     input_type: Mapped[str | None] = mapped_column(String(10), nullable=True)  # photo/text
     task_type: Mapped[str] = mapped_column(String(30), nullable=False)  # image_analysis/recommendation
     provider: Mapped[str] = mapped_column(String(30), nullable=False)
@@ -53,6 +56,26 @@ class AiCallLog(Base):
     # NULL = 이 값을 보내지 않는 구버전 앱(알 수 없음). 채택률 등 품질 지표에서 연습 호출을 가려낸다.
     is_tutorial: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[datetime] = created_at_column()
+
+
+class AiCallLogImage(Base):
+    __tablename__ = "ai_call_log_images"
+    __table_args__ = (
+        UniqueConstraint("ai_call_log_id", "position", name="uq_ai_call_log_images_position"),
+        CheckConstraint("position BETWEEN 0 AND 2", name="ck_ai_call_log_images_position"),
+        CheckConstraint("status IN ('ok', 'failed')", name="ck_ai_call_log_images_status"),
+    )
+
+    id: Mapped[int] = pk_column()
+    ai_call_log_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("ai_call_logs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    meal_image_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("meal_images.id", ondelete="SET NULL"), nullable=True
+    )
+    position: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    status: Mapped[str] = mapped_column(String(10), nullable=False)
+    fail_reason: Mapped[str | None] = mapped_column(String(30), nullable=True)
 
 
 class FoodCandidate(Base):

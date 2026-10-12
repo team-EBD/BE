@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.ai_client.base import AIClient, AICallLogPayload
 from app.core.errors import APIError
-from app.models import AiCallLog, EatingHabit, FoodCandidate, MealImage, User
+from app.models import AiCallLog, AiCallLogImage, EatingHabit, FoodCandidate, MealImage, User
 from app.schemas.meal import (
     AnalyzeCandidate,
     AnalyzeFailedResponse,
@@ -55,21 +55,24 @@ MAX_PREDICTIONS_PER_FOOD_CLARIFIER = MAX_PREDICTIONS_PER_FOOD + 1
 
 
 def _grouped_candidates(
-    raw: list, max_per_food: int = MAX_PREDICTIONS_PER_FOOD
+    raw: list, max_per_food: int = MAX_PREDICTIONS_PER_FOOD, max_foods: int = MAX_FOODS
 ) -> list[tuple[int, object]]:
     """(food_index, candidate) 목록으로 정규화한다.
 
     - food_index 는 등장 순서 기준으로 0부터 재부여
-    - 서로 다른 음식 최대 MAX_FOODS 개, 음식당 예측 최대 max_per_food 개
+    - 서로 다른 음식 최대 max_foods 개, 음식당 예측 최대 max_per_food 개
     - 구버전 AI 서버(food_index 없음)는 전부 0 그룹 → 기존 상위 3개와 동일 동작
     """
-    counts: dict[int, int] = {}
-    reindex: dict[int, int] = {}
+    counts: dict[tuple, int] = {}
+    reindex: dict[tuple, int] = {}
     grouped: list[tuple[int, object]] = []
     for cand in raw:
-        original = getattr(cand, "food_index", 0) or 0
+        original = (
+            getattr(cand, "image_index", 0), getattr(cand, "is_in_image", True),
+            getattr(cand, "food_index", 0) or 0,
+        )
         if original not in reindex:
-            if len(reindex) >= MAX_FOODS:
+            if len(reindex) >= max_foods:
                 continue
             reindex[original] = len(reindex)
         if counts.get(original, 0) >= max_per_food:
@@ -232,17 +235,23 @@ def _save_call_log(
 def analyze_meal_image(
     db: Session,
     user: User,
-    meal_image_id: int,
+    meal_image_id: int | None,
     ai: AIClient,
     user_text: str | None = None,
     is_tutorial: bool | None = None,
+    *,
+    meal_image_ids: list[int] | None = None,
 ) -> AnalyzeSuccessResponse | AnalyzeFailedResponse:
     started = time.perf_counter()
-    image = db.get(MealImage, meal_image_id)
-    if image is None:
-        raise APIError(404, "NOT_FOUND", "업로드된 이미지를 찾을 수 없습니다.")
-    if image.user_id != user.id:
-        raise APIError(403, "FORBIDDEN", "다른 사용자의 이미지입니다.")
+    image_ids = meal_image_ids if meal_image_ids is not None else [meal_image_id]
+    images = []
+    for image_id in image_ids:
+        image = db.get(MealImage, image_id)
+        if image is None:
+            raise APIError(404, "NOT_FOUND", "업로드된 이미지를 찾을 수 없습니다.")
+        if image.user_id != user.id:
+            raise APIError(403, "FORBIDDEN", "다른 사용자의 이미지입니다.")
+        images.append(image)
 
     habit = db.scalar(select(EatingHabit).where(EatingHabit.user_id == user.id))
     habits_payload = None
@@ -258,18 +267,20 @@ def analyze_meal_image(
     depth = candidate_depth(db, user.id)
 
     # 사용자가 사진과 함께 적은 설명 — AI 가 식별·수량 힌트로 쓴다.
-    # 설명이 있을 때만 키워드를 넘겨 구 시그니처 클라이언트와의 호환을 유지한다.
-    # candidate_depth 도 같은 이유로 **clarifier 일 때만** 넘긴다 — 기본값이면
-    # 구버전 AI 서버·테스트 더블이 모르는 필드를 받을 일이 없다.
+    # 설명과 돋보기 키워드는 기존 전송 조건을 유지한다.
     cleaned_text = (user_text or "").strip() or None
-    extra: dict = {}
+    extra: dict = {
+        "image_urls": [image.image_url for image in images],
+        "max_foods": MAX_FOODS * len(images),
+    }
     if cleaned_text:
         extra["user_text"] = cleaned_text
     if depth == DEPTH_CLARIFIER:
         extra["candidate_depth"] = depth
-    result = ai.analyze(image.image_url, habits_payload, **extra)
+    result = ai.analyze(images[0].image_url, habits_payload, **extra)
     return _postprocess(
-        db, user, habit, result, meal_image_id, started,
+        db, user, habit, result, image_ids[0], started,
+        image_ids=image_ids, max_foods=MAX_FOODS * len(images),
         max_per_food=(
             MAX_PREDICTIONS_PER_FOOD_CLARIFIER
             if depth == DEPTH_CLARIFIER
@@ -315,6 +326,8 @@ def _postprocess(
     started: float,
     max_per_food: int = MAX_PREDICTIONS_PER_FOOD,
     is_tutorial: bool | None = None,
+    image_ids: list[int] | None = None,
+    max_foods: int = MAX_FOODS,
 ) -> AnalyzeSuccessResponse | AnalyzeFailedResponse:
     """AI 결과 공통 후처리 — 로그 기록, 영양 매칭, 식습관 보정, 후보 저장."""
     call_log = _save_call_log(
@@ -322,20 +335,43 @@ def _postprocess(
         error_message=result.reason, is_tutorial=is_tutorial,
     )
 
+    image_ids = image_ids or []
+    failed_index = getattr(result, "failed_image_index", None)
+    if type(failed_index) is not int or not 0 <= failed_index < len(image_ids):
+        failed_index = None
+    if image_ids:
+        call_log.input_image_count = len(image_ids)
+        for position, image_id in enumerate(image_ids):
+            failed = result.status == "failed" and position == failed_index
+            db.add(AiCallLogImage(
+                ai_call_log_id=call_log.id, meal_image_id=image_id, position=position,
+                status="failed" if failed else "ok",
+                fail_reason=(result.reason or "provider_error") if failed else None,
+            ))
+
     if result.status == "failed":
         call_log.total_ms = int((time.perf_counter() - started) * 1000)
         db.commit()
         return AnalyzeFailedResponse(
+            failed_image_index=failed_index,
+            failed_meal_image_id=image_ids[failed_index] if failed_index is not None else None,
             reason=result.reason or "provider_error",
             fallback_action=result.fallback_action or "manual_food_search",
             ai_call_log_id=call_log.id,
         )
 
+    # 사진 번호를 먼저 보정해야 잘못된 번호가 별도 음식 그룹으로 분리되지 않는다.
+    for cand in result.candidates:
+        image_index = getattr(cand, "image_index", 0)
+        if type(image_index) is not int or not 0 <= image_index < max(1, len(image_ids)):
+            logger.warning("image_index 범위 보정: %r -> 0", image_index)
+            cand.image_index = 0
+
     factor, applied = habit_factor(habit)
     candidates: list[AnalyzeCandidate] = []
     prediction_ranks: dict[int, int] = {}
     for rank, (food_index, cand) in enumerate(
-        _grouped_candidates(result.candidates, max_per_food), start=1
+        _grouped_candidates(result.candidates, max_per_food, max_foods), start=1
     ):
         prediction_ranks[food_index] = prediction_ranks.get(food_index, 0) + 1
         matched, match_path = match_food_name(db, cand.food_name)
@@ -346,8 +382,12 @@ def _postprocess(
             match_path, resolved.source, cand.food_name, matched.id if matched else None, resolved.grams,
         )
         confidence = float(cand.confidence)
+        image_index = getattr(cand, "image_index", 0)
+        candidate_image_id = (
+            image_ids[image_index] if image_ids and getattr(cand, "is_in_image", True) else None
+        )
         row = FoodCandidate(
-            meal_image_id=meal_image_id,
+            meal_image_id=candidate_image_id,
             ai_call_log_id=call_log.id,
             nutrition_item_id=matched.id if matched else None,
             food_name=cand.food_name,
@@ -392,6 +432,8 @@ def _postprocess(
         candidates.append(
             AnalyzeCandidate(
                 food_candidate_id=row.id,
+                image_index=image_index,
+                meal_image_id=candidate_image_id,
                 nutrition_item_id=row.nutrition_item_id,
                 food_index=food_index,
                 normalized_name=row.normalized_name,
@@ -399,7 +441,7 @@ def _postprocess(
                 estimated_serving=resolved.estimated_serving,
                 has_soup=cand.has_soup,
                 has_sauce=cand.has_sauce,
-                bbox=_bbox_of(cand),
+                bbox=_bbox_of(cand) if getattr(cand, "is_in_image", True) else None,
                 nutrition=nutrition,
                 habit_adjusted=habit_adjusted,
                 quantity=resolved.count,
@@ -420,5 +462,6 @@ def _postprocess(
     return AnalyzeSuccessResponse(
         draft_notice=result.draft_notice or "AI가 분석한 기록 초안입니다.",
         candidates=candidates,
+        image_ids=image_ids,
         ai_call_log_id=call_log.id,
     )

@@ -6,7 +6,7 @@
 ERD(ref/설계/eatlog_mvp_erd.mmd) 17개 테이블 1:1 매핑.
 """
 from app.core.database import Base
-from app.models.ai import AiCallLog, FoodCandidate, RecommendationItem, RecommendationLog
+from app.models.ai import AiCallLog, AiCallLogImage, FoodCandidate, RecommendationItem, RecommendationLog
 from app.models.billing import RefundGuaranteeClaim, Subscription
 from app.models.game import (
     CatalogItem,
@@ -23,7 +23,7 @@ from app.models.game import (
     UserMission,
     UserSkill,
 )
-from app.models.meal import CorrectionLog, MealImage, MealItem, MealRecord
+from app.models.meal import CorrectionLog, MealImage, MealItem, MealRecord, MealRecordImage
 from app.models.nutrition import (
     DailyNutritionSummary,
     FavoriteFood,
@@ -71,10 +71,12 @@ __all__ = [
     # meal domain
     "MealImage",
     "MealRecord",
+    "MealRecordImage",
     "MealItem",
     "CorrectionLog",
     # ai domain
     "AiCallLog",
+    "AiCallLogImage",
     "ClientEvent",
     "RequestLog",
     "FoodCandidate",
