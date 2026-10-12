@@ -13,6 +13,7 @@ from app.ai_client.base import (
     AIRecommendation,
     AnalyzeResult,
     RecommendResult,
+    failed_analyze,
 )
 
 MOCK_MODEL = "mock-model"
@@ -23,14 +24,28 @@ _RICE_BOX = AIBoundingBox(x=0.52, y=0.43, width=0.38, height=0.35)
 
 
 class MockAIClient:
+    fail_image_index: int | None = None
+
+    def __init__(self, *, fail_image_index: int | None = None) -> None:
+        self.fail_image_index = fail_image_index
+
     def analyze(
         self,
         image_url: str,
         eating_habits: dict | None = None,
+        *,
+        image_urls: list[str] | None = None,
+        max_foods: int | None = None,
         user_text: str | None = None,
         candidate_depth: str | None = None,
     ) -> AnalyzeResult:
+        urls = image_urls if image_urls is not None else [image_url]
         clarifier = candidate_depth == "clarifier"
+        if self.fail_image_index is not None:
+            result = failed_analyze("provider_error", latency_ms=42)
+            result.failed_image_index = self.fail_image_index
+            result.ai_call_log.task_type = "analyze_clarifier" if clarifier else "analyze"
+            return result
         candidates = [
             # 음식 0: 찌개류 대체 예측 3개, 음식 1: 공기밥 (여러 음식 그룹핑 검증용)
             AICandidate(food_index=0, food_name="김치찌개", confidence=0.87, estimated_serving=1.0, has_soup=True, has_sauce=False, bbox=_STEW_BOX),
@@ -42,7 +57,7 @@ class MockAIClient:
                 AICandidate(food_index=0, food_name="부대찌개", confidence=0.03, estimated_serving=1.0, has_soup=True, has_sauce=False, bbox=_STEW_BOX)
             )
         candidates.append(
-            AICandidate(food_index=1, food_name="공기밥", confidence=0.95, estimated_serving=1.0, has_soup=False, has_sauce=False, bbox=_RICE_BOX)
+            AICandidate(food_index=1, image_index=1 if len(urls) > 1 else 0, food_name="공기밥", confidence=0.95, estimated_serving=1.0, has_soup=False, has_sauce=False, bbox=_RICE_BOX)
         )
         return AnalyzeResult(
             status="success",

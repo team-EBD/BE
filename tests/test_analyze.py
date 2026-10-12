@@ -11,7 +11,7 @@ class FailingAIClient:
     def __init__(self, reason: str = "ai_timeout") -> None:
         self.reason = reason
 
-    def analyze(self, image_url, eating_habits=None):
+    def analyze(self, image_url, eating_habits=None, *, image_urls=None, max_foods=None):
         return failed_analyze(self.reason, latency_ms=15000)
 
     def recommend(self, daily_summary, preferred_category, meal_timing):
@@ -158,7 +158,7 @@ def test_analyze_logs_every_call(client, auth_headers):
 class UnmatchedWithEstimateAIClient:
     """영양 DB에 없는 음식명 + LLM 영양 추정치를 반환하는 대역."""
 
-    def analyze(self, image_url, eating_habits=None):
+    def analyze(self, image_url, eating_habits=None, *, image_urls=None, max_foods=None):
         from app.ai_client.base import (
             AICallLogPayload,
             AICandidate,
@@ -241,7 +241,7 @@ def test_analyze_bbox_none_for_legacy_ai_server(client, auth_headers, monkeypatc
 
     original = MockAIClient.analyze
 
-    def without_bbox(self, image_url, eating_habits=None):
+    def without_bbox(self, image_url, eating_habits=None, *, image_urls=None, max_foods=None):
         result = original(self, image_url, eating_habits)
         for cand in result.candidates:
             cand.bbox = None
@@ -384,7 +384,7 @@ def test_resolve_legacy_ai_without_grams_or_per_100g_keeps_old_behavior():
 class CountedPizzaAIClient:
     """낱개 음식(피자 8조각 800g) + 그릇 음식(라면 560g) 을 돌려주는 대역."""
 
-    def analyze(self, image_url, eating_habits=None):
+    def analyze(self, image_url, eating_habits=None, *, image_urls=None, max_foods=None):
         from app.ai_client.base import AICallLogPayload, AICandidate, AnalyzeResult
 
         return AnalyzeResult(
