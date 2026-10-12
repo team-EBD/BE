@@ -23,6 +23,7 @@ from app.models import (
     MealImage,
     MealItem,
     MealRecord,
+    MealRecordImage,
     NutritionItem,
     User,
 )
@@ -60,6 +61,37 @@ def _validate_image(db: Session, user: User, meal_image_id: int | None) -> None:
         raise APIError(404, "NOT_FOUND", "업로드된 이미지를 찾을 수 없습니다.")
     if image.user_id != user.id:
         raise APIError(403, "FORBIDDEN", "다른 사용자의 이미지입니다.")
+
+
+def meal_image_positions(db: Session, meal: MealRecord) -> list[tuple[int, int]]:
+    """기록 사진의 원래 순서. 구 서버가 쓴 단일 FK 기록도 읽을 수 있게 한다."""
+    rows = list(db.execute(
+        select(MealRecordImage.meal_image_id, MealRecordImage.position)
+        .where(MealRecordImage.meal_record_id == meal.id)
+        .order_by(MealRecordImage.position)
+    ).all())
+    if not rows and meal.meal_image_id is not None:
+        return [(meal.meal_image_id, 0)]
+    return rows
+
+
+def _resolve_bbox_images(
+    db: Session, user: User, image_ids: list[int], items: list[MealItemInput],
+    *, original_items: list[MealItemInput] | None = None,
+) -> list[MealItemInput]:
+    resolved = []
+    for item, original in zip(items, original_items if original_items is not None else items):
+        if "bbox_image_id" in item.model_fields_set:
+            image_id = item.bbox_image_id
+            if "bbox_image_id" in original.model_fields_set and image_id is not None and image_id not in image_ids:
+                raise APIError(400, "VALIDATION_ERROR", "bbox_image_id 는 기록 사진에 포함되어야 합니다.")
+        else:
+            candidate = _owned_candidate(db, user, item.food_candidate_id) if item.food_candidate_id else None
+            image_id = candidate.meal_image_id if candidate else None
+            if image_id is None and len(image_ids) == 1:
+                image_id = image_ids[0]
+        resolved.append(item.model_copy(update={"bbox_image_id": image_id}))
+    return resolved
 
 
 def _owned_ai_call_log_id(db: Session, user: User, ai_call_log_id: int | None) -> int | None:
@@ -165,6 +197,7 @@ def _insert_items(
             protein=item.protein,
             fat=item.fat,
             bbox=item.bbox.model_dump() if item.bbox else None,
+            bbox_image_id=item.bbox_image_id,
         )
         db.add(row)
         db.flush()
@@ -208,7 +241,10 @@ def _insert_items(
 def create_meal(
     db: Session, user: User, body: MealCreateRequest, *, commit: bool = True
 ) -> MealRecord:
-    _validate_image(db, user, body.meal_image_id)
+    image_ids = body.meal_image_ids or []
+    for image_id in image_ids:
+        _validate_image(db, user, image_id)
+    items = _resolve_bbox_images(db, user, image_ids, body.items)
     eaten_at = to_utc(body.eaten_at)
     totals = _totals(body.items)
 
@@ -228,7 +264,9 @@ def create_meal(
     )
     db.add(meal)
     db.flush()
-    _insert_items(db, meal, body.items)
+    for position, image_id in enumerate(image_ids):
+        db.add(MealRecordImage(meal_record_id=meal.id, meal_image_id=image_id, position=position))
+    _insert_items(db, meal, items)
     _mark_selected_candidates(db, user, body.items)
 
     # 추천 카드에서 시작한 기록만 연결한다. 다른 음식·과거 기록이면 연결은 무시한다.
@@ -274,7 +312,8 @@ def create_meal_with_rewards(
 
 
 def _preserve_omitted_bboxes(
-    old_items: list[MealItem], items: list[MealItemInput]
+    old_items: list[MealItem], items: list[MealItemInput],
+    db: Session, user: User,
 ) -> list[MealItemInput]:
     """구 앱의 bbox 생략만 보완한다. 명시적 null 은 위치 제거로 존중한다.
 
@@ -294,7 +333,11 @@ def _preserve_omitted_bboxes(
             and (item.nutrition_item_id is None or item.nutrition_item_id == old.nutrition_item_id)
             and old.bbox is not None
         ):
-            item = item.model_copy(update={"bbox": BoundingBox.model_validate(old.bbox)})
+            updates = {"bbox": BoundingBox.model_validate(old.bbox)}
+            candidate = _owned_candidate(db, user, item.food_candidate_id) if item.food_candidate_id else None
+            if "bbox_image_id" not in item.model_fields_set and not (candidate and candidate.meal_image_id):
+                updates["bbox_image_id"] = old.bbox_image_id
+            item = item.model_copy(update=updates)
         resolved.append(item)
     return resolved
 
@@ -329,7 +372,9 @@ def update_meal(db: Session, user: User, meal_id: int, body: MealUpdateRequest) 
     if body.items is not None:
         meal.is_skipped = False  # 항목이 담기면 생략 기록이 아니다
         old_items = list(db.scalars(select(MealItem).where(MealItem.meal_record_id == meal.id)))
-        items = _preserve_omitted_bboxes(old_items, body.items)
+        items = _preserve_omitted_bboxes(old_items, body.items, db, user)
+        image_ids = [image_id for image_id, _ in meal_image_positions(db, meal)]
+        items = _resolve_bbox_images(db, user, image_ids, items, original_items=body.items)
         # 항목 전체 교체(기존 항목·보정 로그는 이력이므로 로그는 남기고 항목만 재구성)
         for old in old_items:
             db.delete(old)

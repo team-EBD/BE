@@ -37,6 +37,7 @@ from app.schemas.meal import (
     MealDeleteResponse,
     MealDetailResponse,
     MealImageResponse,
+    MealRecordImageResponse,
     MealItemBrief,
     MealItemDetail,
     MealListEntry,
@@ -52,6 +53,7 @@ from app.services.meals import (
     delete_meal,
     get_owned_meal,
     meal_items_with_corrections,
+    meal_image_positions,
     update_meal,
 )
 from app.storage import Storage, get_storage
@@ -129,7 +131,8 @@ def analyze(
 ) -> AnalyzeSuccessResponse | AnalyzeFailedResponse:
     enforce_daily_limit(db, user.id, "analyze")  # 일일 한도 초과 시 429
     return analyze_meal_image(
-        db, user, body.meal_image_id, ai, user_text=body.text, is_tutorial=body.is_tutorial
+        db, user, body.meal_image_id, ai, user_text=body.text, is_tutorial=body.is_tutorial,
+        meal_image_ids=body.meal_image_ids,
     )
 
 
@@ -217,6 +220,7 @@ def list_meals(
                 eaten_at=m.eaten_at,
                 is_skipped=m.is_skipped,
                 image_url=_image_url(db, m),
+                image_count=len(_images(db, m)),
                 total_calories=float(m.total_calories),
             )
             for m in meals
@@ -240,6 +244,18 @@ def _image_url(db, meal: MealRecord) -> str | None:
     return image.image_url
 
 
+def _images(db, meal: MealRecord) -> list[MealRecordImageResponse]:
+    cutoff = retention_cutoff_utc()
+    images = []
+    for image_id, position in meal_image_positions(db, meal):
+        image = db.get(MealImage, image_id)
+        if image is not None and from_db(image.uploaded_at) >= cutoff:
+            images.append(MealRecordImageResponse(
+                meal_image_id=image.id, image_url=image.image_url, position=position,
+            ))
+    return images
+
+
 # --- 8.1 식단 저장 ---
 
 @router.post("", response_model=MealCreateResponse, status_code=201)
@@ -247,6 +263,7 @@ def create(body: MealCreateRequest, user: CurrentUser, db: DB) -> MealCreateResp
     meal, rewards = create_meal_with_rewards(db, user, body)
     items = [pair[0] for pair in meal_items_with_corrections(db, meal)]
     return MealCreateResponse(
+        images=_images(db, meal),
         meal_id=meal.id,
         meal_type=meal.meal_type,
         eaten_at=meal.eaten_at,
@@ -267,6 +284,7 @@ def create(body: MealCreateRequest, user: CurrentUser, db: DB) -> MealCreateResp
 def _detail_response(db, meal: MealRecord) -> MealDetailResponse:
     pairs = meal_items_with_corrections(db, meal)
     return MealDetailResponse(
+        images=_images(db, meal),
         meal_id=meal.id,
         meal_type=meal.meal_type,
         eaten_at=meal.eaten_at,
@@ -290,6 +308,7 @@ def _detail_response(db, meal: MealRecord) -> MealDetailResponse:
                 protein=float(item.protein),
                 fat=float(item.fat),
                 bbox=item.bbox,
+                bbox_image_id=item.bbox_image_id,
             )
             for item, correction in pairs
         ],
