@@ -85,6 +85,14 @@ class Settings(BaseSettings):
     # ai_premium_gate 가 켜져 있을 때만 실제로 막는다 — 꺼져 있으면 위 일일 한도가 적용되고
     # 이 값은 GET /usage/daily 의 free_credits 표시에만 쓰인다.
     free_credit_limit: int = 100
+    # --- 전면 무료 기간 (app/services/free_access.py) ---
+    # 이 날짜(KST, 그 날 포함)까지는 구독 여부와 상관없이 AI 분석·추천과 프리미엄 기능을 모두 연다.
+    # 위 ai_premium_gate·free_credit_limit·일일 한도는 기간이 끝난 뒤에 다시 적용된다.
+    # YYYY-MM-DD. 빈 값이면 무료 기간 없음. env FREE_ACCESS_UNTIL 로 늘리거나 끈다(코드 배포 불필요).
+    free_access_until: str = "2026-11-30"
+    # 무료 기간의 남용 방지 상한 — 사용자당 기능별(분석/추천) 하루 성공 호출 수. 0 이하 = 무제한.
+    # 정상 사용으로는 닿지 않는 값으로 둔다(AI 호출 비용 폭주 방지용이지 과금 유도용이 아니다).
+    free_access_daily_limit: int = 50
     # 하루 경계 시각 (KST). 6이면 06:00~다음날 06:00 를 '하루'로 취급 —
     # 캘린더/요약(FE day_start_hour=6)과 사용량 리셋 기준을 일치시킨다.
     day_start_hour: int = 6
@@ -98,11 +106,11 @@ class Settings(BaseSettings):
     # (docs/프로모션-이미지-교체.md).
     promo_enabled: bool = True
     # FE 가 '보지 않기' 기록을 id 별로 저장한다 — 이미지를 바꾸면 id 도 반드시 바꿀 것.
-    promo_id: str = "launch-100-free-2026-10"
+    promo_id: str = "free-until-2026-11-30"
     # 공개 HTTPS 이미지 주소. 비어 있으면 프로모션 없음(null).
-    # 기본값은 2026-10 출시 기념 이미지(Firebase Storage). 교체는 Parameter Store 의 PROMO_IMAGE_URL 로.
+    # 기본값은 "11월 30일까지 전부 무료" 이미지(Firebase Storage). 교체는 Parameter Store 의 PROMO_IMAGE_URL 로.
     promo_image_url: str = (
-        "https://firebasestorage.googleapis.com/v0/b/soma-temp-storage.firebasestorage.app/o/promotions%2Flaunch-100-free-2026-10-c.jpg?alt=media&token=1e24cbfa49bf440d819c1de28424e685"
+        "https://firebasestorage.googleapis.com/v0/b/soma-temp-storage.firebasestorage.app/o/promotions%2Ffree-until-2026-11-30-b.jpg?alt=media&token=880670c5c08147398b4f7738ae3764c3"
     )
     # 이미지를 받기 전에 자리를 잡기 위한 원본 크기(px)
     promo_image_width: int = 1024
@@ -110,13 +118,14 @@ class Settings(BaseSettings):
     # 튜토리얼 마지막 페이월 전용 이미지(가로형). 히어로 자리가 낮아 세로 포스터는 작게 보인다.
     # 비어 있으면 위 기본 이미지를 그대로 쓴다. placement=tutorial 요청에만 내려간다.
     promo_tutorial_image_url: str = (
-        "https://firebasestorage.googleapis.com/v0/b/soma-temp-storage.firebasestorage.app/o/promotions%2Flaunch-100-free-2026-10-wide-a.jpg?alt=media&token=418c71a9c81c471fba390163de4ee8e3"
+        "https://firebasestorage.googleapis.com/v0/b/soma-temp-storage.firebasestorage.app/o/promotions%2Ffree-until-2026-11-30-wide-a.jpg?alt=media&token=dcbaab9b825841289435d7c81d58b38f"
     )
     promo_tutorial_image_width: int = 1536
     promo_tutorial_image_height: int = 1024
-    promo_alt_text: str = "Eat로그 출시 기념 — AI 분석 100회 무료"
+    promo_alt_text: str = "11월 30일까지 AI 분석·프리미엄 기능 전부 무료"
     # 이미지를 눌렀을 때: subscription(구독 화면) | url(promo_action_url 웹뷰) | none
-    promo_action: str = "subscription"
+    # 무료 기간에는 결제로 이어지는 동선을 두지 않는다 — 기본은 none.
+    promo_action: str = "none"
     promo_action_url: str = ""
     # 노출 위치(콤마 구분): launch(앱 시작 팝업), tutorial(튜토리얼 마지막 페이월)
     promo_placements: str = "launch,tutorial"

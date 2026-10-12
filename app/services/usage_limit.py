@@ -9,6 +9,8 @@ ai_premium_gate 가 켜지면 무료 사용자의 평생 성공 호출 한도(se
 - 성공(status=success) 호출만 횟수로 센다 — AI 서버 장애/타임아웃으로
   실패한 시도는 사용자 귀책이 아니므로 차감하지 않는다.
 - 한도 초과 시 429 TOO_MANY_REQUESTS (명세서 1.4 에러 봉투).
+- 전면 무료 기간(settings.free_access_until, app/services/free_access.py)에는 위 한도를
+  모두 건너뛰고 남용 방지 상한(free_access_daily_limit)만 본다.
 """
 from __future__ import annotations
 
@@ -19,6 +21,7 @@ from app.core.config import settings
 from app.core.errors import APIError
 from app.core.timeutil import kst_date_of, kst_day_bounds, now_utc
 from app.models import AI_LIMIT_EXEMPT_ROLES, AiCallLog, User
+from app.services.free_access import is_free_access_active
 from app.services.subscription import is_premium
 
 # 같은 기능인데 **비용 분리 계측** 때문에 task_type 을 나눠 기록하는 것들.
@@ -117,9 +120,35 @@ def is_limit_exempt(db: Session, user_id: int) -> bool:
     return db.scalar(select(User.role).where(User.id == user_id)) in AI_LIMIT_EXEMPT_ROLES
 
 
+def _enforce_free_access_cap(db: Session, user_id: int, task_type: str) -> None:
+    """무료 기간의 남용 방지 상한. 구독자도 같은 상한을 받는다 — 구독을 권하지 않는다."""
+    limit = settings.free_access_daily_limit
+    if limit <= 0:
+        return
+    used = count_today_success(db, user_id, task_type)
+    if used >= limit:
+        raise APIError(
+            429,
+            "TOO_MANY_REQUESTS",
+            _LIMIT_MESSAGES[task_type] + _PREMIUM_SUFFIX,
+            details=[
+                {
+                    "field": task_type,
+                    "reason": "daily_limit_exceeded",
+                    "limit": limit,
+                    "used": used,
+                    "upgradable": False,
+                }
+            ],
+        )
+
+
 def enforce_daily_limit(db: Session, user_id: int, task_type: str) -> None:
     """플래그에 따른 AI 한도 초과 시 429. 한도 면제 역할(tester/admin)은 어떤 한도도 받지 않는다."""
     if is_limit_exempt(db, user_id):
+        return
+    if is_free_access_active():
+        _enforce_free_access_cap(db, user_id, task_type)
         return
     premium = is_premium(db, user_id)
     if settings.ai_premium_gate:
