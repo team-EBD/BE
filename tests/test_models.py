@@ -23,6 +23,8 @@ EXPECTED_TABLES = {
     "daily_nutrition_summaries",
     "meal_images",
     "meal_records",
+    "meal_record_images",
+    "ai_call_log_images",
     "meal_items",
     "correction_logs",
     "ai_call_logs",
@@ -59,9 +61,31 @@ EXPECTED_TABLES = {
 }
 
 
-def test_all_tables_registered():
+def test_all_42_tables_registered():
     assert set(Base.metadata.tables.keys()) == EXPECTED_TABLES
-    assert len(EXPECTED_TABLES) == 40
+    assert len(EXPECTED_TABLES) == 42
+
+
+def test_candidate_group_columns_are_nullable_without_defaults():
+    from app.models import FoodCandidate
+
+    for name in ("food_index", "prediction_rank"):
+        column = FoodCandidate.__table__.c[name]
+        assert column.nullable
+        assert column.default is None
+        assert column.server_default is None
+
+
+def test_analysis_input_snapshot_and_candidate_image_retention():
+    from app.models import AiCallLog, FoodCandidate
+
+    column = AiCallLog.__table__.c.input_type
+    assert column.nullable
+    assert column.default is None
+    assert column.server_default is None
+    image_column = FoodCandidate.__table__.c.meal_image_id
+    assert image_column.nullable
+    assert next(iter(image_column.foreign_keys)).ondelete == "SET NULL"
 
 
 def _sqlite_factory():

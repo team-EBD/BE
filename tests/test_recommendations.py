@@ -18,7 +18,7 @@ class FailingAIClient:
     def __init__(self, reason: str = "ai_timeout") -> None:
         self.reason = reason
 
-    def analyze(self, image_url, eating_habits=None):
+    def analyze(self, image_url, eating_habits=None, *, image_urls=None, max_foods=None):
         raise AssertionError("not used")
 
     def recommend(

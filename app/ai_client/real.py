@@ -65,8 +65,15 @@ class RealAIClient:
         eating_habits: dict | None = None,
         user_text: str | None = None,
         candidate_depth: str | None = None,
+        *,
+        image_urls: list[str] | None = None,
+        max_foods: int | None = None,
     ) -> AnalyzeResult:
-        payload: dict = {"image_url": image_url}
+        urls = image_urls if image_urls is not None else [image_url]
+        payload: dict = {
+            "image_url": urls[0], "image_urls": urls,
+            "max_foods": max_foods if max_foods is not None else 5 * len(urls),
+        }
         if eating_habits:
             payload["user_eating_habits"] = eating_habits
         if user_text:

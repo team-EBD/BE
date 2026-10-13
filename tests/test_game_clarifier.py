@@ -35,9 +35,9 @@ class RecordingAIClient(MockAIClient):
     def __init__(self) -> None:
         self.depths: list[str | None] = []
 
-    def analyze(self, image_url, eating_habits=None, user_text=None, candidate_depth=None):
+    def analyze(self, image_url, eating_habits=None, user_text=None, candidate_depth=None, *, image_urls=None, max_foods=None):
         self.depths.append(candidate_depth)
-        return super().analyze(image_url, eating_habits, user_text, candidate_depth)
+        return super().analyze(image_url, eating_habits, user_text=user_text, candidate_depth=candidate_depth)
 
 
 class LegacyAIClient(MockAIClient):
@@ -46,9 +46,9 @@ class LegacyAIClient(MockAIClient):
     def __init__(self) -> None:
         self.calls = 0
 
-    def analyze(self, image_url, eating_habits=None, user_text=None):
+    def analyze(self, image_url, eating_habits=None, user_text=None, *, image_urls=None, max_foods=None):
         self.calls += 1
-        return MockAIClient.analyze(self, image_url, eating_habits, user_text)
+        return MockAIClient.analyze(self, image_url, eating_habits, user_text=user_text)
 
 
 @pytest.fixture()
