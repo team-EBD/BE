@@ -32,6 +32,7 @@ from app.models.nutrition import (
     NutritionItem,
     NutritionItemPruned,
 )
+from app.models.push import PushSendLog
 from app.models.telemetry import ClientEvent, RequestLog
 from app.models.user import (
     EatingHabit,
@@ -59,6 +60,7 @@ __all__ = [
     "EatingHabit",
     "NotificationSetting",
     "PushToken",
+    "PushSendLog",
     "LocationConsent",
     "TermsAgreement",
     # nutrition domain

@@ -162,6 +162,12 @@ class Settings(BaseSettings):
     weekly_report_push_enabled: bool = True
     weekly_report_push_day: str = "sun"
     weekly_report_push_time: str = "09:00"  # HH:mm
+    # 기록 습관 라이프사이클 푸시 (app/services/lifecycle_push.py) — 첫 기록·어제 빠짐·연속·공백
+    # 세그먼트별로 사용자당 하루 최대 1건. 슬롯 시각(KST HH:mm)이 지나면 그 슬롯 대상에게 보내고,
+    # 21:00~08:00 에는 어떤 경우에도 보내지 않는다(정보통신망법 야간 전송 제한).
+    lifecycle_push_enabled: bool = True
+    lifecycle_push_lunch_time: str = "11:50"  # first_log / missed_one / lapsed
+    lifecycle_push_dinner_time: str = "18:30"  # keep_going
 
     # --- 메일 발송 (비밀번호 재설정 인증코드) ---
     # email_backend: mock(로그만, dev/테스트) | smtp(Gmail 등 SMTP, 운영)

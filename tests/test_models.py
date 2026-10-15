@@ -17,6 +17,7 @@ EXPECTED_TABLES = {
     "eating_habits",
     "notification_settings",
     "push_tokens",
+    "push_send_logs",
     "location_consents",
     "terms_agreements",
     "nutrition_items",
@@ -61,9 +62,9 @@ EXPECTED_TABLES = {
 }
 
 
-def test_all_42_tables_registered():
+def test_all_43_tables_registered():
     assert set(Base.metadata.tables.keys()) == EXPECTED_TABLES
-    assert len(EXPECTED_TABLES) == 42
+    assert len(EXPECTED_TABLES) == 43
 
 
 def test_candidate_group_columns_are_nullable_without_defaults():
