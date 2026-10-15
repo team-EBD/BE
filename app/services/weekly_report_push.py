@@ -12,21 +12,28 @@
 리포트 열람 조건(SCRUM-275): 직전 주가 '채운 날 3일 이상'을 못 채우면 리포트 화면이
 통계 대신 "데이터 부족" 안내를 보여 주므로, 그 사용자에게는 '리포트 도착' 푸시를 보내지
 않는다(눌렀는데 리포트가 없는 알림 방지). 기록 재시작 유도 알림은 이 푸시의 역할이 아니다.
-트리거: main.py lifespan 의 분 단위 체크 루프. 발송 여부는 프로세스 메모리로
-중복 방지하므로, 발송 시각 이후 같은 날 재기동하면 한 번 더 나갈 수 있다
-(주 1회 알림이라 허용 — 정확히 1회가 필요해지면 발송 이력 테이블로 승격).
+트리거: main.py lifespan 의 분 단위 체크 루프. 루프의 '오늘 보냄' 표시는 매분 다시
+조회하지 않기 위한 프로세스 메모리 캐시일 뿐이고, 실제 중복 방지는 발송 이력 테이블
+push_send_logs(channel=weekly_report, 사용자·논리 날짜당 1행)가 맡는다 — 발송 전에 행을
+커밋하고 유일 제약에 걸리면 건너뛰므로, 발송 시각 이후 재기동하거나 인스턴스가 둘이어도
+같은 날 두 번 나가지 않는다 (app/services/push_send_log.py).
 """
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.timeutil import now_utc, to_kst
+from app.core.config import settings
+from app.core.timeutil import kst_date_of, now_utc, to_kst
 from app.models import NotificationSetting, PushToken
+from app.models.push import PUSH_CHANNEL_WEEKLY_REPORT
 from app.push_client.base import PushClient
+from app.services.lifecycle_push import in_quiet_hours
+from app.services.push_send_log import claim_push_send
 from app.services.report_readiness import WEEKLY_REQUIRED_FILLED_DAYS, count_filled_days
 from app.services.summary import aggregate_range
 
@@ -42,8 +49,12 @@ _WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 
 def weekly_push_due(
     now: datetime, day: str, at: str, already_sent_today: bool
 ) -> bool:
-    """지금이 발송 시점인지 판단 — 설정 요일이고 설정 시각(KST)을 지났으며 오늘 미발송."""
-    if already_sent_today:
+    """지금이 발송 시점인지 판단 — 설정 요일이고 설정 시각(KST)을 지났으며 오늘 미발송.
+
+    21:00~08:00(KST)에는 보내지 않는다 — 서버가 낮에 내려가 있다가 밤에 올라와도
+    늦은 첫 발송이 야간 전송 제한 시간에 나가지 않게 한다.
+    """
+    if already_sent_today or in_quiet_hours(now):
         return False
     weekday = _WEEKDAYS.get(day.strip().lower())
     if weekday is None:
@@ -61,6 +72,17 @@ def last_completed_week_start(now: datetime) -> date:
     today = to_kst(now).date()
     days_since_sunday = (today.weekday() + 1) % 7
     return today - timedelta(days=days_since_sunday + 7)
+
+
+def push_template_id(recorded_days: int) -> str:
+    """build_push_content 구간과 같은 기준의 문구 식별자 (발송 이력 template_id)."""
+    if recorded_days == 0:
+        return "weekly_none"
+    if recorded_days <= 2:
+        return "weekly_low"
+    if recorded_days <= 5:
+        return "weekly_mid"
+    return "weekly_high"
 
 
 def build_push_content(recorded_days: int) -> tuple[str, str]:
@@ -133,18 +155,39 @@ def send_weekly_report_push(
         logger.info("주간 리포트 푸시 대상 없음")
         return 0
 
-    week_start = last_completed_week_start(now or now_utc())
+    now = now or now_utc()
+    week_start = last_completed_week_start(now)
+    logical_date = kst_date_of(now, settings.day_start_hour)
     success = failure = 0
     invalid_tokens: list[str] = []
 
-    skipped = 0
+    skipped = already_sent = 0
+    started = time.monotonic()
     for user_id, tokens in recipients.items():
+        if in_quiet_hours(now + timedelta(seconds=time.monotonic() - started)):
+            break  # 발송 도중 21시가 되면 멈춘다 (야간 전송 제한)
         recorded_days, report_ready = week_record_stats(db, user_id, week_start)
         if not report_ready:
             skipped += 1  # 리포트 화면이 열리지 않는 사용자 — 도착 알림을 보내지 않는다
             continue
+        if not claim_push_send(
+            db,
+            user_id=user_id,
+            channel=PUSH_CHANNEL_WEEKLY_REPORT,
+            kind="report_arrival",
+            template_id=push_template_id(recorded_days),
+            logical_date=logical_date,
+            now=now,
+        ):
+            already_sent += 1  # 같은 날 이미 보냄(재기동·다른 인스턴스) — 두 번 보내지 않는다
+            continue
         title, body = build_push_content(recorded_days)
-        report = client.send(tokens, title, body, PUSH_DATA)
+        try:
+            report = client.send(tokens, title, body, PUSH_DATA)
+        except Exception:  # noqa: BLE001 — 한 사용자 발송 실패로 나머지·토큰 정리를 버리지 않는다
+            logger.exception("주간 리포트 푸시 발송 실패 (user_id=%s)", user_id)
+            failure += len(tokens)
+            continue
         success += report.success_count
         failure += report.failure_count
         invalid_tokens.extend(report.invalid_tokens)
@@ -159,11 +202,13 @@ def send_weekly_report_push(
         logger.info("등록 해제된 푸시 토큰 %d건 정리", len(stale))
 
     logger.info(
-        "주간 리포트 푸시 발송: 성공 %d / 실패 %d (사용자 %d명, 리포트 조건 미달로 건너뜀 %d명, week_start=%s)",
+        "주간 리포트 푸시 발송: 성공 %d / 실패 %d (사용자 %d명, 리포트 조건 미달로 건너뜀 %d명, "
+        "이미 보냄 %d명, week_start=%s)",
         success,
         failure,
         len(recipients),
         skipped,
+        already_sent,
         week_start.isoformat(),
     )
     return success

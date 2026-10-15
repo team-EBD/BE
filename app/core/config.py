@@ -89,7 +89,7 @@ class Settings(BaseSettings):
     # 이 날짜(KST, 그 날 포함)까지는 구독 여부와 상관없이 AI 분석·추천과 프리미엄 기능을 모두 연다.
     # 위 ai_premium_gate·free_credit_limit·일일 한도는 기간이 끝난 뒤에 다시 적용된다.
     # YYYY-MM-DD. 빈 값이면 무료 기간 없음. env FREE_ACCESS_UNTIL 로 늘리거나 끈다(코드 배포 불필요).
-    free_access_until: str = "2026-11-30"
+    free_access_until: str = "2026-12-31"
     # 무료 기간의 남용 방지 상한 — 사용자당 기능별(분석/추천) 하루 성공 호출 수. 0 이하 = 무제한.
     # 정상 사용으로는 닿지 않는 값으로 둔다(AI 호출 비용 폭주 방지용이지 과금 유도용이 아니다).
     free_access_daily_limit: int = 50
@@ -106,11 +106,11 @@ class Settings(BaseSettings):
     # (docs/프로모션-이미지-교체.md).
     promo_enabled: bool = True
     # FE 가 '보지 않기' 기록을 id 별로 저장한다 — 이미지를 바꾸면 id 도 반드시 바꿀 것.
-    promo_id: str = "free-until-2026-11-30"
+    promo_id: str = "free-until-2026-12-31"
     # 공개 HTTPS 이미지 주소. 비어 있으면 프로모션 없음(null).
-    # 기본값은 "11월 30일까지 전부 무료" 이미지(Firebase Storage). 교체는 Parameter Store 의 PROMO_IMAGE_URL 로.
+    # 기본값은 "12월 31일까지 전부 무료" 이미지(Firebase Storage). 교체는 Parameter Store 의 PROMO_IMAGE_URL 로.
     promo_image_url: str = (
-        "https://firebasestorage.googleapis.com/v0/b/soma-temp-storage.firebasestorage.app/o/promotions%2Ffree-until-2026-11-30-b.jpg?alt=media&token=880670c5c08147398b4f7738ae3764c3"
+        "https://firebasestorage.googleapis.com/v0/b/soma-temp-storage.firebasestorage.app/o/promotions%2Ffree-until-2026-12-31-b.jpg?alt=media&token=a4412734f0364ae7881fd82287893dec"
     )
     # 이미지를 받기 전에 자리를 잡기 위한 원본 크기(px)
     promo_image_width: int = 1024
@@ -118,11 +118,11 @@ class Settings(BaseSettings):
     # 튜토리얼 마지막 페이월 전용 이미지(가로형). 히어로 자리가 낮아 세로 포스터는 작게 보인다.
     # 비어 있으면 위 기본 이미지를 그대로 쓴다. placement=tutorial 요청에만 내려간다.
     promo_tutorial_image_url: str = (
-        "https://firebasestorage.googleapis.com/v0/b/soma-temp-storage.firebasestorage.app/o/promotions%2Ffree-until-2026-11-30-wide-a.jpg?alt=media&token=dcbaab9b825841289435d7c81d58b38f"
+        "https://firebasestorage.googleapis.com/v0/b/soma-temp-storage.firebasestorage.app/o/promotions%2Ffree-until-2026-12-31-wide-a.jpg?alt=media&token=879a1b82475241f4afb179f336367f13"
     )
     promo_tutorial_image_width: int = 1536
     promo_tutorial_image_height: int = 1024
-    promo_alt_text: str = "11월 30일까지 AI 분석·프리미엄 기능 전부 무료"
+    promo_alt_text: str = "12월 31일까지 AI 분석·프리미엄 기능 전부 무료"
     # 이미지를 눌렀을 때: subscription(구독 화면) | url(promo_action_url 웹뷰) | none
     # 무료 기간에는 결제로 이어지는 동선을 두지 않는다 — 기본은 none.
     promo_action: str = "none"
@@ -162,6 +162,12 @@ class Settings(BaseSettings):
     weekly_report_push_enabled: bool = True
     weekly_report_push_day: str = "sun"
     weekly_report_push_time: str = "09:00"  # HH:mm
+    # 기록 습관 라이프사이클 푸시 (app/services/lifecycle_push.py) — 첫 기록·어제 빠짐·연속·공백
+    # 세그먼트별로 사용자당 하루 최대 1건. 슬롯 시각(KST HH:mm)이 지나면 그 슬롯 대상에게 보내고,
+    # 21:00~08:00 에는 어떤 경우에도 보내지 않는다(정보통신망법 야간 전송 제한).
+    lifecycle_push_enabled: bool = True
+    lifecycle_push_lunch_time: str = "11:50"  # first_log / missed_one / lapsed
+    lifecycle_push_dinner_time: str = "18:30"  # keep_going
 
     # --- 메일 발송 (비밀번호 재설정 인증코드) ---
     # email_backend: mock(로그만, dev/테스트) | smtp(Gmail 등 SMTP, 운영)

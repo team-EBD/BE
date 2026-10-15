@@ -5,7 +5,8 @@
 - /static: 로컬 스토리지 이미지 서빙 (dev 전용 — 운영은 Object Storage URL)
 - lifespan: 보존 기간(저번달 1일~) 지난 식사 이미지 매일 정리
   + 주간 리포트 도착 푸시 발송(매주 설정 요일·시각, KST)
-  두 루프는 워커(프로세스)가 여럿이어도 advisory lock 을 잡은 한 워커만 돌린다
+  + 기록 습관 라이프사이클 푸시(매일 점심·저녁 슬롯, KST — 21~08시 제외)
+  세 루프는 워커(프로세스)가 여럿이어도 advisory lock 을 잡은 한 워커만 돌린다
   (app/core/leader.py, `_leader_loop`).
 """
 import asyncio
@@ -26,6 +27,7 @@ from app.core.migrations import run_migrations_if_enabled
 from app.core.timeutil import kst_date_of, now_utc
 from app.push_client import get_push_client
 from app.services.image_retention import purge_expired_images
+from app.services.lifecycle_push import lifecycle_slot_due, lifecycle_slots, send_lifecycle_push
 from app.services.weekly_report_push import send_weekly_report_push, weekly_push_due
 from app.storage import get_storage
 
@@ -35,6 +37,7 @@ logger = logging.getLogger("eatlog.main")
 
 _PURGE_INTERVAL_SECONDS = 24 * 60 * 60
 _WEEKLY_PUSH_CHECK_SECONDS = 60
+_LIFECYCLE_PUSH_CHECK_SECONDS = 60
 _LEADER_RETRY_SECONDS = 60
 
 
@@ -82,12 +85,43 @@ async def _weekly_report_push_loop() -> None:
         await asyncio.sleep(_WEEKLY_PUSH_CHECK_SECONDS)
 
 
+def _run_lifecycle_push(slot: str) -> None:
+    db = SessionLocal()
+    try:
+        send_lifecycle_push(db, get_push_client(), slot)
+    finally:
+        db.close()
+
+
+async def _lifecycle_push_loop() -> None:
+    """슬롯 시각이 지나면(21시 전까지) 그 슬롯을 한 번 돌린다.
+
+    중복 발송은 push_send_logs 유일 제약이 막는다 — slot_done 은 같은 날 매분 다시
+    대상자를 조회하지 않기 위한 메모리 캐시일 뿐이다(재기동 후 한 번 더 돌아도 안전).
+    """
+    slot_done: dict[str, str] = {}
+    while True:
+        try:
+            now = now_utc()
+            today = kst_date_of(now, settings.day_start_hour).isoformat()
+            for slot, at in lifecycle_slots():
+                if slot_done.get(slot) == today or not lifecycle_slot_due(now, at, slot):
+                    continue
+                await asyncio.to_thread(_run_lifecycle_push, slot)
+                slot_done[slot] = today
+        except Exception:  # noqa: BLE001 — 발송 실패가 서비스를 죽여선 안 된다
+            logger.exception("라이프사이클 푸시 발송 실패 (다음 주기에 재시도)")
+        await asyncio.sleep(_LIFECYCLE_PUSH_CHECK_SECONDS)
+
+
 def _start_background_loops() -> list[asyncio.Task]:
     tasks = []
     if settings.image_retention_purge_enabled:
         tasks.append(asyncio.create_task(_image_purge_loop()))
     if settings.weekly_report_push_enabled:
         tasks.append(asyncio.create_task(_weekly_report_push_loop()))
+    if settings.lifecycle_push_enabled:
+        tasks.append(asyncio.create_task(_lifecycle_push_loop()))
     return tasks
 
 
@@ -142,7 +176,11 @@ async def lifespan(app: FastAPI):
     await asyncio.to_thread(run_migrations_if_enabled)
 
     tasks: list[asyncio.Task] = []
-    if settings.image_retention_purge_enabled or settings.weekly_report_push_enabled:
+    if (
+        settings.image_retention_purge_enabled
+        or settings.weekly_report_push_enabled
+        or settings.lifecycle_push_enabled
+    ):
         tasks.append(asyncio.create_task(_leader_loop()))
     try:
         yield
