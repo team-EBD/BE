@@ -42,9 +42,10 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.timeutil import from_db, kst_date_of, now_utc, to_kst
-from app.models import MealRecord, NotificationSetting, PushToken, User
+from app.models import GameProfile, MealRecord, NotificationSetting, PetBond, PushToken, User
 from app.models.push import PUSH_CHANNEL_LIFECYCLE
 from app.push_client.base import PushClient
+from app.services import game_catalog as catalog
 from app.services.game_profile import _streak_from_days
 from app.services.push_send_log import claim_push_send, sent_logs_since
 
@@ -54,6 +55,9 @@ logger = logging.getLogger("eatlog.lifecycle_push")
 # 현재 FE 는 weekly_report 만 매핑돼 있어 이 값은 탭 이동 없이 앱만 연다 —
 # FE 에 meal_reminder → HOME_TAB 매핑을 추가하면 홈(기록 진입점)으로 이동한다.
 PUSH_DATA = {"type": "meal_reminder"}
+
+# 게임 프로필이 없는 사용자(펫을 아직 안 만남)에게 쓸 이름 — 기본 펫(pet_cat '모카 고양이')과 같다
+DEFAULT_PET_NAME = "모카"
 
 SLOT_LUNCH = "lunch"
 SLOT_DINNER = "dinner"
@@ -83,79 +87,81 @@ SEGMENT_SLOT = {
 @dataclass(frozen=True)
 class Template:
     template_id: str
-    title: str
+    title: str  # {name} = 사용자의 펫 이름
     body: str  # keep_going 은 {streak} 자리표시자(오늘 기록하면 이어질 연속 일수)를 쓸 수 있다
 
 
-# 잇싹(그릇 속 새싹 펫)의 목소리, 해요체, 탓하지 않는 말투. 이모지는 템플릿당 🌱 하나까지.
-# 음식 이름·체중·칼로리·혜택/무료 문구 금지. 제목 20자 안, 본문 핵심은 앞 37자 안.
+# 사용자 펫의 목소리 — 1인칭 반말(홈 말풍선·튜토리얼·코칭과 같은 말투, 2026-10-15 통일).
+# 제목은 "{name}: …" — 알림 목록에서 누가 말하는지 보이게 펫 이름(사용자가 지은 이름 우선)을 앞에 둔다.
+# 이모지는 템플릿당 🌱 하나까지. 음식 이름·체중·칼로리·혜택/무료 문구 금지(정보성 알림).
+# 제목은 이름을 뺀 대사가 20자 안, 본문 핵심은 앞 37자 안.
 TEMPLATES: dict[str, tuple[Template, ...]] = {
     "first_log": (
         Template(
             "first_log_after_meal",
-            "잇싹이 첫 기록을 기다려요",
-            "다 먹은 뒤에 기록해도 괜찮아요. 갤러리 사진이나 글로 한 끼만 남겨 볼까요?",
+            "{name}: 다 먹고 나서 알려 줘도 돼!",
+            "갤러리 사진이나 글로 한 끼만 남겨 줘. 내가 기억해 둘게.",
         ),
         Template(
             "first_log_gallery",
-            "이미 먹었어도 괜찮아요",
-            "갤러리에 있는 식사 사진으로도 기록할 수 있어요. 잇싹과 첫 기록을 시작해요 🌱",
+            "{name}: 우리 첫 기록 해 볼까?",
+            "이미 먹었어도 괜찮아. 갤러리에 있는 사진으로도 돼 🌱",
         ),
         Template(
             "first_log_text",
-            "사진이 없어도 기록돼요",
-            "먹은 걸 글로 적기만 해도 기록이 돼요. 잇싹이 첫 한 끼를 기다리고 있어요.",
+            "{name}: 사진 없어도 괜찮아!",
+            "먹은 걸 글로 적어 주기만 하면 돼. 첫 한 끼 기다릴게.",
         ),
     ),
     "missed_one": (
         Template(
             "missed_one_one_meal",
-            "오늘 한 끼면 충분해요",
-            "어제는 쉬어 갔으니 오늘 한 끼만 남겨요. 두 번은 놓치지 않기로 해요 🌱",
+            "{name}: 오늘은 한 끼면 충분해",
+            "어제는 쉬었으니까 오늘 한 끼만 남겨 줘. 두 번은 놓치지 말자 🌱",
         ),
         Template(
             "missed_one_after_meal",
-            "잇싹이 오늘을 기다려요",
-            "오늘 한 끼만 기록하면 흐름이 다시 이어져요. 먹고 나서 남겨도 괜찮아요.",
+            "{name}: 오늘 기다리고 있었어!",
+            "한 끼만 알려 주면 다시 이어져. 먹고 나서 남겨도 돼.",
         ),
         Template(
             "missed_one_light",
-            "가볍게 다시 이어가요",
-            "하루 쉬어도 괜찮아요. 오늘 한 끼만 기록하면 잇싹과 다시 함께예요.",
+            "{name}: 가볍게 다시 해 보자",
+            "하루 쉬어도 괜찮아. 오늘 한 끼만 알려 주면 돼.",
         ),
     ),
     "keep_going": (
         Template(
             "keep_going_streak",
-            "오늘도 한 끼 남겨요",
-            "오늘 한 끼면 {streak}일 연속이에요. 잇싹이 저녁 기록을 기다려요 🌱",
+            "{name}: 오늘도 한 끼 같이 남기자",
+            "오늘 한 끼면 {streak}일 연속이야! 저녁 기록 기다릴게 🌱",
         ),
         Template(
             "keep_going_evening",
-            "오늘 기록, 잊지 않았죠?",
-            "오늘 한 끼면 {streak}일 연속 기록이에요. 어제처럼 가볍게 남겨 봐요.",
+            "{name}: 오늘 기록 잊지 않았지?",
+            "한 끼만 남기면 {streak}일 연속이야. 어제처럼 가볍게!",
         ),
         Template(
             "keep_going_grow",
-            "잇싹이 쑥쑥 크고 있어요",
-            "오늘 한 끼를 남기면 {streak}일 연속이에요. 먹고 나서 기록해도 돼요.",
+            "{name}: 나 요즘 쑥쑥 크는 중!",
+            "오늘 한 끼 남기면 {streak}일 연속이야. 먹고 나서 알려 줘도 돼.",
         ),
     ),
     "lapsed": (
         Template(
             "lapsed_hello",
-            "잇싹이 안부를 물어요",
-            "오늘 한 끼만 남겨 볼까요? 언제 와도 잇싹은 반가워요 🌱",
+            "{name}: 잘 지냈어?",
+            "오늘 한 끼만 알려 줄래? 언제 와도 반가워 🌱",
         ),
         Template(
             "lapsed_easy",
-            "한 끼부터 가볍게 해요",
-            "사진이 없으면 글로 적어도 돼요. 오늘 한 끼만 가볍게 남겨요.",
+            "{name}: 한 끼부터 가볍게 하자",
+            "사진이 없으면 글로 적어도 돼. 오늘 한 끼만!",
         ),
         Template(
             "lapsed_here",
-            "잇싹이 여기 있어요",
-            "부담 없이 오늘 한 끼만 기록해요. 먹고 나서 남겨도 괜찮아요.",
+            "{name}: 나 여기 있어",
+            "부담 없이 오늘 한 끼만 알려 줘. 먹고 나서 남겨도 괜찮아.",
         ),
     ),
 }
@@ -257,8 +263,29 @@ def choose_template(
     return candidates[seed % len(candidates)]
 
 
-def render(template: Template, streak: int) -> tuple[str, str]:
-    return template.title, template.body.format(streak=streak)
+def render(template: Template, streak: int, pet_name: str = DEFAULT_PET_NAME) -> tuple[str, str]:
+    return template.title.format(name=pet_name), template.body.format(streak=streak)
+
+
+def pet_names(db: Session, user_ids: list[int]) -> dict[int, str]:
+    """user_id → 활성 펫을 부르는 이름 (지어 준 이름 > 카탈로그 이름 앞 단어, 홈 display_name 과 같은 규칙)."""
+    if not user_ids:
+        return {}
+    rows = db.execute(
+        select(GameProfile.user_id, GameProfile.active_pet_code, PetBond.nickname)
+        .outerjoin(
+            PetBond,
+            (PetBond.user_id == GameProfile.user_id)
+            & (PetBond.pet_code == GameProfile.active_pet_code),
+        )
+        .where(GameProfile.user_id.in_(user_ids))
+    ).all()
+    names: dict[int, str] = {}
+    for user_id, pet_code, nickname in rows:
+        entry = catalog.get(pet_code or catalog.DEFAULT_PET_CODE)
+        default = entry.name.split(" ")[0] if entry and entry.name else DEFAULT_PET_NAME
+        names[user_id] = (nickname or "").strip() or default
+    return names
 
 
 # --- 조회 ---
@@ -358,6 +385,7 @@ def send_lifecycle_push(
         for user in db.scalars(select(User).where(User.id.in_(user_ids))).all()
     }
     record_days = _record_days_by_user(db, user_ids, now)
+    names = pet_names(db, user_ids)
     has_record = _users_with_any_record(db, user_ids)
 
     recent_logs = sent_logs_since(
@@ -424,7 +452,9 @@ def send_lifecycle_push(
         ):
             summary.skipped["already_sent"] += 1  # 다른 인스턴스가 먼저 보냄
             continue
-        title, body = render(template, streak_if_logged_today(days, today))
+        title, body = render(
+            template, streak_if_logged_today(days, today), names.get(user_id, DEFAULT_PET_NAME)
+        )
         try:
             report = client.send(tokens, title, body, PUSH_DATA)
         except Exception:  # noqa: BLE001 — 한 사용자 발송 실패로 나머지·토큰 정리를 버리지 않는다
