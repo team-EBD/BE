@@ -106,11 +106,11 @@ class Settings(BaseSettings):
     # (docs/프로모션-이미지-교체.md).
     promo_enabled: bool = True
     # FE 가 '보지 않기' 기록을 id 별로 저장한다 — 이미지를 바꾸면 id 도 반드시 바꿀 것.
-    promo_id: str = "free-until-2026-11-30"
+    promo_id: str = "free-until-2026-12-31"
     # 공개 HTTPS 이미지 주소. 비어 있으면 프로모션 없음(null).
-    # 기본값은 "11월 30일까지 전부 무료" 이미지(Firebase Storage). 교체는 Parameter Store 의 PROMO_IMAGE_URL 로.
+    # 기본값은 "12월 31일까지 전부 무료" 이미지(Firebase Storage). 교체는 Parameter Store 의 PROMO_IMAGE_URL 로.
     promo_image_url: str = (
-        "https://firebasestorage.googleapis.com/v0/b/soma-temp-storage.firebasestorage.app/o/promotions%2Ffree-until-2026-11-30-b.jpg?alt=media&token=880670c5c08147398b4f7738ae3764c3"
+        "https://firebasestorage.googleapis.com/v0/b/soma-temp-storage.firebasestorage.app/o/promotions%2Ffree-until-2026-12-31-b.jpg?alt=media&token=a4412734f0364ae7881fd82287893dec"
     )
     # 이미지를 받기 전에 자리를 잡기 위한 원본 크기(px)
     promo_image_width: int = 1024
@@ -118,11 +118,11 @@ class Settings(BaseSettings):
     # 튜토리얼 마지막 페이월 전용 이미지(가로형). 히어로 자리가 낮아 세로 포스터는 작게 보인다.
     # 비어 있으면 위 기본 이미지를 그대로 쓴다. placement=tutorial 요청에만 내려간다.
     promo_tutorial_image_url: str = (
-        "https://firebasestorage.googleapis.com/v0/b/soma-temp-storage.firebasestorage.app/o/promotions%2Ffree-until-2026-11-30-wide-a.jpg?alt=media&token=dcbaab9b825841289435d7c81d58b38f"
+        "https://firebasestorage.googleapis.com/v0/b/soma-temp-storage.firebasestorage.app/o/promotions%2Ffree-until-2026-12-31-wide-a.jpg?alt=media&token=879a1b82475241f4afb179f336367f13"
     )
     promo_tutorial_image_width: int = 1536
     promo_tutorial_image_height: int = 1024
-    promo_alt_text: str = "11월 30일까지 AI 분석·프리미엄 기능 전부 무료"
+    promo_alt_text: str = "12월 31일까지 AI 분석·프리미엄 기능 전부 무료"
     # 이미지를 눌렀을 때: subscription(구독 화면) | url(promo_action_url 웹뷰) | none
     # 무료 기간에는 결제로 이어지는 동선을 두지 않는다 — 기본은 none.
     promo_action: str = "none"

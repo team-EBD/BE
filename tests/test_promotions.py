@@ -73,12 +73,12 @@ def test_code_defaults_match_the_contract():
     """env 없이 본 코드 기본값 — 계약 표와 같아야 한다."""
     fields = Settings.model_fields
     assert fields["promo_enabled"].default is True
-    assert fields["promo_id"].default == "free-until-2026-11-30"
+    assert fields["promo_id"].default == "free-until-2026-12-31"
     assert fields["promo_image_width"].default == 1024
     assert fields["promo_image_height"].default == 1536
     # 기본 이미지는 공개 HTTPS 주소여야 한다 (배포 직후 Parameter Store 설정 없이도 보이도록)
     assert fields["promo_image_url"].default.startswith("https://")
-    assert fields["promo_alt_text"].default == "11월 30일까지 AI 분석·프리미엄 기능 전부 무료"
+    assert fields["promo_alt_text"].default == "12월 31일까지 AI 분석·프리미엄 기능 전부 무료"
     # 무료 기간에는 프로모션을 눌러도 구독 화면으로 가지 않는다
     assert fields["promo_action"].default == "none"
     assert fields["promo_action_url"].default == ""
