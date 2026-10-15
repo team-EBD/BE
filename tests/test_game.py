@@ -144,7 +144,15 @@ def test_daily_reward_cap_is_four_meals(client, auth_headers):
     assert fifth["points"] == 0
 
 
-def test_full_day_bonus_once(client, auth_headers):
+def _without_mission_payout(monkeypatch):
+    """기록 보상 경제만 볼 때 — 같은 기록으로 끝나는 미션의 자동 지급이 숫자에 섞이지 않게 한다."""
+    import app.services.game_rewards as rewards_service
+
+    monkeypatch.setattr(rewards_service, "auto_claim_completed", lambda *_a, **_k: [])
+
+
+def test_full_day_bonus_once(client, auth_headers, monkeypatch):
+    _without_mission_payout(monkeypatch)
     today = _logical_today()
     create_meal(client, auth_headers, meal_on(today, "breakfast"))
     create_meal(client, auth_headers, meal_on(today, "lunch"))
@@ -155,7 +163,8 @@ def test_full_day_bonus_once(client, auth_headers):
     assert fourth["points"] == catalog.POINTS_PER_MEAL
 
 
-def test_deleted_meal_keeps_rewards_and_cannot_farm(client, auth_headers):
+def test_deleted_meal_keeps_rewards_and_cannot_farm(client, auth_headers, monkeypatch):
+    _without_mission_payout(monkeypatch)
     today = _logical_today()
     created = create_meal(client, auth_headers, meal_on(today))
     before = home(client, auth_headers)["profile"]["points"]
@@ -904,36 +913,76 @@ def test_meal_save_raises_mission_progress(client, auth_headers, db_factory):
         assert mission["progress"] >= 1, mission
 
 
-def test_completed_mission_is_not_paid_until_claimed(client, auth_headers, db_factory):
+def test_completed_mission_is_paid_on_meal_save(client, auth_headers, db_factory):
+    """완료되는 순간 보상이 지급된다 — 수동 수령 시절 완료 160건 중 수령 9건(2026-10-15)."""
+    fruit = _add_nutrition_item(db_factory, "블루베리")
+    image = _photo_id(client, auth_headers)
+    today = _logical_today()
+    before = home(client, auth_headers)["profile"]["points"]
+
+    paid: list[dict] = []
+    xp_total = points_total = 0
+    for meal_type in ("breakfast", "lunch", "dinner"):
+        body = create_meal(
+            client, auth_headers, rich_meal(today, [VEGETABLE, SOUP, fruit], meal_type, image)
+        )
+        rewards = body["rewards"]
+        paid.extend(rewards["mission_rewards"])
+        xp_total += rewards["xp"]
+        points_total += rewards["points"]
+
+    daily = daily_missions(client, auth_headers)
+    assert all(m["completed"] and m["claimed"] for m in daily), daily
+    assert {m["code"] for m in daily} <= {p["code"] for p in paid}
+    for item in paid:
+        spec = catalog.mission_spec(item["code"])
+        assert item["reward"] == {"xp": spec.xp, "points": spec.points}
+    # 미션 보상은 기록 보상 합계에 들어 있고 잔액에도 반영된다 (레벨업 코인은 합계 밖이라 잔액이 더 클 수 있다)
+    assert points_total >= sum(p["reward"]["points"] for p in paid)
+    assert home(client, auth_headers)["profile"]["points"] >= before + points_total
+    # 이미 받은 미션은 홈의 claimable 에 남지 않는다
+    assert not [c for c in home(client, auth_headers)["claimable"] if c["type"] == "mission"]
+
+
+def test_auto_paid_mission_cannot_be_claimed_again(client, auth_headers, db_factory):
+    today = _logical_today()
+    target = _complete_daily_missions(client, auth_headers, db_factory, today)[0]
+    again = client.post("/v1/game/missions/" + target["code"] + "/claim", headers=auth_headers)
+    assert again.status_code == 409
+    assert again.json()["error"]["code"] == "MISSION_ALREADY_CLAIMED"
+
+
+def test_manual_claim_still_pays_completed_but_unpaid_mission(client, auth_headers, db_factory, monkeypatch):
+    """자동 지급 이전에 완료만 해 둔 미션(배포 전 데이터)은 수동 수령 API 로 받을 수 있다."""
+    import app.services.game_rewards as rewards_service
+
+    monkeypatch.setattr(rewards_service, "auto_claim_completed", lambda *_a, **_k: [])
     today = _logical_today()
     daily = _complete_daily_missions(client, auth_headers, db_factory, today)
     assert all(m["completed"] and not m["claimed"] for m in daily), daily
-
-    claimable = home(client, auth_headers)["claimable"]
-    by_code = {c["code"]: c for c in claimable if c["type"] == "mission"}
-    assert {m["code"] for m in daily} <= set(by_code)
-    for mission in daily:
-        assert by_code[mission["code"]]["reward"] == mission["reward"]
-        assert by_code[mission["code"]]["label"] == mission["title"]
-
-
-def test_mission_claim_pays_once_and_second_claim_conflicts(client, auth_headers, db_factory):
-    today = _logical_today()
-    target = _complete_daily_missions(client, auth_headers, db_factory, today)[0]
+    target = daily[0]
     before = home(client, auth_headers)["profile"]["points"]
 
     res = client.post("/v1/game/missions/" + target["code"] + "/claim", headers=auth_headers)
     assert res.status_code == 200, res.text
     assert res.json()["reward"] == target["reward"]
     assert home(client, auth_headers)["profile"]["points"] >= before + target["reward"]["points"]
-
     again = client.post("/v1/game/missions/" + target["code"] + "/claim", headers=auth_headers)
     assert again.status_code == 409
-    assert again.json()["error"]["code"] == "MISSION_ALREADY_CLAIMED"
 
-    # 수령한 미션은 더 이상 claimable 에 담기지 않는다
-    assert target["code"] not in {c["code"] for c in home(client, auth_headers)["claimable"]}
-    assert {m["code"]: m for m in daily_missions(client, auth_headers)}[target["code"]]["claimed"]
+
+def test_backdated_record_completing_past_mission_is_not_auto_paid(client, auth_headers, db_factory):
+    """지난 날짜로 기록해 어제 미션이 뒤늦게 완료돼도 자동 지급하지 않는다 (소급 수령 금지와 같은 규칙)."""
+    yesterday = _logical_today() - timedelta(days=1)
+    fruit = _add_nutrition_item(db_factory, "블루베리")
+    image = _photo_id(client, auth_headers)
+    paid = []
+    for meal_type in ("breakfast", "lunch", "dinner"):
+        body = create_meal(
+            client, auth_headers, rich_meal(yesterday, [VEGETABLE, SOUP, fruit], meal_type, image)
+        )
+        paid.extend(m for m in body["rewards"]["mission_rewards"] if m["scope"] == "daily")
+    assert paid == []
 
 
 def test_incomplete_or_unknown_mission_claim_is_rejected(client, auth_headers):
