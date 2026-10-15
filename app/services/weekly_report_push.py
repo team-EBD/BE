@@ -21,6 +21,7 @@ push_send_logs(channel=weekly_report, 사용자·논리 날짜당 1행)가 맡�
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date, datetime, timedelta
 
 from sqlalchemy import select
@@ -31,6 +32,7 @@ from app.core.timeutil import kst_date_of, now_utc, to_kst
 from app.models import NotificationSetting, PushToken
 from app.models.push import PUSH_CHANNEL_WEEKLY_REPORT
 from app.push_client.base import PushClient
+from app.services.lifecycle_push import in_quiet_hours
 from app.services.push_send_log import claim_push_send
 from app.services.report_readiness import WEEKLY_REQUIRED_FILLED_DAYS, count_filled_days
 from app.services.summary import aggregate_range
@@ -47,8 +49,12 @@ _WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 
 def weekly_push_due(
     now: datetime, day: str, at: str, already_sent_today: bool
 ) -> bool:
-    """지금이 발송 시점인지 판단 — 설정 요일이고 설정 시각(KST)을 지났으며 오늘 미발송."""
-    if already_sent_today:
+    """지금이 발송 시점인지 판단 — 설정 요일이고 설정 시각(KST)을 지났으며 오늘 미발송.
+
+    21:00~08:00(KST)에는 보내지 않는다 — 서버가 낮에 내려가 있다가 밤에 올라와도
+    늦은 첫 발송이 야간 전송 제한 시간에 나가지 않게 한다.
+    """
+    if already_sent_today or in_quiet_hours(now):
         return False
     weekday = _WEEKDAYS.get(day.strip().lower())
     if weekday is None:
@@ -156,7 +162,10 @@ def send_weekly_report_push(
     invalid_tokens: list[str] = []
 
     skipped = already_sent = 0
+    started = time.monotonic()
     for user_id, tokens in recipients.items():
+        if in_quiet_hours(now + timedelta(seconds=time.monotonic() - started)):
+            break  # 발송 도중 21시가 되면 멈춘다 (야간 전송 제한)
         recorded_days, report_ready = week_record_stats(db, user_id, week_start)
         if not report_ready:
             skipped += 1  # 리포트 화면이 열리지 않는 사용자 — 도착 알림을 보내지 않는다
@@ -173,7 +182,12 @@ def send_weekly_report_push(
             already_sent += 1  # 같은 날 이미 보냄(재기동·다른 인스턴스) — 두 번 보내지 않는다
             continue
         title, body = build_push_content(recorded_days)
-        report = client.send(tokens, title, body, PUSH_DATA)
+        try:
+            report = client.send(tokens, title, body, PUSH_DATA)
+        except Exception:  # noqa: BLE001 — 한 사용자 발송 실패로 나머지·토큰 정리를 버리지 않는다
+            logger.exception("주간 리포트 푸시 발송 실패 (user_id=%s)", user_id)
+            failure += len(tokens)
+            continue
         success += report.success_count
         failure += report.failure_count
         invalid_tokens.extend(report.invalid_tokens)

@@ -159,6 +159,48 @@ def test_slot_due_after_slot_until_quiet_hours():
     assert not lifecycle_slot_due(LUNCH, "noon")
 
 
+def test_slot_due_respects_slot_end():
+    # 늦은 재기동으로 점심 문구가 저녁에 한꺼번에 나가지 않는다 (점심 15시, 저녁 20:30 마감)
+    assert lifecycle_slot_due(LUNCH.replace(hour=14, minute=59), "11:50", SLOT_LUNCH)
+    assert not lifecycle_slot_due(LUNCH.replace(hour=15, minute=0), "11:50", SLOT_LUNCH)
+    assert lifecycle_slot_due(LUNCH.replace(hour=20, minute=29), "18:30", SLOT_DINNER)
+    assert not lifecycle_slot_due(LUNCH.replace(hour=20, minute=30), "18:30", SLOT_DINNER)
+
+
+def test_send_stops_when_quiet_hours_reached_mid_run(db_factory, monkeypatch):
+    db = db_factory()
+    for sid in ("q1", "q2", "q3"):
+        user = _user(db, sid)
+        _meal(db, user.id, _ago(2))
+    # 첫 사용자 뒤로 시계가 9시간 흐른 것처럼 — 12:00 + 9h = 21:00 이 되면 멈춘다
+    ticks = iter([0.0, 0.0, 9 * 3600.0, 9 * 3600.0, 9 * 3600.0])
+    monkeypatch.setattr(lifecycle_push.time, "monotonic", lambda: next(ticks, 9 * 3600.0))
+    client = MockPushClient()
+    summary = send_lifecycle_push(db, client, SLOT_LUNCH, now=LUNCH)
+    assert len(client.sent) == 1
+    assert summary.skipped["quiet_hours_reached"] == 1
+    db.close()
+
+
+class _Exploding(MockPushClient):
+    def send(self, tokens, title, body, data=None):
+        if "t-boom" in tokens:
+            raise RuntimeError("fcm down")
+        return super().send(tokens, title, body, data)
+
+
+def test_send_exception_for_one_user_keeps_going(db_factory):
+    db = db_factory()
+    for sid in ("boom", "fine"):
+        user = _user(db, sid)
+        _meal(db, user.id, _ago(2))
+    client = _Exploding()
+    summary = send_lifecycle_push(db, client, SLOT_LUNCH, now=LUNCH)
+    assert _sent_tokens(client) == ["t-fine"]
+    assert summary.failure == 1
+    db.close()
+
+
 def test_no_send_during_quiet_hours(db_factory):
     db = db_factory()
     user = _user(db, "night")

@@ -105,7 +105,7 @@ async def _lifecycle_push_loop() -> None:
             now = now_utc()
             today = kst_date_of(now, settings.day_start_hour).isoformat()
             for slot, at in lifecycle_slots():
-                if slot_done.get(slot) == today or not lifecycle_slot_due(now, at):
+                if slot_done.get(slot) == today or not lifecycle_slot_due(now, at, slot):
                     continue
                 await asyncio.to_thread(_run_lifecycle_push, slot)
                 slot_done[slot] = today

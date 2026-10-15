@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import zlib
 from collections import Counter
 from dataclasses import dataclass, field
@@ -67,6 +68,9 @@ LAPSED_MAX_GAP_DAYS = 13
 LAPSED_INTERVAL_DAYS = 3  # lapsed 는 이 간격에 한 번까지
 TEMPLATE_COOLDOWN_DAYS = 7  # 최근 이 일수 안에 받은 템플릿은 피한다
 HISTORY_LOOKBACK_DAYS = 30  # 연속 일수·마지막 기록 계산에 보는 범위
+
+# 슬롯 마감(KST, 이 시각부터는 그 슬롯을 시작하지 않는다)
+SLOT_END = {SLOT_LUNCH: (15, 0), SLOT_DINNER: (20, 30)}
 
 SEGMENT_SLOT = {
     "first_log": SLOT_LUNCH,
@@ -174,8 +178,12 @@ def in_quiet_hours(now: datetime) -> bool:
     return hour >= QUIET_START_HOUR or hour < QUIET_END_HOUR
 
 
-def lifecycle_slot_due(now: datetime, at: str) -> bool:
-    """슬롯 시각(HH:mm KST)을 지났고 야간 제한 전인지. 잘못된 설정이면 False."""
+def lifecycle_slot_due(now: datetime, at: str, slot: str | None = None) -> bool:
+    """슬롯 시각(HH:mm KST)을 지났고, 그 슬롯의 마감 전이며, 야간 제한 전인지. 잘못된 설정이면 False.
+
+    마감(SLOT_END)이 없으면 재기동이 저녁 늦게 일어났을 때 점심 문구가 밤 9시 직전에
+    한꺼번에 나가고, 발송 루프가 21시를 넘길 수 있다.
+    """
     try:
         hour, minute = (int(part) for part in at.split(":"))
     except (AttributeError, ValueError):
@@ -184,7 +192,11 @@ def lifecycle_slot_due(now: datetime, at: str) -> bool:
     if in_quiet_hours(now):
         return False
     now_kst = to_kst(now)
-    return (now_kst.hour, now_kst.minute) >= (hour, minute)
+    current = (now_kst.hour, now_kst.minute)
+    end = SLOT_END.get(slot)
+    if end is not None and current >= end:
+        return False
+    return current >= (hour, minute)
 
 
 def lifecycle_slots() -> list[tuple[str, str]]:
@@ -362,7 +374,12 @@ def send_lifecycle_push(
             last_lapsed[log.user_id] = log.logical_date
 
     invalid_tokens: list[str] = []
+    started = time.monotonic()
     for user_id, tokens in recipients.items():
+        # 발송은 한 명씩 막히는 호출이라 루프가 길어질 수 있다 — 흐른 시간을 더해 다시 보고 21시가 되면 멈춘다
+        if in_quiet_hours(now + timedelta(seconds=time.monotonic() - started)):
+            summary.skipped["quiet_hours_reached"] += 1
+            break
         user = users.get(user_id)
         if user is None:
             continue
@@ -408,7 +425,12 @@ def send_lifecycle_push(
             summary.skipped["already_sent"] += 1  # 다른 인스턴스가 먼저 보냄
             continue
         title, body = render(template, streak_if_logged_today(days, today))
-        report = client.send(tokens, title, body, PUSH_DATA)
+        try:
+            report = client.send(tokens, title, body, PUSH_DATA)
+        except Exception:  # noqa: BLE001 — 한 사용자 발송 실패로 나머지·토큰 정리를 버리지 않는다
+            logger.exception("라이프사이클 푸시 발송 실패 (user_id=%s)", user_id)
+            summary.failure += len(tokens)
+            continue
         summary.sent[segment] += 1
         summary.success += report.success_count
         summary.failure += report.failure_count

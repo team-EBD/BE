@@ -55,6 +55,12 @@ def test_due_after_configured_time_not_before():
     assert weekly_push_due(late, "sun", "09:00", already_sent_today=False)
 
 
+def test_not_due_during_quiet_hours():
+    # 낮에 서버가 내려가 있다가 밤 9시 이후 올라와도 늦은 첫 발송을 하지 않는다
+    assert weekly_push_due(_SUNDAY_0900.replace(hour=20, minute=59), "sun", "09:00", already_sent_today=False)
+    assert not weekly_push_due(_SUNDAY_0900.replace(hour=21), "sun", "09:00", already_sent_today=False)
+
+
 def test_due_dedupes_same_day_and_rejects_bad_day_config():
     assert not weekly_push_due(_SUNDAY_0900, "sun", "09:00", already_sent_today=True)
     assert not weekly_push_due(_SUNDAY_0900, "sunday?", "09:00", already_sent_today=False)
