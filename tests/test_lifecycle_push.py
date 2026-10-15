@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -417,12 +418,37 @@ def test_templates_follow_copy_rules():
             assert t.template_id not in seen_ids
             seen_ids.add(t.template_id)
             assert t.template_id.startswith(segment)
-            title, body = t.title, t.body.format(streak=12)
-            assert len(title) <= 20, title
-            assert (title + body).count("🌱") <= 1
-            assert not any(word in title + body for word in banned), t.template_id
-            assert "요" in body  # 해요체
+            # 제목은 "{name}: 대사" — 펫이 직접 말한다
+            assert t.title.startswith("{name}: "), t.template_id
+            line, body = t.title.removeprefix("{name}: "), t.body.format(streak=12)
+            assert len(line) <= 20, line
+            assert (line + body).count("🌱") <= 1
+            assert not any(word in line + body for word in banned), t.template_id
+            # 펫 말투는 반말로 통일 (홈 말풍선·튜토리얼·코칭과 같다) — 해요체 어미가 없다
+            assert not re.search(r"요([.!?\s]|$)", line + " " + body), t.template_id
     assert all("{streak}" in t.body for t in TEMPLATES["keep_going"])
+
+
+def test_push_title_uses_users_pet_name(db_factory):
+    from app.models import GameProfile, PetBond
+
+    db = db_factory()
+    named = _user(db, "named")
+    _meal(db, named.id, _ago(2))
+    db.add(GameProfile(user_id=named.id, active_pet_code="pet_cat"))
+    db.add(PetBond(user_id=named.id, pet_code="pet_cat", nickname="두부"))
+    plain = _user(db, "plain")
+    _meal(db, plain.id, _ago(2))
+    db.add(GameProfile(user_id=plain.id, active_pet_code="pet_cat"))
+    db.commit()
+    assert lifecycle_push.pet_names(db, [named.id, plain.id]) == {named.id: "두부", plain.id: "모카"}
+
+    client = MockPushClient()
+    send_lifecycle_push(db, client, SLOT_LUNCH, now=LUNCH)
+    titles = {m["tokens"][0]: m["title"] for m in client.sent}
+    assert titles["t-named"].startswith("두부: ")
+    assert titles["t-plain"].startswith("모카: ")
+    db.close()
 
 
 def test_choose_template_avoids_recent_and_is_deterministic():
@@ -448,7 +474,8 @@ def test_send_rotates_templates_using_last_seven_days(db_factory):
         select(PushSendLog.template_id).where(PushSendLog.logical_date == TODAY)
     ) == ids[2]
     expected = next(t for t in TEMPLATES["missed_one"] if t.template_id == ids[2])
-    assert client.sent[0]["title"] == expected.title
+    # 게임 프로필이 없는 사용자는 기본 펫 이름으로 말한다
+    assert client.sent[0]["title"] == expected.title.format(name="모카")
     db.close()
 
 

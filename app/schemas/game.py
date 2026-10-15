@@ -267,6 +267,8 @@ class MealRewards(BaseModel):
     progress_updates: list[dict] = Field(default_factory=list)
     pet_growth: PetGrowthReward | None = None
     skill_effect: dict | None = None
+    # 이번 기록으로 완료돼 바로 지급된 미션 (xp·points 는 위 합계에 이미 포함)
+    mission_rewards: list[dict] = Field(default_factory=list)
 
 
 # --- GET /v1/game/missions ---

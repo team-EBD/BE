@@ -38,7 +38,7 @@ from app.services.game_ledger import forget as _forget
 from app.services.game_ledger import grant_item as _grant_item
 from app.services.game_ledger import ledger as _ledger
 from app.services.game_ledger import skill_usage as _skill_usage
-from app.services.game_missions import apply_mission_progress
+from app.services.game_missions import apply_mission_progress, auto_claim_completed
 from app.services.game_profile import (
     ensure_catalog,
     ensure_game_profile,
@@ -589,9 +589,15 @@ def apply_meal_rewards(db: Session, user: User, meal: MealRecord) -> dict | None
         db, profile, meal, day, item_ids=item_ids, tags=tags
     )
 
-    # 7-2) 미션 진행도 — 완료해도 자동 지급하지 않는다 (홈의 claimable 로 간다).
-    #      완료된 미션은 `mission_count` 이벤트 진행도도 함께 올린다.
-    apply_mission_progress(db, profile, meal, day, item_ids=item_ids, tags=tags)
+    # 7-2) 미션 진행도 — 완료된 미션은 `mission_count` 이벤트 진행도도 함께 올리고,
+    #      지금 기간의 미션이면 보상을 바로 지급한다(수동 수령은 거의 쓰이지 않았다).
+    completed = apply_mission_progress(db, profile, meal, day, item_ids=item_ids, tags=tags)
+    mission_rewards = auto_claim_completed(
+        db, profile, completed, kst_date_of(now_utc(), settings.day_start_hour)
+    )
+    for granted in mission_rewards:
+        gained_xp += granted["reward"]["xp"]
+        points += granted["reward"]["points"]
 
     # 7-3) 이벤트 스탬프 — 기간 중 기록한 서로 다른 논리 날짜 수 (하루 1장)
     apply_event_stamps(db, profile, day)
@@ -612,6 +618,7 @@ def apply_meal_rewards(db: Session, user: User, meal: MealRecord) -> dict | None
         "progress_updates": progress_updates,
         "pet_growth": pet_growth,
         "skill_effect": skill_effect,
+        "mission_rewards": mission_rewards,
     }
 
 

@@ -6,7 +6,9 @@
   `hash()` 는 프로세스마다 달라지므로 절대 쓰지 않는다 — 같은 사용자·같은 날은
   언제 조회해도 같은 미션이 나와야 한다.
 - `period_key` 는 일일이면 논리 날짜, 주간이면 그 주 **월요일**의 논리 날짜.
-- 진행도는 식단 저장 경로에서 올리고 **수령은 수동**이다 (홈의 `claimable`).
+- 진행도는 식단 저장 경로에서 올리고, 완료되면 **그 자리에서 자동 지급**한다(2026-10-15).
+  수동 수령 시절 완료 160건 중 수령 9건 — 보상이 사용자에게 닿지 않았다. 지난 기간 미션이
+  뒤늦게 완료되는 경우(지난 날짜로 기록)만 자동 지급하지 않고, 수동 수령 API 도 그대로 둔다.
 - 진행도 증가와 보상 지급 **둘 다** 기존 `reward_ledger` 멱등 키로 막는다.
   새 원장 테이블을 만들지 않는다 — 잔액 갱신 경로가 둘이 되면 정합성이 깨진다.
 - 일일 지급 상한(하루 4건)은 `reason == "meal"` 만 세므로, 여기서 쓰는
@@ -272,9 +274,9 @@ def apply_mission_progress(
     item_ids: list[int],
     tags: frozenset[str],
 ) -> list[dict]:
-    """식단 1건으로 그 기간의 미션 진행도를 올린다. 완료해도 자동 지급하지 않는다.
+    """식단 1건으로 그 기간의 미션 진행도를 올린다. 지급은 auto_claim_completed 가 한다.
 
-    반환: 이번에 새로 **완료된** 미션 요약 (연출·이벤트 집계용).
+    반환: 이번에 새로 **완료된** 미션 요약 (연출·이벤트 집계·자동 지급용).
     """
     rows = ensure_missions(db, profile.user_id, day)
     specs = [catalog.mission_spec(row.mission_code) for row in rows]
@@ -461,6 +463,49 @@ def claim_mission(db: Session, profile: GameProfile, code: str, today: date) -> 
         "level": profile.level,
         "level_up": level_up,
     }
+
+
+def auto_claim_completed(
+    db: Session, profile: GameProfile, completed: list[dict], today: date
+) -> list[dict]:
+    """방금 완료된 미션의 보상을 바로 지급한다. XP 는 더하지 않고 반환만 한다.
+
+    호출부(식단 보상)가 반환된 xp 를 자기 gained_xp 에 합쳐 한 번에 레벨업을 판정한다 —
+    여기서 apply_xp_gain 을 따로 부르면 레벨업 보상이 두 경로로 나뉜다.
+    코인은 원장과 같은 트랜잭션에서 profile.points 에 더한다(수동 수령과 같은 멱등 키).
+    지금 기간이 아닌 미션(지난 날짜로 기록해 뒤늦게 완료)은 지급하지 않는다.
+    """
+    granted: list[dict] = []
+    for item in completed:
+        spec = catalog.mission_spec(item["code"])
+        if spec is None or item["period_key"] != period_key(spec.scope, today):
+            continue
+        row = _current_row(db, profile.user_id, spec, today)
+        if row is None or row.claimed_at is not None or row.progress < row.target_value:
+            continue
+        if not ledger(
+            db,
+            profile.user_id,
+            key=f"mission:{spec.code}:{row.period_key}",
+            reason=CLAIM_REASON,
+            xp=spec.xp,
+            points=spec.points,
+            ref_type="mission",
+            ref_id=spec.code,
+            logical_date=today,
+        ):
+            continue
+        profile.points += spec.points
+        row.claimed_at = now_utc()
+        granted.append(
+            {
+                "code": spec.code,
+                "title": spec.title,
+                "scope": spec.scope,
+                "reward": {"xp": spec.xp, "points": spec.points},
+            }
+        )
+    return granted
 
 
 # --- 오늘의 바꾸기 (daily_mission_swap) ---

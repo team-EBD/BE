@@ -9,7 +9,8 @@ LLM 을 쓰지 않는 규칙 기반이다 (summary.build_summary_text 와 같은
 저녁 8시 이후와 지난 날짜는 하루 전체를 놓고 정리한다(stage=wrap_up).
 
 message 는 홈의 펫 말풍선에 그대로 들어간다 — 반말, 두 줄 안, 탓하지 않는 말투.
-detail 은 카드·리포트용 존댓말 한두 문장이다.
+detail 은 홈 코칭 카드·하루 리포트 마스코트 카드에 펫 얼굴과 함께 나가는 한두 문장이다 — 같은 펫의 말이라
+반말로 쓴다(2026-10-15 말투 통일). 숫자는 그대로 보여 주되 꾸짖지 않는다.
 """
 from __future__ import annotations
 
@@ -146,43 +147,43 @@ def _detail(code: str, stage: str, goal: str, total: dict, goals: dict) -> str:
     if code == "calories_over":
         over = _num(cal - cal_goal)
         if goal in _GAIN_GOALS:
-            return f"목표 {_num(cal_goal)}kcal 를 채우고 {over}kcal 더 드셨어요. 늘리는 중이니 잘하고 있어요."
+            return f"목표 {_num(cal_goal)}kcal 채우고 {over}kcal 더 먹었어. 늘리는 중이니까 잘하고 있어!"
         return (
-            f"목표 {_num(cal_goal)}kcal 보다 {over}kcal 더 드셨어요. "
-            "하루쯤은 괜찮아요. 다음 끼니를 조금 가볍게 해 보세요."
+            f"목표 {_num(cal_goal)}kcal보다 {over}kcal 더 먹었어. "
+            "하루쯤은 괜찮아! 다음 끼니는 조금 가볍게 가 보자."
         )
     if code == "calories_low":
         if goal == "lose_weight":
             return (
-                f"오늘 {_num(cal)}kcal 로 목표 {_num(cal_goal)}kcal 에 한참 못 미쳤어요. "
-                "너무 적게 먹으면 오래 이어 가기 어려워요."
+                f"오늘 {_num(cal)}kcal 먹어서 목표 {_num(cal_goal)}kcal에 한참 모자라. "
+                "너무 적게 먹으면 오래 못 가."
             )
         return (
-            f"오늘 {_num(cal)}kcal 로 목표 {_num(cal_goal)}kcal 보다 "
-            f"{_num(cal_goal - cal)}kcal 적었어요."
+            f"오늘 {_num(cal)}kcal 먹어서 목표 {_num(cal_goal)}kcal보다 "
+            f"{_num(cal_goal - cal)}kcal 적어."
         )
     if code == "protein_low":
         left = _num(max(pro_goal - pro, 0))
         if wrap:
-            return f"단백질을 목표 {_num(pro_goal)}g 중 {_num(pro)}g 드셨어요. {left}g 이 모자랐어요."
+            return f"단백질 목표 {_num(pro_goal)}g 중에 {_num(pro)}g 먹었어. {left}g 모자랐어."
         return (
-            f"단백질을 목표 {_num(pro_goal)}g 중 {_num(pro)}g 드셨어요. "
-            f"남은 끼니에서 {left}g 을 더 챙겨 보세요."
+            f"단백질 목표 {_num(pro_goal)}g 중에 {_num(pro)}g 먹었어. "
+            f"남은 끼니에서 {left}g 더 챙겨 줘!"
         )
     if code in ("carbs_high", "fat_high"):
         key = "carbs" if code == "carbs_high" else "fat"
         return (
-            f"{_LABEL[key]}을 목표 {_num(goals[key])}g 보다 "
-            f"{_num(total[key] - goals[key])}g 더 드셨어요."
+            f"{_LABEL[key]} 목표 {_num(goals[key])}g보다 "
+            f"{_num(total[key] - goals[key])}g 더 먹었어."
         )
     if code == "meals_skipped":
-        return "오늘은 한 끼만 기록됐어요. 끼니를 거르면 다음 식사에서 많이 먹기 쉬워요."
+        return "오늘은 한 끼만 기록했어. 끼니를 거르면 다음에 많이 먹기 쉬워."
     if not wrap:
         return (
-            f"지금까지 {_num(cal)}kcal, 단백질 {_num(pro)}g 드셨어요. "
-            f"오늘 목표는 {_num(cal_goal)}kcal 예요."
+            f"지금까지 {_num(cal)}kcal, 단백질 {_num(pro)}g 먹었어. "
+            f"오늘 목표는 {_num(cal_goal)}kcal야."
         )
-    return f"오늘 {_num(cal)}kcal, 단백질 {_num(pro)}g 으로 목표에 맞게 드셨어요."
+    return f"오늘 {_num(cal)}kcal, 단백질 {_num(pro)}g. 목표에 맞게 잘 먹었어!"
 
 
 def build_daily_coach(
