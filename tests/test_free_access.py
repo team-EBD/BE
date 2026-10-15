@@ -30,8 +30,8 @@ def gate_on_exhausted(monkeypatch, seed_ai_logs):
     seed_ai_logs("analyze", 3, days_ago=2)
 
 
-def test_code_default_runs_through_november():
-    assert Settings.model_fields["free_access_until"].default == "2026-11-30"
+def test_code_default_runs_through_december():
+    assert Settings.model_fields["free_access_until"].default == "2026-12-31"
     assert Settings.model_fields["free_access_daily_limit"].default == 50
 
 

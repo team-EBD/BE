@@ -89,7 +89,7 @@ class Settings(BaseSettings):
     # 이 날짜(KST, 그 날 포함)까지는 구독 여부와 상관없이 AI 분석·추천과 프리미엄 기능을 모두 연다.
     # 위 ai_premium_gate·free_credit_limit·일일 한도는 기간이 끝난 뒤에 다시 적용된다.
     # YYYY-MM-DD. 빈 값이면 무료 기간 없음. env FREE_ACCESS_UNTIL 로 늘리거나 끈다(코드 배포 불필요).
-    free_access_until: str = "2026-11-30"
+    free_access_until: str = "2026-12-31"
     # 무료 기간의 남용 방지 상한 — 사용자당 기능별(분석/추천) 하루 성공 호출 수. 0 이하 = 무제한.
     # 정상 사용으로는 닿지 않는 값으로 둔다(AI 호출 비용 폭주 방지용이지 과금 유도용이 아니다).
     free_access_daily_limit: int = 50
