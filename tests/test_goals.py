@@ -59,64 +59,64 @@ def test_unknown_gender_between_male_and_female():
 
 
 def test_personalized_goals_macros_body_weight_based():
-    # 여 55kg 유지 1750: 단백질 1.6×55=88g, 지방 25%≈49g, 탄수 나머지≈239g
+    # 여 55kg 유지 1750: 단백질 1.0×55=55g, 지방 25%≈49g, 탄수 나머지≈273g
     goals = personalized_goals("female", None, 165.5, 55, "maintain")
     assert goals["calories"] == 1750
-    assert goals["protein"] == round(55 * 1.6)  # 88
+    assert goals["protein"] == 55
     assert goals["fat"] == round(1750 * 0.25 / 9)  # 49
     # 탄수는 단백질·지방을 뺀 나머지 칼로리에서 유도
-    assert goals["carbs"] == round((1750 - goals["protein"] * 4 - goals["fat"] * 9) / 4)
+    assert goals["carbs"] == 273
 
 
 def test_macro_protein_scales_by_goal_type():
-    # 같은 체중이면 감량기 단백질(2.0)이 증량(1.8)·유지(1.6)보다 높다 (근손실 방지)
+    # 감량·근육 증가 1.6, 일반 유지 1.0 g/kg.
     w = 70
     diet = derive_macro_goals(2000, w, "diet")
     maintain = derive_macro_goals(2000, w, "maintain")
     bulk = derive_macro_goals(2000, w, "bulk")
-    assert diet["protein"] == round(w * 2.0)  # 140
-    assert maintain["protein"] == round(w * 1.6)  # 112
-    assert bulk["protein"] == round(w * 1.8)  # 126
-    assert diet["protein"] > bulk["protein"] > maintain["protein"]
+    assert diet["protein"] == 112
+    assert maintain["protein"] == 70
+    assert bulk["protein"] == 112
+    assert diet["protein"] == bulk["protein"] > maintain["protein"]
 
 
 def test_macro_fat_default_25pct_and_carbs_remainder():
     m = derive_macro_goals(2000, 70, "maintain")
     assert m["fat"] == round(2000 * 0.25 / 9)  # 56
     # 탄수 = 전체 - 단백질kcal - 지방kcal (나머지 배분)
-    assert m["carbs"] == round((2000 - m["protein"] * 4 - m["fat"] * 9) / 4)
+    assert m["carbs"] == 305
 
 
-def test_macro_protein_capped_at_35pct_for_low_goal():
-    # 80kg 유지 500kcal: 체중 기반 128g(512kcal)이 목표를 넘겨 탄수 0 으로 찍히던 버그(2026-10-07)
-    # → 단백질은 열량의 35% 상한 44g, 지방 25%, 탄수는 나머지 50g. 합계 ≈ 목표
+def test_macro_protein_not_capped_for_low_goal():
+    # 80kg 유지 500kcal: 단백질 80g을 보존하고 지방 25%, 탄수는 반올림 전 잔여량.
     m = derive_macro_goals(500, 80, "maintain")
-    assert m["protein"] == round(500 * 0.35 / 4)  # 44
-    assert m["fat"] == round(500 * 0.25 / 9)  # 14
-    assert m["carbs"] == 50
+    assert m == {"protein": 80, "fat": 14, "carbs": 14}
     assert abs(m["protein"] * 4 + m["fat"] * 9 + m["carbs"] * 4 - 500) <= 10
 
 
-def test_macro_protein_follows_goal_when_capped_then_weight_based():
-    # 상한에 걸리는 구간에선 목표 칼로리가 오르면 단백질도 오른다(고정 아님).
-    # 체중 기반 값(128g)이 35% 안에 들어오는 목표부터는 체중 기반 그대로
+def test_macro_protein_stays_weight_based_across_calorie_goals():
     p = [derive_macro_goals(g, 80, "maintain")["protein"] for g in (500, 800, 1000, 1200)]
-    assert p == [44, 70, 88, 105]
-    assert derive_macro_goals(2000, 80, "maintain")["protein"] == 128
+    assert p == [80, 80, 80, 80]
+    assert derive_macro_goals(2000, 80, "maintain")["protein"] == 80
 
 
-def test_macro_protein_floor_10pct_for_high_goal():
-    # 아주 높은 목표에선 단백질이 열량의 10% 밑으로 떨어지지 않는다 (128g=512kcal 는 6000 의 8.5%)
-    assert derive_macro_goals(6000, 80, "maintain")["protein"] == round(6000 * 0.10 / 4)  # 150
+def test_macro_protein_not_raised_to_10pct_for_high_goal():
+    assert derive_macro_goals(6000, 80, "maintain")["protein"] == 80
 
 
-def test_macro_sum_matches_goal_and_carbs_positive_across_range():
+def test_macro_sum_matches_goal_unless_protein_and_fat_exceed_it():
     for goal in (500, 700, 900, 1200, 2000, 3500, 6000, 10000):
         for w in (45, 70, 100):
             for mg in ("diet", "maintain", "bulk"):
                 m = derive_macro_goals(goal, w, mg)
-                assert m["carbs"] > 0, (goal, w, mg, m)
-                assert abs(m["protein"] * 4 + m["fat"] * 9 + m["carbs"] * 4 - goal) <= 10, (goal, w, mg, m)
+                protein = w * (1.0 if mg == "maintain" else 1.6)
+                carbs = goal * 0.75 / 4 - protein
+                assert m["protein"] == round(protein)
+                assert m["carbs"] == round(max(carbs, 0))
+                if carbs >= 0:
+                    assert abs(m["protein"] * 4 + m["fat"] * 9 + m["carbs"] * 4 - goal) <= 10
+                else:
+                    assert m["carbs"] == 0
 
 
 def test_macro_fallback_ratio_without_weight():

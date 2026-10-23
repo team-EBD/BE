@@ -46,6 +46,20 @@ class GoalPlan(BaseModel):
     floor_applied: bool  # 최소 권장 열량으로 받쳤는지
 
 
+class MacroPlan(BaseModel):
+    """저장된 탄단지 목표의 판정 (2026-10-21) — 숫자는 자르지 않고 상태로 알린다.
+
+    status: ok / info(표시만) / review(재검토 권장) / infeasible(단백질·지방만으로 칼로리 초과) /
+    unsupported(19세 미만·저체중 감량 — 참고용) / fallback(체중 없음, 비율 폴백).
+    reasons 는 사유 코드(app/services/macros.REASON_SEVERITY 순서). 문구는 앱이 만든다.
+    """
+
+    status: str
+    reasons: list[str]
+    min_calories: int | None  # 단백질 전량 + 탄수 130 g 이 들어가는 최소 칼로리
+    reference_weight: float | None  # 단백질 산정에 쓴 기준 체중(kg)
+
+
 class MeDetailResponse(BaseModel):
     id: int
     email: str | None
@@ -71,6 +85,8 @@ class MeDetailResponse(BaseModel):
     daily_goal_fat: int | None = None
     # 신체정보가 없거나 칼로리를 직접 정한(manual) 사용자는 null
     goal_plan: GoalPlan | None = None
+    # 프로필이 없거나 체중이 없으면 null. 저장된 목표를 읽을 때마다 계산한다(DB 열 아님)
+    macro_plan: MacroPlan | None = None
     tutorial_completed_at: KSTDateTime | None
     created_at: KSTDateTime
 
