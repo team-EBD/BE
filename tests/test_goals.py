@@ -47,7 +47,7 @@ def test_missing_body_info_returns_none():
 
 
 def test_min_floor():
-    # 극단적 입력(감량 + 저체중)도 1200 kcal 아래로 내려가지 않는다
+    # 극단적 입력(감량 + 저체중)도 자동 산정 하한(1000 kcal) 아래로 내려가지 않는다
     assert calculate_goal_calories("female", None, 140, 35, "diet") >= MIN_GOAL_CALORIES
 
 

@@ -6,7 +6,6 @@ from datetime import UTC, date, datetime
 from app.services.coach import build_daily_coach, coach_stage
 from app.services.goals import (
     MIN_GOAL_CALORIES,
-    MIN_GOAL_CALORIES_MALE,
     calculate_goal_calories,
     goal_plan,
     personalized_goals,
@@ -71,11 +70,18 @@ def test_deficit_capped_at_quarter_of_maintenance():
     assert plan["floor_applied"] is False
 
 
-def test_floor_by_gender():
+def test_floor_is_1000_regardless_of_gender():
+    assert MIN_GOAL_CALORIES == 1000
+    # 예전 하한(여 1200)에 걸리던 작은 체격은 이제 25% 적자 그대로 받는다
     small_f = goal_plan("female", None, 150, 40, primary_goal="lose_weight")
-    assert small_f["calories"] == MIN_GOAL_CALORIES and small_f["floor_applied"] is True
+    assert small_f["calories"] == 1060 and small_f["floor_applied"] is False
+    # 예전 하한(남 1500)도 마찬가지
     small_m = goal_plan("male", None, 160, 48, primary_goal="lose_weight", activity_level="sedentary")
-    assert small_m["calories"] == MIN_GOAL_CALORIES_MALE and small_m["floor_applied"] is True
+    assert small_m["calories"] == 1200 and small_m["floor_applied"] is False
+    # 아주 작은 고령 여성(유지 1076, 25% 적자 → 810)만 1000 으로 받친다
+    tiny = goal_plan("female", 1966, 150, 42, primary_goal="lose_weight", activity_level="sedentary")
+    assert tiny["calories"] == MIN_GOAL_CALORIES and tiny["floor_applied"] is True
+    assert tiny["adjustment"] == MIN_GOAL_CALORIES - tiny["tdee"]
 
 
 def test_surplus_cap_keeps_rounding_floor_and_actual_adjustment():
@@ -87,9 +93,9 @@ def test_surplus_cap_keeps_rounding_floor_and_actual_adjustment():
     assert plan["floor_applied"] is False
     # 기존 열량 하한은 잉여 상한 뒤에 적용되므로, 매우 작은 체격에서는 하한이 우선한다.
     small = goal_plan("female", None, 100, 20, primary_goal="gain_weight", goal_pace="fast")
-    assert small["calories"] == 1200 and small["floor_applied"] is True
-    assert small["tdee"] == 707 and small["adjustment"] == 493
-    assert small["weekly_change_kg"] == 0.45
+    assert small["calories"] == MIN_GOAL_CALORIES and small["floor_applied"] is True
+    assert small["tdee"] == 707 and small["adjustment"] == 293  # 1000 − 707 (잉여 20% 상한 141 보다 큼)
+    assert small["weekly_change_kg"] == 0.27
 
 
 def test_plan_explains_weekly_change_and_weeks_to_target():
