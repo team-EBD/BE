@@ -97,16 +97,30 @@ def test_each_user_has_independent_profile(client):
 
 # --- 기록 보상 ---
 
+def _mission_bonus(rewards: dict) -> tuple[int, int]:
+    """첫 끼 기록으로 바로 완료·자동 지급된 미션의 (xp, points) 합.
+
+    일일 미션은 날짜 시드로 뽑히므로 어떤 날은 첫 끼만으로 완료되는 미션이 걸린다(10-15 자동 지급
+    도입 후 식사 보상에 합산). 기본 지급 테스트는 그 몫을 빼고 본다 — 안 빼면 날짜에 따라 깨진다.
+    """
+    granted = rewards["mission_rewards"]
+    return (
+        sum(m["reward"]["xp"] for m in granted),
+        sum(m["reward"]["points"] for m in granted),
+    )
+
+
 def test_meal_create_returns_rewards(client, auth_headers):
     body = create_meal(client, auth_headers, meal_on(_logical_today()))
     rewards = body["rewards"]
-    assert rewards["xp"] == catalog.XP_PER_MEAL
-    assert rewards["points"] == catalog.POINTS_PER_MEAL
+    bonus_xp, bonus_points = _mission_bonus(rewards)
+    assert rewards["xp"] == catalog.XP_PER_MEAL + bonus_xp
+    assert rewards["points"] == catalog.POINTS_PER_MEAL + bonus_points
     assert rewards["current_streak"] == 1
     assert rewards["pet_growth"]["pet_code"] == "pet_cat"
     assert rewards["pet_growth"]["bond_day_added"] is True
     assert rewards["pet_growth"]["bond_days"] == 1
-    assert home(client, auth_headers)["profile"]["points"] == catalog.POINTS_PER_MEAL
+    assert home(client, auth_headers)["profile"]["points"] == catalog.POINTS_PER_MEAL + bonus_points
 
 
 def test_photo_meal_gives_more_xp(client, auth_headers):
@@ -117,9 +131,8 @@ def test_photo_meal_gives_more_xp(client, auth_headers):
         data={"source": "camera"},
     ).json()
     payload = meal_on(_logical_today(), meal_image_id=image["meal_image_id"])
-    assert create_meal(client, auth_headers, payload)["rewards"]["xp"] == (
-        catalog.XP_PER_PHOTO_MEAL
-    )
+    rewards = create_meal(client, auth_headers, payload)["rewards"]
+    assert rewards["xp"] == catalog.XP_PER_PHOTO_MEAL + _mission_bonus(rewards)[0]
 
 
 def test_skipped_meal_gives_no_reward(client, auth_headers):
