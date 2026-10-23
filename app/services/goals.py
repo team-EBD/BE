@@ -14,9 +14,13 @@ primary_goal 이 없는 사용자는 예전 목표 유형(eating_habits.meal_goa
 (diet→lose_weight, bulk→gain_muscle, maintain→maintain) — 속도 '보통' 이 예전 값과 같다.
 
 안전장치: 적자는 TDEE 의 25%, 잉여는 TDEE 의 20% 를 넘지 않고(절대값 가감이 작은 몸에서 폭주하지
-않도록, 2026-10-21), 하한은 남성 1,500 / 그 외 1,200 kcal.
-(하한 없이 1,000 kcal 대 목표를 내는 앱이 공개적으로 비판받는다 —
- 근거: 워크스페이스 루트 COMPETITOR-SEGMENTATION-RESEARCH-20261009.md)
+않도록, 2026-10-21), 하한은 성별 무관 1,000 kcal (2026-10-23, 이전 남 1,500 / 그 외 1,200).
+25% 상한과 저체중 감량 unsupported(macros.py) 이후 하한이 걸리는 경우는 아주 작은 체격·고령뿐이라,
+1,200 은 감량 목표를 유지 열량에 가깝게 되돌려 버렸다. 1,000 은 "앱이 혼자 권하지 않는 선"(800~1,200
+저열량식의 중간, 800 미만은 의료 감독 영역)이며 체중 오타 같은 입력 오류의 안전망이다. 그 아래 입력이
+몸에 무리인지는 숫자를 바꾸지 않고 macros.macro_plan 의 판정으로 알린다.
+(경쟁사 조사: 하한 없이 1,000 kcal 대 목표를 내는 앱이 비판받는다 —
+ 워크스페이스 루트 COMPETITOR-SEGMENTATION-RESEARCH-20261009.md. floor_applied 로 사용자에게 표시한다.)
 
 키/몸무게가 없으면 None 을 반환한다 — 호출부는 기본 목표(2000)를 쓴다.
 """
@@ -62,8 +66,7 @@ GOAL_ADJUSTMENT = {"diet": -500, "maintain": 0, "bulk": 300}
 
 MAX_DEFICIT_RATIO = 0.25  # 적자는 TDEE 의 25% 까지
 MAX_SURPLUS_RATIO = 0.20  # 잉여는 TDEE 의 20% 까지
-MIN_GOAL_CALORIES = 1200
-MIN_GOAL_CALORIES_MALE = 1500
+MIN_GOAL_CALORIES = 1000  # 자동 산정 하한, 성별 무관 (2026-10-23)
 DEFAULT_AGE = 30  # 출생연도 미입력 시 가정
 KCAL_PER_KG = 7700  # 체중 1kg 변화에 해당하는 열량 (관행 환산값)
 
@@ -115,7 +118,7 @@ def goal_plan(
     elif adjustment > 0:
         adjustment = min(adjustment, tdee * MAX_SURPLUS_RATIO)
 
-    floor = MIN_GOAL_CALORIES_MALE if gender == "male" else MIN_GOAL_CALORIES
+    floor = MIN_GOAL_CALORIES
     # 10 kcal 단위 반올림 — 추정식에 1 kcal 정밀도는 무의미하다
     computed = round((tdee + adjustment) / 10) * 10
     calories = max(floor, computed)
