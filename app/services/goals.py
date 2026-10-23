@@ -13,7 +13,8 @@ TDEE = BMR × 활동계수. 활동량을 받지 않은 사용자는
 primary_goal 이 없는 사용자는 예전 목표 유형(eating_habits.meal_goal)을 같은 표에 대응시킨다
 (diet→lose_weight, bulk→gain_muscle, maintain→maintain) — 속도 '보통' 이 예전 값과 같다.
 
-안전장치: 적자는 TDEE 의 25% 를 넘지 않고, 하한은 남성 1,500 / 그 외 1,200 kcal.
+안전장치: 적자는 TDEE 의 25%, 잉여는 TDEE 의 20% 를 넘지 않고(절대값 가감이 작은 몸에서 폭주하지
+않도록, 2026-10-21), 하한은 남성 1,500 / 그 외 1,200 kcal.
 (하한 없이 1,000 kcal 대 목표를 내는 앱이 공개적으로 비판받는다 —
  근거: 워크스페이스 루트 COMPETITOR-SEGMENTATION-RESEARCH-20261009.md)
 
@@ -24,7 +25,7 @@ from __future__ import annotations
 import math
 
 from app.core.timeutil import KST, now_utc
-from app.services.summary import derive_macro_goals
+from app.services.macros import macro_plan
 
 # 활동 수준 → 활동계수 (관행값). 미입력 시 light.
 ACTIVITY_FACTORS = {
@@ -60,6 +61,7 @@ PRIMARY_BY_MEAL_GOAL = {"diet": "lose_weight", "maintain": "maintain", "bulk": "
 GOAL_ADJUSTMENT = {"diet": -500, "maintain": 0, "bulk": 300}
 
 MAX_DEFICIT_RATIO = 0.25  # 적자는 TDEE 의 25% 까지
+MAX_SURPLUS_RATIO = 0.20  # 잉여는 TDEE 의 20% 까지
 MIN_GOAL_CALORIES = 1200
 MIN_GOAL_CALORIES_MALE = 1500
 DEFAULT_AGE = 30  # 출생연도 미입력 시 가정
@@ -110,6 +112,8 @@ def goal_plan(
     adjustment = paces.get(goal_pace or "", paces[DEFAULT_GOAL_PACE]) if paces else 0
     if adjustment < 0:
         adjustment = max(adjustment, -tdee * MAX_DEFICIT_RATIO)
+    elif adjustment > 0:
+        adjustment = min(adjustment, tdee * MAX_SURPLUS_RATIO)
 
     floor = MIN_GOAL_CALORIES_MALE if gender == "male" else MIN_GOAL_CALORIES
     # 10 kcal 단위 반올림 — 추정식에 1 kcal 정밀도는 무의미하다
@@ -172,7 +176,7 @@ def personalized_goals(
     goal_pace: str | None = None,
 ) -> dict[str, int] | None:
     """목표 칼로리 + 탄단지 목표(g). 신체정보 부족 시 None."""
-    calories = calculate_goal_calories(
+    plan = goal_plan(
         gender,
         birth_year,
         height,
@@ -182,6 +186,15 @@ def personalized_goals(
         activity_level=activity_level,
         goal_pace=goal_pace,
     )
-    if calories is None:
+    if plan is None:
         return None
-    return {"calories": calories, **derive_macro_goals(calories, weight, primary_goal or meal_goal)}
+    macros = macro_plan(
+        plan["calories"],
+        weight=weight,
+        height=height,
+        birth_year=birth_year,
+        goal=primary_goal or meal_goal,
+        activity_level=activity_level,
+        tdee=plan["tdee"],
+    )
+    return {"calories": plan["calories"], **macros.targets()}

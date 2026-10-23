@@ -48,7 +48,7 @@ def test_pace_changes_adjustment_per_goal():
     muscle = calculate_goal_calories(*MALE, primary_goal="gain_muscle", goal_pace="slow")
     weight = calculate_goal_calories(*MALE, primary_goal="gain_weight", goal_pace="fast")
     assert muscle == 2270 + 150
-    assert weight == 2270 + 700
+    assert weight == 2720  # 2267.03 × 1.20 → 10 kcal 반올림
     # 방향이 없는 목표는 속도를 무시한다
     assert calculate_goal_calories(*MALE, primary_goal="eat_healthy", goal_pace="fast") == 2270
 
@@ -78,6 +78,20 @@ def test_floor_by_gender():
     assert small_m["calories"] == MIN_GOAL_CALORIES_MALE and small_m["floor_applied"] is True
 
 
+def test_surplus_cap_keeps_rounding_floor_and_actual_adjustment():
+    plan = goal_plan(*MALE, primary_goal="gain_weight", goal_pace="fast", target_weight=75)
+    assert plan["calories"] == 2720  # 2267.03125 × 1.2 → 10 kcal 반올림
+    assert plan["adjustment"] == 453
+    assert plan["weekly_change_kg"] == 0.41
+    assert plan["weeks_to_target"] == 13
+    assert plan["floor_applied"] is False
+    # 기존 열량 하한은 잉여 상한 뒤에 적용되므로, 매우 작은 체격에서는 하한이 우선한다.
+    small = goal_plan("female", None, 100, 20, primary_goal="gain_weight", goal_pace="fast")
+    assert small["calories"] == 1200 and small["floor_applied"] is True
+    assert small["tdee"] == 707 and small["adjustment"] == 493
+    assert small["weekly_change_kg"] == 0.45
+
+
 def test_plan_explains_weekly_change_and_weeks_to_target():
     plan = goal_plan(
         *MALE, primary_goal="lose_weight", activity_level="active", target_weight=65
@@ -97,7 +111,7 @@ def test_protein_coefficient_by_primary_goal():
         for g in ("lose_weight", "maintain", "gain_muscle", "gain_weight", "eat_healthy")
     }
     assert p == {
-        "lose_weight": 140, "maintain": 112, "gain_muscle": 126, "gain_weight": 112, "eat_healthy": 84,
+        "lose_weight": 112, "maintain": 98, "gain_muscle": 112, "gain_weight": 98, "eat_healthy": 98,
     }
 
 
@@ -125,7 +139,7 @@ def test_goal_setup_recalculates_and_syncs_meal_goal(client):
     me = res.json()
     # 여 55kg/165.5cm: BMR 1273.375 × 1.55 = 1973.7 → +300 → 2270
     assert me["daily_goal_calories"] == 2270
-    assert me["daily_goal_protein"] == round(55 * 1.8)
+    assert me["daily_goal_protein"] == round(55 * 1.6)
     assert me["primary_goal"] == "gain_muscle"
     assert me["activity_level"] == "moderate"
     assert me["target_weight"] == 58
@@ -145,7 +159,7 @@ def test_goal_setup_overrides_manual_only_when_auto_requested(client):
         "/v1/users/me", headers=headers, json={"primary_goal": "lose_weight"}
     ).json()
     assert me["daily_goal_calories"] == 1900 and me["goal_source"] == "manual"
-    assert me["daily_goal_protein"] == round(55 * 2.0)
+    assert me["daily_goal_protein"] == round(55 * 1.6)
     assert me["goal_plan"] is None
     # goal_source=auto 를 함께 보내면(목표 설정 마법사) 다시 계산한다
     me = client.patch(

@@ -40,7 +40,7 @@ def test_signup_201_tokens_and_profile(client, db_factory):
     # (여 55kg/165.5cm/기본나이 30: BMR 1273.4 × 활동계수 1.375 ≈ 1750)
     assert me.json()["daily_goal_calories"] == 1750
 
-    # user_profiles 에 성별/키/몸무게 + 탄단지 목표(50:30:20)가 저장된다
+    # user_profiles 에 성별/키/몸무게 + 체중 기반 탄단지 목표가 저장된다
     with db_factory() as db:
         user = db.scalar(
             select(User).where(
@@ -54,9 +54,9 @@ def test_signup_201_tokens_and_profile(client, db_factory):
         assert float(profile.height) == 165.5
         assert float(profile.weight) == 55.0
         assert profile.goal_source == "auto"
-        # 탄단지는 체중 기반 산정 — 가입 시 목표유형 없음(유지): 단백질 1.6×55=88g,
-        # 지방 25%≈49g, 탄수 나머지≈239g (자동 산정 칼로리 1750 기준)
-        assert (profile.goal_carbs, profile.goal_protein, profile.goal_fat) == (239, 88, 49)
+        # 탄단지는 체중 기반 산정 — 가입 시 목표유형 없음(유지): 단백질 1.0×55=55g,
+        # 지방 25%≈49g, 탄수 나머지≈273g (자동 산정 칼로리 1750 기준)
+        assert (profile.goal_carbs, profile.goal_protein, profile.goal_fat) == (273, 55, 49)
 
 
 def test_signup_duplicate_email_409(client):
