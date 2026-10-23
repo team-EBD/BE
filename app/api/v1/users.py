@@ -24,6 +24,7 @@ from app.schemas.user import (
     EatingHabitsResponse,
     EatingHabitsUpdateRequest,
     GoalPlan,
+    MacroPlan,
     LocationConsentCreateRequest,
     LocationConsentResponse,
     LocationConsentUpdateRequest,
@@ -40,6 +41,7 @@ from app.services.goals import (
     goal_plan,
     personalized_goals,
 )
+from app.services.macros import macro_plan
 from app.services.nickname import allocate_nickname_tag
 from app.services.summary import DEFAULT_GOALS, derive_macro_goals
 
@@ -82,9 +84,47 @@ def _goal_plan(profile: UserProfile | None, meal_goal: str | None) -> GoalPlan |
     return GoalPlan(**{k: v for k, v in plan.items() if k != "calories"})
 
 
+def _estimated_tdee(profile: UserProfile, meal_goal: str | None) -> float | None:
+    """판정용 유지 열량 — 직접 설정(manual) 사용자도 몸으로 추정한다. 키·체중 없으면 None."""
+    plan = goal_plan(
+        profile.gender,
+        profile.birth_year,
+        profile.height,
+        profile.weight,
+        meal_goal,
+        primary_goal=profile.primary_goal,
+        activity_level=profile.activity_level,
+        goal_pace=profile.goal_pace,
+    )
+    return plan["tdee"] if plan else None
+
+
+def _macro_plan(profile: UserProfile | None, meal_goal: str | None) -> MacroPlan | None:
+    """저장된 목표 칼로리·탄단지가 이 몸에 무리인지의 판정. 프로필이나 체중이 없으면 null."""
+    if profile is None or profile.weight is None:
+        return None
+    plan = macro_plan(
+        profile.goal_calories,
+        weight=profile.weight,
+        height=profile.height,
+        birth_year=profile.birth_year,
+        goal=meal_goal,
+        activity_level=profile.activity_level,
+        tdee=_estimated_tdee(profile, meal_goal),
+    )
+    return MacroPlan(
+        status=plan.status,
+        reasons=plan.reasons,
+        min_calories=plan.min_calories,
+        reference_weight=plan.reference_weight,
+    )
+
+
 def _me_response(db: DB, user) -> MeDetailResponse:
     profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user.id))
     habit = db.scalar(select(EatingHabit).where(EatingHabit.user_id == user.id))
+    # 탄단지 계수는 세분화 목표가 있으면 그것, 없으면 예전 식습관 목표를 따른다 (저장 경로와 같은 순서)
+    macro_goal = (profile.primary_goal if profile else None) or (habit.meal_goal if habit else None)
     return MeDetailResponse(
         id=user.id,
         email=user.email,
@@ -110,6 +150,7 @@ def _me_response(db: DB, user) -> MeDetailResponse:
         daily_goal_protein=profile.goal_protein if profile else None,
         daily_goal_fat=profile.goal_fat if profile else None,
         goal_plan=_goal_plan(profile, habit.meal_goal if habit else None),
+        macro_plan=_macro_plan(profile, macro_goal),
         tutorial_completed_at=user.tutorial_completed_at,
         created_at=user.created_at,
     )
@@ -244,8 +285,19 @@ def update_me(body: UpdateMeRequest, user: CurrentUser, db: DB) -> MeDetailRespo
             # — BMR/TDEE 목표를 재계산한다
             profile.goal_source = "auto"
             _recalculate_auto_goals(profile, meal_goal)
-        elif body.primary_goal is not None:
-            # 칼로리를 직접 정한 사용자 — 칼로리는 그대로 두고 탄단지만 새 목표에 맞춘다
+        elif any(
+            value is not None
+            for value in (
+                body.gender,
+                body.height,
+                body.weight,
+                body.birth_year,
+                body.primary_goal,
+                body.activity_level,
+            )
+        ):
+            # 칼로리를 직접 정한 사용자 — 칼로리는 그대로 두고 탄단지만 바뀐 몸·목표에 맞춘다
+            # (2026-10-21 이전에는 목표 변경 때만 다시 계산해 체중이 바뀌어도 단백질이 그대로였다)
             _apply_goal_calories(profile, profile.goal_calories, meal_goal)
 
     db.commit()
@@ -253,9 +305,11 @@ def update_me(body: UpdateMeRequest, user: CurrentUser, db: DB) -> MeDetailRespo
 
 
 def _recalculate_auto_goals(profile: UserProfile, meal_goal: str | None) -> None:
-    """신체정보·목표·활동량·속도로 목표 칼로리와 탄단지를 다시 계산한다 (신체정보 부족 시 유지).
+    """신체정보·목표·활동량·속도로 목표 칼로리와 탄단지를 다시 계산한다.
 
-    meal_goal 자리에는 세분화한 목표(primary_goal)가 있으면 그 값을, 없으면 예전 목표 유형을 넘긴다.
+    키·체중이 모자라 칼로리를 못 구하면 칼로리는 그대로 두고 탄단지만 다시 맞춘다(체중만 있어도
+    단백질은 체중 기반으로 — Codex 안 채택 10-21). meal_goal 자리에는 세분화한 목표(primary_goal)가
+    있으면 그 값을, 없으면 예전 목표 유형을 넘긴다.
     """
     goals = personalized_goals(
         profile.gender,
@@ -268,6 +322,8 @@ def _recalculate_auto_goals(profile: UserProfile, meal_goal: str | None) -> None
     )
     if goals is not None:
         _apply_goal_calories(profile, goals["calories"], meal_goal)
+    else:
+        _apply_goal_calories(profile, profile.goal_calories, meal_goal)
 
 
 def _apply_goal_calories(
@@ -275,13 +331,21 @@ def _apply_goal_calories(
 ) -> None:
     """목표 칼로리 변경 시 탄단지 목표도 함께 갱신한다.
 
-    체중·목표유형이 있으면 단백질(체중당 g) 우선 산정, 없으면 비율 폴백.
+    체중이 있으면 단백질(기준 체중당 g) 우선 → 지방 25% → 탄수 나머지(app/services/macros), 없으면 비율 폴백.
+    판정(status)은 저장하지 않고 응답을 만들 때 계산한다.
     """
     profile.goal_calories = calories
-    macros = derive_macro_goals(calories, profile.weight, meal_goal)
-    profile.goal_carbs = macros["carbs"]
-    profile.goal_protein = macros["protein"]
-    profile.goal_fat = macros["fat"]
+    macros = macro_plan(
+        calories,
+        weight=profile.weight,
+        height=profile.height,
+        birth_year=profile.birth_year,
+        goal=meal_goal,
+        activity_level=profile.activity_level,
+    )
+    profile.goal_carbs = macros.carbs
+    profile.goal_protein = macros.protein
+    profile.goal_fat = macros.fat
 
 
 # --- 식습관 (명세서 11장) ---
@@ -329,6 +393,9 @@ def update_eating_habits(
             goal_key = profile.primary_goal or body.meal_goal
             if profile.goal_source == "auto":
                 _recalculate_auto_goals(profile, goal_key)
+            else:
+                # 칼로리를 직접 정한 사용자 — 칼로리는 그대로, 탄단지만 새 목표 유형에 맞춘다
+                _apply_goal_calories(profile, profile.goal_calories, goal_key)
 
     db.commit()
     return _habits_response(habit)
