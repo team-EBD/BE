@@ -1,0 +1,14 @@
+[
+  {"id":"half_package_legacy","nutrition_case":"half_package_legacy_count","size_text":"90g","expected_size_text":"45g","expected_fe_text":"1개 45g"},
+  {"id":"half_package_missing_size_g","nutrition_case":"half_package_legacy_count","size_text":"90g","package_size_g":null,"expected_size_text":"45g","expected_fe_text":"1개 45g"},
+  {"id":"pieces_inside_package","nutrition_case":"pieces_from_larger_package","size_text":"100g","expected_size_text":"30g","expected_fe_text":"1개 30g"},
+  {"id":"half_package_native","nutrition_case":"half_package_native_count","size_text":"90g","expected_size_text":"90g","expected_fe_text":"1개 90g"},
+  {"id":"whole_small_wrappers","nutrition_case":"two_small_wrappers","size_text":"9g","expected_size_text":"9g","expected_fe_text":"1개 9g"},
+  {"id":"whole_cans_ml","nutrition_case":"two_cans","size_text":"355ml","expected_size_text":"355ml","expected_fe_text":"1캔 355ml"},
+  {"id":"half_can_ml","nutrition_case":"half_can_legacy_count","size_text":"355ml","expected_size_text":"177.5ml","expected_fe_text":"1캔 177.5ml"},
+  {"id":"half_can_missing_size_g","nutrition_case":"half_can_legacy_count","size_text":"355ml","package_size_g":null,"expected_size_text":"177.5ml","expected_fe_text":"1캔 177.5ml"},
+  {"id":"half_bottle_liters","nutrition_case":"half_can_legacy_count","size_text":"1L","package_size_g":1000,"expected_size_text":"500ml","expected_fe_text":"1캔 500ml"},
+  {"id":"package_kilograms","nutrition_case":"one_and_half_packages_legacy_count","size_text":"0.09kg","expected_size_text":"67.5g","expected_fe_text":"1개 67.5g"},
+  {"id":"unknown_written_unit","nutrition_case":"half_package_legacy_count","size_text":"한 봉지","expected_size_text":null,"expected_fe_text":"1개 45g"},
+  {"id":"uncounted_food_keeps_original","nutrition_case":"bowl_keeps_database_density","size_text":"500g","package_size_g":500,"expected_size_text":"500g","expected_fe_text":"사진 속 양 · 약 500g"}
+]
