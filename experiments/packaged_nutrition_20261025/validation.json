@@ -25,6 +25,7 @@
     "duration_seconds": 13.9
   },
   "full_suite_after": {
+    "scope": "Initial calorie fix, commit 4f9fe1c; before the later response-display adjustment",
     "command": "venv/Scripts/python -m pytest -q -p no:cacheprovider --tb=short",
     "passed": 1268,
     "failed": 2,
@@ -36,7 +37,22 @@
     ],
     "failure_reason": "Windows resolve() adds a drive to POSIX-shaped fixture paths; expected paths omit it. Reproduced before changes."
   },
-  "compileall": "passed for changed Python files",
+  "display_followup": {
+    "command": "venv/Scripts/python experiments/packaged_nutrition_20261025/run_display_experiment.py --fe-root ../FE",
+    "synthetic_cases": 12,
+    "before_passed": 4,
+    "after_passed": 12,
+    "fe_source_modified": false,
+    "input_package_mutated": false,
+    "note": "Runs the actual candidateToFood and servingBasisText functions, including ml and missing-size_g cases."
+  },
+  "related_tests_after_display_followup": {
+    "command": "venv/Scripts/python -m pytest -q -p no:cacheprovider tests/test_packaged_nutrition.py tests/test_analyze.py tests/test_parse_text.py tests/test_multi_image_api.py tests/test_matching_similarity.py",
+    "passed": 121,
+    "failed": 0,
+    "duration_seconds": 14.8
+  },
+  "compileall": "passed for changed Python files, including the display followup",
   "git_diff_check": "passed",
   "deployment": "Parent coordinator must confirm Linux CI, merge, and AWS deployment separately."
 }

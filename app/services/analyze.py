@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import time
 
 from app.core.config import get_settings
@@ -102,6 +103,7 @@ def _bbox_of(cand) -> BoundingBox | None:
 # '개' 는 봉지 속 낱개(미니샌드 4개)일 수도 있어 1개일 때만 포장으로 본다 — 4개 × 봉지 100g = 1,560kcal 사고(2026-10-06 평가)
 CONTAINER_UNITS = frozenset({"캔", "병"})
 _NUTRIENTS = ("calories", "carbs", "protein", "fat")
+_PACKAGE_SIZE_UNIT_RE = re.compile(r"\d+(?:\.\d+)?\s*(kg|ml|g|l)\b", re.IGNORECASE)
 
 
 @dataclass
@@ -221,6 +223,28 @@ def resolve_nutrition(cand, matched) -> ResolvedNutrition:
         grams_per_unit=round(grams / float(count), 2) if (count and grams) else None,
         per_100g={k: round(v, 2) for k, v in density.items()} if density else None, sources=sources,
     )
+
+
+def _package_for_response(package, resolved: ResolvedNutrition) -> PackageInfo | None:
+    """포장 원본은 유지하고 기존 앱이 읽는 1표시단위 용량만 맞춘다."""
+    if package is None:
+        return None
+    response = PackageInfo(**package.model_dump())
+    if not resolved.count or not resolved.grams:
+        return response
+    per_unit = resolved.grams / resolved.count
+    if response.size_g is not None and math.isclose(per_unit, response.size_g, abs_tol=0.1):
+        return response
+    # FE 는 size_text 를 '1개/1캔'의 기준으로 읽는다. 봉지 전체나 반올림 전
+    # 개수의 용량을 쓰면 kcal 기준과 어긋난다. g↔ml 는 추측하지 않는다.
+    units = {
+        "ml" if unit.lower() in {"ml", "l"} else "g"
+        for unit in _PACKAGE_SIZE_UNIT_RE.findall(response.size_text or "")
+    }
+    response.size_text = (
+        f"{round(per_unit, 2):g}{units.pop()}" if len(units) == 1 else None
+    )
+    return response
 
 
 def _save_call_log(
@@ -464,7 +488,7 @@ def _postprocess(
                 nutrition_source=resolved.source,
                 matched_name=matched.name if matched else None,
                 per_100g=NutritionPer100g(**resolved.per_100g) if resolved.per_100g else None,
-                package=PackageInfo(**package.model_dump()) if package is not None else None,
+                package=_package_for_response(package, resolved),
                 label_sources=resolved.sources,
             )
         )

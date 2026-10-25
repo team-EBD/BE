@@ -43,12 +43,30 @@ AI 계약의 `package.printed_kcal`는 **사진 속 포장 전체 열량**, `pac
 
 단위 테스트는 위 사례, 0.5/1.5/2.5개와 캔에서 호환 모드 전환 시 질량·영양 보존(기존 1단위 소수점 한 자리 반올림 허용), 잘못된 인쇄 열량의 폴백을 다룬다. 통합 테스트는 SQLite와 모의 AI로 이미지 분석 → 후보 저장 → 식단 저장까지 확인한다. 식단 저장 API에는 기존 계약대로 수량을 적용한 영양 합계를 전달한다.
 
+### 후속 교차 검토: 앱 표시 기준량
+
+초기 계산 수정 후에도 구 앱이 `package.size_text`를 1단위 용량으로 우선 표시하는 경로에서 불일치가 남았다. 예를 들어 반개45g의135 kcal는 계산이 맞지만 포장 원문90g 때문에 화면에 `1개 90g`으로 보였다. 내부 낱개4개120g도 전체 포장의100g 대신 1개30g을 표시해야 한다.
+
+응답 생성 시에만 `size_text`를 표시 수량당 g/ml에 맞췄다. 원문에서 단위가 명확할 때만 같은 차원의 단위로 정규화한다(kg→g, L→ml). g↔ml를 추정 변환하지 않는다. 원문 단위를 확인할 수 없으면 `size_text=None`으로 내려 기존 앱의 계산 기준량 표기를 사용한다. `size_g`가 없어도 원문 단위와 섭취 g/표시 개수가 있으면 정규화한다. 기존에 크기가 맞는 포장과 개수 없는 음식은 원래 표기를 유지한다.
+
+FE 파일은 수정하지 않았다. `run_display_experiment.py`는 실제 `candidateToFood.js`와 `servingBasis.js`를 읽어 Node에서 실행한다. [display_cases.json](display_cases.json) 합성12개에서 초기 계산 수정 상태의 표시4/12 → 표시 정합성 수정 후12/12를 확인했다. [display_results.json](display_results.json)에 원문·응답·실제 FE 표시·사용한 FE 소스 해시를 남겼다. **기존 열량 실험18개 결과(9→18)는 변하지 않았다.**
+
+| 사례 | 이전 앱 표시 | 수정 후 앱 표시 |
+| --- | --- | --- |
+| 90g 포장 반개, 구 앱 표시 개수1 | 1개90g | 1개45g |
+| 100g 포장의 내부 낱개, 4개총120g | 1개100g | 1개30g |
+| 355ml 캔 반개, 구 앱 표시 개수1 | 1캔355ml | 1캔177.5ml |
+| 정상 캔2개총710ml | 1캔355ml | 1캔355ml |
+
+AI 입력의 `cand.package` 객체, 응답의 `size_g`·브랜드·제품명·변형·`label_text`는 변하지 않으며 응답 필드를 추가하지 않았다. 다만 **성공한 분석의 원문 `size_text`를 DB에 영구 보존하는 경로는 현재 없다**. `FoodCandidate`는 g·개수·출처를, `AiCallLog`는 호출 메타데이터를 저장한다. AI의 `response_logging`도 실패 시 안전화된 응답 일부만 남긴다. 이번 변경에서 메모리 원본을 보존한다는 사실을 영구 원본 로그 보존으로 해석하면 안 된다.
+
 ## 재현
 
 BE 루트에서 실행한다. 외부 AI 호출이나 운영 DB 연결 없이 실행된다. 실험은 `DATABASE_URL=sqlite://`를 프로세스 내부에서 설정한다. 과거 비교는 git에서 **계산 함수만** 읽어 실행하며 체크아웃과 파일 변경을 하지 않는다.
 
 ```powershell
 venv/Scripts/python experiments/packaged_nutrition_20261025/run.py
+venv/Scripts/python experiments/packaged_nutrition_20261025/run_display_experiment.py --fe-root ../FE
 venv/Scripts/python -m pytest -q -p no:cacheprovider tests/test_packaged_nutrition.py tests/test_analyze.py tests/test_parse_text.py tests/test_multi_image_api.py tests/test_matching_similarity.py
 ```
 
@@ -65,4 +83,4 @@ venv/Scripts/python -m pytest -q -p no:cacheprovider tests/test_packaged_nutriti
 
 초기 작업 브랜치 `5f16c67` 전체 테스트: 1,151 통과 / 5 건너뜀 / 4 실패. 게임 XP 관련 2건은 최신 main에 이미 있던 수정으로 해결된 상태이므로 이번 작업 성과가 아니다. 최신 main에서 재검사한 Windows 전용 경로 비교 실패 2건(`tests/test_scripts_container_paths.py`)은 변경 전에도 발생한다. 이 파일은 수정하지 않았다. 배포는 기존 Linux CI의 pytest와 Postgres 마이그레이션 게이트를 통과해야 한다.
 
-변경 후 관련 회귀·통합 테스트109개 통과. 전체 테스트는1,268 통과 / 5 건너뜀 / 위의 기존 Windows 경로 비교2 실패였으며 신규 실패는 없었다. `compileall`과 `git diff --check`도 통과했다. 자세한 명령·환경 구분은 [validation.json](validation.json)에 기록했다. Linux CI와 실제 배포 성공 여부는 이 로컬 실험 결과와 별도로 확인한다.
+초기 계산 수정 후 관련 회귀·통합 테스트109개 통과. 당시 전체 테스트는1,268 통과 / 5 건너뜀 / 위의 기존 Windows 경로 비교2 실패였으며 신규 실패는 없었다. 후속 표시 정합성 수정 뒤 관련 테스트121개와 실제 FE 함수 실행12사례가 통과했다. `compileall`과 `git diff --check`도 통과했다. 자세한 명령·환경 구분은 [validation.json](validation.json)에 기록했다. Linux CI와 실제 배포 성공 여부는 이 로컬 실험 결과와 별도로 확인한다.

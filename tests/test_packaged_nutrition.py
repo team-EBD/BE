@@ -12,11 +12,37 @@ from app.ai_client.base import AICallLogPayload, AICandidate, AnalyzeResult
 from app.core.config import get_settings
 from app.main import app
 from app.models import FoodCandidate
-from app.services.analyze import resolve_nutrition
+from app.services.analyze import _package_for_response, resolve_nutrition
 
 
 CASES = json.loads((Path(__file__).resolve().parents[1]
                    / "experiments/packaged_nutrition_20261025/cases.json").read_text(encoding="utf-8"))
+DISPLAY_CASES = json.loads((Path(__file__).resolve().parents[1]
+                           / "experiments/packaged_nutrition_20261025/display_cases.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("case", DISPLAY_CASES, ids=lambda case: case["id"])
+def test_response_package_text_matches_display_unit_without_mutating_original(case, monkeypatch):
+    base = next(item for item in CASES if item["id"] == case["nutrition_case"])
+    monkeypatch.setattr(get_settings(), "count_half_steps", base.get("half_steps", False))
+    package = {
+        **base["candidate"].get("package", {}), "size_text": case["size_text"],
+        "brand": "synthetic brand", "product_name": "synthetic food",
+        "variant": "original variant", "label_text": "original label",
+    }
+    if "package_size_g" in case:
+        package["size_g"] = case["package_size_g"]
+    candidate = AICandidate(food_name="합성 검증 음식", confidence=0.9,
+                            **{**base["candidate"], "package": package})
+    original = candidate.package.model_dump()
+    matched = SimpleNamespace(**base["matched"]) if "matched" in base else None
+    resolved = resolve_nutrition(candidate, matched)
+    response = _package_for_response(candidate.package, resolved)
+
+    assert response.size_text == case["expected_size_text"]
+    assert candidate.package.model_dump() == original
+    for field in ("size_g", "brand", "product_name", "variant", "label_text"):
+        assert getattr(response, field) == original[field]
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case["id"])
@@ -72,15 +98,16 @@ def test_invalid_printed_energy_uses_density_fallback(printed_kcal):
 def test_packaged_calories_flow_through_analysis_and_meal_save(client, auth_headers, db_factory, monkeypatch):
     monkeypatch.setattr(get_settings(), "count_half_steps", False)
     selected = [CASES[index] for index in (0, 3, 7)]
+    raw_candidates = [AICandidate(
+        food_name=f"합성검증음식{index}", confidence=0.9, food_index=index,
+        **{**case["candidate"], "package": {**case["candidate"]["package"], "size_text": size_text}},
+    ) for index, (case, size_text) in enumerate(zip(selected, ("100g", "90g", "355ml"), strict=True))]
 
     class PackageAI:
         def analyze(self, *args, **kwargs):
             return AnalyzeResult(
                 status="success",
-                candidates=[AICandidate(
-                    food_name=f"합성검증음식{index}", confidence=0.9, food_index=index,
-                    **case["candidate"],
-                ) for index, case in enumerate(selected)],
+                candidates=raw_candidates,
                 ai_call_log=AICallLogPayload(task_type="analyze", status="success"),
             )
 
@@ -94,6 +121,8 @@ def test_packaged_calories_flow_through_analysis_and_meal_save(client, auth_head
                            json={"meal_image_id": image["meal_image_id"]})
     assert response.status_code == 200, response.text
     body = response.json()
+    assert [candidate["package"]["size_text"] for candidate in body["candidates"]] == ["30g", "45g", "355ml"]
+    assert [candidate.package.size_text for candidate in raw_candidates] == ["100g", "90g", "355ml"]
     items = []
     with db_factory() as db:
         for candidate, expected in zip(body["candidates"], selected, strict=True):
