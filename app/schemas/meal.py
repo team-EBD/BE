@@ -96,9 +96,10 @@ class PackageInfo(BaseModel):
     brand: str | None = None
     product_name: str | None = None
     variant: str | None = None
+    # 기존 앱의 1표시단위 용량. 포장 전체와 다르면 응답에서만 g/ml 로 환산한다.
     size_text: str | None = None
     label_text: str | None = None
-    size_g: float | None = None
+    size_g: float | None = None  # 사진에서 읽은 포장 전체 용량(g/ml), 표시용 환산과 무관
 
 
 class HabitAdjusted(BaseModel):

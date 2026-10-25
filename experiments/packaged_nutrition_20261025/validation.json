@@ -1,0 +1,58 @@
+{
+  "date": "2026-10-25",
+  "environment": "Windows, repository venv, SQLite in-memory, mocked AI and storage",
+  "production_database_used": false,
+  "external_ai_requests": 0,
+  "starting_user_branch_baseline": {
+    "commit": "5f16c67",
+    "command": "venv/Scripts/python -m pytest -q",
+    "passed": 1151,
+    "failed": 4,
+    "skipped": 5,
+    "note": "Two game XP failures were already fixed in origin/main. Two Windows path failures persist."
+  },
+  "latest_main_baseline_check": {
+    "commit": "dc11453426a3db365fc12321ec1e49f9705e23fb",
+    "command": "venv/Scripts/python -m pytest -q -p no:cacheprovider tests/test_analyze.py tests/test_matching_similarity.py tests/test_ai_client_real.py tests/test_game.py::test_meal_create_returns_rewards tests/test_game.py::test_photo_meal_gives_more_xp tests/test_scripts_container_paths.py",
+    "passed": 34,
+    "failed": 2,
+    "note": "Confirmed the same two Windows path failures before implementation."
+  },
+  "related_tests_after": {
+    "command": "venv/Scripts/python -m pytest -q -p no:cacheprovider tests/test_packaged_nutrition.py tests/test_analyze.py tests/test_parse_text.py tests/test_multi_image_api.py tests/test_matching_similarity.py",
+    "passed": 109,
+    "failed": 0,
+    "duration_seconds": 13.9
+  },
+  "full_suite_after": {
+    "scope": "Initial calorie fix, commit 4f9fe1c; before the later response-display adjustment",
+    "command": "venv/Scripts/python -m pytest -q -p no:cacheprovider --tb=short",
+    "passed": 1268,
+    "failed": 2,
+    "skipped": 5,
+    "duration_seconds": 150.19,
+    "existing_failures": [
+      "tests/test_scripts_container_paths.py::test_workspace_ref_local_layout_points_outside_repo",
+      "tests/test_scripts_container_paths.py::test_workspace_ref_container_layout_does_not_raise"
+    ],
+    "failure_reason": "Windows resolve() adds a drive to POSIX-shaped fixture paths; expected paths omit it. Reproduced before changes."
+  },
+  "display_followup": {
+    "command": "venv/Scripts/python experiments/packaged_nutrition_20261025/run_display_experiment.py --fe-root ../FE",
+    "synthetic_cases": 12,
+    "before_passed": 4,
+    "after_passed": 12,
+    "fe_source_modified": false,
+    "input_package_mutated": false,
+    "note": "Runs the actual candidateToFood and servingBasisText functions, including ml and missing-size_g cases."
+  },
+  "related_tests_after_display_followup": {
+    "command": "venv/Scripts/python -m pytest -q -p no:cacheprovider tests/test_packaged_nutrition.py tests/test_analyze.py tests/test_parse_text.py tests/test_multi_image_api.py tests/test_matching_similarity.py",
+    "passed": 121,
+    "failed": 0,
+    "duration_seconds": 14.8
+  },
+  "compileall": "passed for changed Python files, including the display followup",
+  "git_diff_check": "passed",
+  "deployment": "Parent coordinator must confirm Linux CI, merge, and AWS deployment separately."
+}

@@ -1,0 +1,356 @@
+{
+  "experiment": "packaged_nutrition_20261025",
+  "data_type": "synthetic contract cases; not image recognition accuracy",
+  "baseline_commit": "dc11453426a3db365fc12321ec1e49f9705e23fb",
+  "before_function_sha256": "87e5765f20fa4ccc9db54d552c2684e62c07a721db29c40598419561a33649d7",
+  "after_function_sha256": "37d0dba2dbeae92c14332c6a40720f3ccf6afc70e3f68b51c856dd3655ad0774",
+  "case_file_sha256": "02f0905225499a68bd9efa068962fbf9a04c49f644db22bbd65ca9157d7629f6",
+  "cases": 18,
+  "before_passed": 9,
+  "after_passed": 18,
+  "regressions": [],
+  "results": [
+    {
+      "id": "pieces_from_larger_package",
+      "hypothesis": "package_basis",
+      "expected_total_kcal": 468,
+      "before": {
+        "total_kcal": 1560.0,
+        "grams": 120.0,
+        "source": "printed",
+        "display_count": 4.0,
+        "passed": false
+      },
+      "after": {
+        "total_kcal": 468.0,
+        "grams": 120.0,
+        "source": "printed",
+        "display_count": 4.0,
+        "passed": true
+      }
+    },
+    {
+      "id": "chocolate_squares",
+      "hypothesis": "package_basis",
+      "expected_total_kcal": 180,
+      "before": {
+        "total_kcal": 1620.0,
+        "grams": 30.0,
+        "source": "printed",
+        "display_count": 3.0,
+        "passed": false
+      },
+      "after": {
+        "total_kcal": 180.0,
+        "grams": 30.0,
+        "source": "printed",
+        "display_count": 3.0,
+        "passed": true
+      }
+    },
+    {
+      "id": "ambiguous_pieces_without_package_mass",
+      "hypothesis": "package_basis",
+      "expected_total_kcal": 60,
+      "before": {
+        "total_kcal": 1600.0,
+        "grams": 40.0,
+        "source": "printed",
+        "display_count": 4.0,
+        "passed": false
+      },
+      "after": {
+        "total_kcal": 60.0,
+        "grams": 40.0,
+        "source": "ai",
+        "display_count": 4.0,
+        "passed": true
+      }
+    },
+    {
+      "id": "half_package_legacy_count",
+      "hypothesis": "count_compatibility",
+      "expected_total_kcal": 135,
+      "before": {
+        "total_kcal": 270.0,
+        "grams": 90.0,
+        "source": "printed",
+        "display_count": 1.0,
+        "passed": false
+      },
+      "after": {
+        "total_kcal": 135.0,
+        "grams": 45.0,
+        "source": "printed",
+        "display_count": 1.0,
+        "passed": true
+      }
+    },
+    {
+      "id": "one_and_half_packages_legacy_count",
+      "hypothesis": "count_compatibility",
+      "expected_total_kcal": 405,
+      "before": {
+        "total_kcal": 540.0,
+        "grams": 135.0,
+        "source": "printed",
+        "display_count": 2.0,
+        "passed": false
+      },
+      "after": {
+        "total_kcal": 405.0,
+        "grams": 135.0,
+        "source": "printed",
+        "display_count": 2.0,
+        "passed": true
+      }
+    },
+    {
+      "id": "half_can_legacy_count",
+      "hypothesis": "count_compatibility",
+      "expected_total_kcal": 70,
+      "before": {
+        "total_kcal": 140.0,
+        "grams": 355.0,
+        "source": "printed",
+        "display_count": 1.0,
+        "passed": false
+      },
+      "after": {
+        "total_kcal": 70.0,
+        "grams": 177.5,
+        "source": "printed",
+        "display_count": 1.0,
+        "passed": true
+      }
+    },
+    {
+      "id": "one_and_half_cans_legacy_count",
+      "hypothesis": "count_compatibility",
+      "expected_total_kcal": 210,
+      "before": {
+        "total_kcal": 280.0,
+        "grams": 710.0,
+        "source": "printed",
+        "display_count": 2.0,
+        "passed": false
+      },
+      "after": {
+        "total_kcal": 210.0,
+        "grams": 532.5,
+        "source": "printed",
+        "display_count": 2.0,
+        "passed": true
+      }
+    },
+    {
+      "id": "explicit_zero_calorie_package",
+      "hypothesis": "zero_calorie",
+      "expected_total_kcal": 0,
+      "before": {
+        "total_kcal": 149.1,
+        "grams": 355.0,
+        "source": "ai",
+        "display_count": 1.0,
+        "passed": false
+      },
+      "after": {
+        "total_kcal": 0.0,
+        "grams": 355.0,
+        "source": "printed",
+        "display_count": 1.0,
+        "passed": true
+      }
+    },
+    {
+      "id": "explicit_zero_without_density",
+      "hypothesis": "zero_calorie",
+      "expected_total_kcal": 0,
+      "before": {
+        "total_kcal": null,
+        "grams": 355.0,
+        "source": "none",
+        "display_count": 1.0,
+        "passed": false
+      },
+      "after": {
+        "total_kcal": 0.0,
+        "grams": 355.0,
+        "source": "printed",
+        "display_count": 1.0,
+        "passed": true
+      }
+    },
+    {
+      "id": "one_small_wrapper",
+      "hypothesis": "control",
+      "expected_total_kcal": 45,
+      "before": {
+        "total_kcal": 45.0,
+        "grams": 9.0,
+        "source": "printed",
+        "display_count": 1.0,
+        "passed": true
+      },
+      "after": {
+        "total_kcal": 45.0,
+        "grams": 9.0,
+        "source": "printed",
+        "display_count": 1.0,
+        "passed": true
+      }
+    },
+    {
+      "id": "two_small_wrappers",
+      "hypothesis": "control",
+      "expected_total_kcal": 90,
+      "before": {
+        "total_kcal": 90.0,
+        "grams": 18.0,
+        "source": "printed",
+        "display_count": 2.0,
+        "passed": true
+      },
+      "after": {
+        "total_kcal": 90.0,
+        "grams": 18.0,
+        "source": "printed",
+        "display_count": 2.0,
+        "passed": true
+      }
+    },
+    {
+      "id": "half_package_native_count",
+      "hypothesis": "control",
+      "expected_total_kcal": 135,
+      "before": {
+        "total_kcal": 135.0,
+        "grams": 45.0,
+        "source": "printed",
+        "display_count": 0.5,
+        "passed": true
+      },
+      "after": {
+        "total_kcal": 135.0,
+        "grams": 45.0,
+        "source": "printed",
+        "display_count": 0.5,
+        "passed": true
+      }
+    },
+    {
+      "id": "two_cans",
+      "hypothesis": "control",
+      "expected_total_kcal": 280,
+      "before": {
+        "total_kcal": 280.0,
+        "grams": 710.0,
+        "source": "printed",
+        "display_count": 2.0,
+        "passed": true
+      },
+      "after": {
+        "total_kcal": 280.0,
+        "grams": 710.0,
+        "source": "printed",
+        "display_count": 2.0,
+        "passed": true
+      }
+    },
+    {
+      "id": "two_cans_without_package_mass",
+      "hypothesis": "control",
+      "expected_total_kcal": 280,
+      "before": {
+        "total_kcal": 280.0,
+        "grams": 710.0,
+        "source": "printed",
+        "display_count": 2.0,
+        "passed": true
+      },
+      "after": {
+        "total_kcal": 280.0,
+        "grams": 710.0,
+        "source": "printed",
+        "display_count": 2.0,
+        "passed": true
+      }
+    },
+    {
+      "id": "one_wrapper_without_package_mass",
+      "hypothesis": "control",
+      "expected_total_kcal": 45,
+      "before": {
+        "total_kcal": 45.0,
+        "grams": 9.0,
+        "source": "printed",
+        "display_count": 1.0,
+        "passed": true
+      },
+      "after": {
+        "total_kcal": 45.0,
+        "grams": 9.0,
+        "source": "printed",
+        "display_count": 1.0,
+        "passed": true
+      }
+    },
+    {
+      "id": "cup_keeps_density_calculation",
+      "hypothesis": "control",
+      "expected_total_kcal": 180,
+      "before": {
+        "total_kcal": 180.0,
+        "grams": 300.0,
+        "source": "ai",
+        "display_count": 1.0,
+        "passed": true
+      },
+      "after": {
+        "total_kcal": 180.0,
+        "grams": 300.0,
+        "source": "ai",
+        "display_count": 1.0,
+        "passed": true
+      }
+    },
+    {
+      "id": "bowl_keeps_database_density",
+      "hypothesis": "control",
+      "expected_total_kcal": 560,
+      "before": {
+        "total_kcal": 560.0,
+        "grams": 560.0,
+        "source": "db",
+        "display_count": null,
+        "passed": true
+      },
+      "after": {
+        "total_kcal": 560.0,
+        "grams": 560.0,
+        "source": "db",
+        "display_count": null,
+        "passed": true
+      }
+    },
+    {
+      "id": "legacy_serving_contract",
+      "hypothesis": "control",
+      "expected_total_kcal": 260,
+      "before": {
+        "total_kcal": 260.0,
+        "grams": null,
+        "source": "ai_serving",
+        "display_count": null,
+        "passed": true
+      },
+      "after": {
+        "total_kcal": 260.0,
+        "grams": null,
+        "source": "ai_serving",
+        "display_count": null,
+        "passed": true
+      }
+    }
+  ]
+}

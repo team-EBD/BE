@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import logging
+import math
+import re
 import time
 
 from app.core.config import get_settings
@@ -101,6 +103,7 @@ def _bbox_of(cand) -> BoundingBox | None:
 # '개' 는 봉지 속 낱개(미니샌드 4개)일 수도 있어 1개일 때만 포장으로 본다 — 4개 × 봉지 100g = 1,560kcal 사고(2026-10-06 평가)
 CONTAINER_UNITS = frozenset({"캔", "병"})
 _NUTRIENTS = ("calories", "carbs", "protein", "fat")
+_PACKAGE_SIZE_UNIT_RE = re.compile(r"\d+(?:\.\d+)?\s*(kg|ml|g|l)\b", re.IGNORECASE)
 
 
 @dataclass
@@ -130,6 +133,8 @@ def resolve_nutrition(cand, matched) -> ResolvedNutrition:
     unit = getattr(cand, "count_unit", None)
     if not count or not unit:  # 둘 다 있어야 낱개
         count = unit = None
+    # 구 앱용 표시 개수 반올림이 실제 섭취량까지 바꾸면 안 된다.
+    observed_count = count
     if count and not get_settings().count_half_steps and float(count) != int(float(count)):
         # 구 앱 호환: 0.5 단위는 정수로 접는다(최소 1). g 은 그대로라 kcal 은 변하지 않고 1단위 값만 달라진다
         count = max(1, int(round(float(count))))
@@ -151,25 +156,35 @@ def resolve_nutrition(cand, matched) -> ResolvedNutrition:
 
     # 2) 양 — 포장 용량을 알면 그것 × 개수, 아니면 AI 가 본 g. 둘 다 없고 매칭 행이 있으면 구 방식(배수 × 기준량)
     #    사진에서 읽은 용량(40g 파우치)이 검색이 찾은 용량(280g 7개입 묶음)보다 우선 — 사진 속 포장이 기준이다
-    package_size = (getattr(package, "size_g", None) if package is not None else None) or (
+    printed_size = getattr(package, "size_g", None) if package is not None else None
+    package_size = printed_size or (
         getattr(label, "package_size_g", None) if label is not None else None
     )
-    if package_size and (unit is None or unit in CONTAINER_UNITS or (unit == "개" and float(count or 1.0) == 1.0)):
-        grams = float(package_size) * float(count or 1.0)
+    if package_size and (unit is None or unit in CONTAINER_UNITS or (unit == "개" and float(observed_count or 1.0) == 1.0)):
+        grams = float(package_size) * float(observed_count or 1.0)
     if grams is None and matched is not None and matched.base_amount:
         grams = float(matched.base_amount) * float(getattr(cand, "estimated_serving", 1.0) or 1.0)
     grams = round(float(grams), 1) if grams else None
 
-    # 3) 영양값 — 포장에 인쇄된 열량("9g(45 kcal)")이 읽혔으면 그것이 가장 정확하다: kcal 은 인쇄값 × 개수,
-    #    탄단지는 밀도 × g (g 을 모르면 밀도 비율로 인쇄 kcal 에 맞춘다)
+    # 3) 인쇄 열량은 사진 속 포장 전체 기준이다. 봉지 속 낱개 수를 곱하지 않고
+    #    같은 포장에 적힌 g 대비 섭취 g 로 환산한다. 검색 결과의 묶음 용량과 섞지 않는다.
+    #    포장 g 가 없고 여러 '개'라면 단위가 불명확하므로 기존 밀도 계산으로 폴백한다.
     nutrition: CandidateNutrition | None = None
     printed = getattr(package, "printed_kcal", None) if package is not None else None
-    if printed and (unit is None or unit in CONTAINER_UNITS or unit == "개"):
+    printed_total = None
+    if printed is not None and math.isfinite(printed) and printed >= 0 and (
+        unit is None or unit in CONTAINER_UNITS or unit == "개"
+    ):
+        if printed_size and printed_size > 0 and grams:
+            printed_total = printed * grams / float(printed_size)
+        elif unit in CONTAINER_UNITS or observed_count is None or observed_count <= 1:
+            printed_total = printed * float(observed_count or 1.0)
+    if printed_total is not None:  # 명시된 0 kcal 도 유효한 표시값이다.
         units = float(count or 1.0)
         if density is not None and grams:
             macros = {k: density[k] * grams / 100.0 for k in ("carbs", "protein", "fat")}
         elif density is not None and density.get("calories"):
-            ratio = printed * units / density["calories"]  # 인쇄 kcal 에 해당하는 g/100
+            ratio = printed_total / density["calories"]  # 인쇄 kcal 에 해당하는 g/100
             macros = {k: density[k] * ratio for k in ("carbs", "protein", "fat")}
         else:
             macros = {k: 0.0 for k in ("carbs", "protein", "fat")}
@@ -177,7 +192,7 @@ def resolve_nutrition(cand, matched) -> ResolvedNutrition:
         size_txt = f"({grams / units:g}g)" if grams else ""
         nutrition = CandidateNutrition(
             base_serving=(f"1{unit}{size_txt}" if count else f"포장 1개{size_txt}"),
-            calories=round(printed, 1), **{k: round(v / per_div, 1) for k, v in macros.items()},
+            calories=round(printed_total / per_div, 1), **{k: round(v / per_div, 1) for k, v in macros.items()},
         )
         source = "printed"
         return ResolvedNutrition(
@@ -208,6 +223,28 @@ def resolve_nutrition(cand, matched) -> ResolvedNutrition:
         grams_per_unit=round(grams / float(count), 2) if (count and grams) else None,
         per_100g={k: round(v, 2) for k, v in density.items()} if density else None, sources=sources,
     )
+
+
+def _package_for_response(package, resolved: ResolvedNutrition) -> PackageInfo | None:
+    """포장 원본은 유지하고 기존 앱이 읽는 1표시단위 용량만 맞춘다."""
+    if package is None:
+        return None
+    response = PackageInfo(**package.model_dump())
+    if not resolved.count or not resolved.grams:
+        return response
+    per_unit = resolved.grams / resolved.count
+    if response.size_g is not None and math.isclose(per_unit, response.size_g, abs_tol=0.1):
+        return response
+    # FE 는 size_text 를 '1개/1캔'의 기준으로 읽는다. 봉지 전체나 반올림 전
+    # 개수의 용량을 쓰면 kcal 기준과 어긋난다. g↔ml 는 추측하지 않는다.
+    units = {
+        "ml" if unit.lower() in {"ml", "l"} else "g"
+        for unit in _PACKAGE_SIZE_UNIT_RE.findall(response.size_text or "")
+    }
+    response.size_text = (
+        f"{round(per_unit, 2):g}{units.pop()}" if len(units) == 1 else None
+    )
+    return response
 
 
 def _save_call_log(
@@ -451,7 +488,7 @@ def _postprocess(
                 nutrition_source=resolved.source,
                 matched_name=matched.name if matched else None,
                 per_100g=NutritionPer100g(**resolved.per_100g) if resolved.per_100g else None,
-                package=PackageInfo(**package.model_dump()) if package is not None else None,
+                package=_package_for_response(package, resolved),
                 label_sources=resolved.sources,
             )
         )
