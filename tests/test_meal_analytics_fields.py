@@ -2,6 +2,7 @@
 슬라이더 양 조정 correction_logs (2026-09-11)."""
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import func, select
 
 from app.models import AiCallLog, CorrectionLog, FoodCandidate, MealItem, MealRecord
@@ -205,3 +206,75 @@ def test_update_also_tolerates_local_candidate_key(client, auth_headers):
         json={"items": [_item(food_candidate_id="manual-2")]},
     )
     assert res.status_code == 200, res.text
+
+
+@pytest.mark.parametrize("candidate_count", [1, 2])
+def test_missing_call_id_links_one_owned_candidate_call(client, auth_headers, db_factory, candidate_count):
+    log_id, ids = _seed_draft(db_factory, _me(client, auth_headers))
+    meal_id = create_meal(client, auth_headers, {
+        **MEAL_PAYLOAD, "items": [_item(food_candidate_id=cid) for cid in ids[:candidate_count]],
+    })["meal_id"]
+    with db_factory() as db:
+        meal = db.get(MealRecord, meal_id)
+        assert meal.ai_call_log_id == log_id
+        assert meal.entry_method is None  # 출처 관계만 보존하며 입력 방식은 추측하지 않는다
+        assert db.get(AiCallLog, log_id).is_tutorial is None
+
+
+@pytest.mark.parametrize("case", [
+    "multiple_calls", "foreign_candidate", "missing_candidate", "null_parent",
+    "unknown_owner", "manual_key", "missing_candidate_id",
+])
+def test_missing_call_id_does_not_guess_ambiguous_source(client, auth_headers, db_factory, case):
+    user_id = _me(client, auth_headers)
+    _, ids = _seed_draft(db_factory, user_id)
+    first = ids[0]
+    if case == "multiple_calls":
+        _, others = _seed_draft(db_factory, user_id)
+        second = others[0]
+    elif case == "foreign_candidate":
+        other = {"Authorization": f"Bearer {login(client, 'linkage-other')['access_token']}"}
+        _, others = _seed_draft(db_factory, _me(client, other))
+        second = others[0]
+    elif case == "missing_candidate":
+        second = 999_999
+    elif case in {"null_parent", "unknown_owner"}:
+        second = ids[1]
+        with db_factory() as db:
+            candidate = db.get(FoodCandidate, second)
+            if case == "null_parent":
+                candidate.ai_call_log_id = None
+            else:
+                db.get(AiCallLog, candidate.ai_call_log_id).user_id = None
+            db.commit()
+    elif case == "manual_key":
+        second = "manual-1"
+    else:
+        second = None
+    meal_id = create_meal(client, auth_headers, {
+        **MEAL_PAYLOAD,
+        "items": [_item(food_candidate_id=first), _item(food_candidate_id=second)],
+    })["meal_id"]
+    with db_factory() as db:
+        assert db.get(MealRecord, meal_id).ai_call_log_id is None
+
+
+@pytest.mark.parametrize("explicit", ["owned", "missing", "foreign"])
+def test_explicit_call_id_keeps_existing_behavior(client, auth_headers, db_factory, explicit):
+    user_id = _me(client, auth_headers)
+    _, ids = _seed_draft(db_factory, user_id)
+    if explicit == "owned":
+        explicit_id, _ = _seed_draft(db_factory, user_id)
+        expected = explicit_id
+    elif explicit == "foreign":
+        other = {"Authorization": f"Bearer {login(client, 'explicit-other')['access_token']}"}
+        explicit_id, _ = _seed_draft(db_factory, _me(client, other))
+        expected = None
+    else:
+        explicit_id, expected = 999_999, None
+    meal_id = create_meal(client, auth_headers, {
+        **MEAL_PAYLOAD, "ai_call_log_id": explicit_id,
+        "items": [_item(food_candidate_id=ids[0])],
+    })["meal_id"]
+    with db_factory() as db:
+        assert db.get(MealRecord, meal_id).ai_call_log_id == expected

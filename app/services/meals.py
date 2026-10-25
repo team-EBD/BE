@@ -121,6 +121,30 @@ def _owned_candidate(db: Session, user: User, candidate_id: int) -> FoodCandidat
     return cand
 
 
+def _candidate_ai_call_log_id(db: Session, user: User, items: list[MealItemInput]) -> int | None:
+    """모든 항목이 같은 소유 호출의 후보일 때만 생략된 초안 연결 키를 보완한다.
+
+    직접 검색·구 앱의 출처 없는 항목이 섞이면 추측하지 않는다. 채택 여부나 입력
+    방식은 판단하지 않으며, 명시된 호출 ID 의 검증 동작은 바꾸지 않는다.
+    """
+    call_log_ids: set[int] = set()
+    if not items:
+        return None
+    for item in items:
+        if item.food_candidate_id is None:
+            return None
+        candidate = _owned_candidate(db, user, item.food_candidate_id)
+        if candidate is None or candidate.ai_call_log_id is None:
+            return None
+        log = db.get(AiCallLog, candidate.ai_call_log_id)
+        if log is None or log.user_id != user.id:
+            return None
+        call_log_ids.add(log.id)
+        if len(call_log_ids) > 1:
+            return None
+    return next(iter(call_log_ids))
+
+
 def _mark_selected_candidates(db: Session, user: User, items: list[MealItemInput]) -> None:
     """저장 항목이 가리키는 AI 후보를 is_selected=True 로 — 정답지(AI 채택률)의 원천.
 
@@ -256,7 +280,11 @@ def create_meal(
         is_skipped=body.is_skipped,
         memo=body.memo,
         entry_method=body.entry_method,
-        ai_call_log_id=_owned_ai_call_log_id(db, user, body.ai_call_log_id),
+        ai_call_log_id=(
+            _owned_ai_call_log_id(db, user, body.ai_call_log_id)
+            if body.ai_call_log_id is not None
+            else _candidate_ai_call_log_id(db, user, body.items)
+        ),
         total_calories=totals["calories"],
         total_carbs=totals["carbs"],
         total_protein=totals["protein"],
