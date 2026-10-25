@@ -16,9 +16,9 @@ from app.services.analyze import _package_for_response, resolve_nutrition
 
 
 CASES = json.loads((Path(__file__).resolve().parents[1]
-                   / "experiments/packaged_nutrition_20261025/cases.json").read_text(encoding="utf-8"))
+                   / "tests/fixtures/packaged_nutrition_cases.json").read_text(encoding="utf-8"))
 DISPLAY_CASES = json.loads((Path(__file__).resolve().parents[1]
-                           / "experiments/packaged_nutrition_20261025/display_cases.json").read_text(encoding="utf-8"))
+                           / "tests/fixtures/packaged_nutrition_display_cases.json").read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize("case", DISPLAY_CASES, ids=lambda case: case["id"])
