@@ -10,10 +10,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import FoodGroup, FoodGroupAlias
+from app.models import FoodGroup, FoodGroupAlias, NutritionItem
 from app.services.matching import normalize_name
 
 ROLE_MEAL, ROLE_COMPANION, ROLE_SNACK, ROLE_EXCLUDE = "meal", "companion", "snack", "exclude"
@@ -33,6 +33,11 @@ class GroupInfo:
     protein: float | None
     fat: float | None
     base_amount: float | None = None  # 군 1인분 대표량(g/ml) — 상품 기준량이 튈 때 인분 환산의 기준
+    # 1인분 대표 나트륨(mg)·당류(g)·포화지방(g) — per_serving 구성원 평균. 건강식 후보 판별에만 쓴다.
+    # 값이 없으면 None (원재료군·영양표 미기재). 대표값 컬럼으로 승격하기 전의 런타임 집계.
+    sodium: float | None = None
+    sugar: float | None = None
+    saturated_fat: float | None = None
 
     @property
     def has_macros(self) -> bool:
@@ -83,7 +88,28 @@ class GroupIndex:
         return self.by_id.get(g.companion_id)
 
 
+_NONE3 = (None, None, None)
+
+
+def _opt(value) -> float | None:
+    return float(value) if value is not None else None
+
+
+def _group_nutrients(db: Session) -> dict[int, tuple]:
+    """군별 1인분 구성원의 나트륨·당류·포화지방 평균. 값이 있는 구성원만 평균에 들어간다."""
+    return {
+        gid: (sodium, sugar, sat)
+        for gid, sodium, sugar, sat in db.execute(
+            select(NutritionItem.food_group_id, func.avg(NutritionItem.sodium),
+                   func.avg(NutritionItem.sugar), func.avg(NutritionItem.saturated_fat))
+            .where(NutritionItem.serving_basis == "per_serving", NutritionItem.food_group_id.isnot(None))
+            .group_by(NutritionItem.food_group_id)
+        )
+    }
+
+
 def load_group_index(db: Session) -> GroupIndex:
+    nutrients = _group_nutrients(db)
     groups = [
         GroupInfo(
             id=g.id,
@@ -97,6 +123,9 @@ def load_group_index(db: Session) -> GroupIndex:
             protein=float(g.protein) if g.protein is not None else None,
             fat=float(g.fat) if g.fat is not None else None,
             base_amount=float(g.base_amount) if g.base_amount is not None else None,
+            sodium=_opt(nutrients.get(g.id, _NONE3)[0]),
+            sugar=_opt(nutrients.get(g.id, _NONE3)[1]),
+            saturated_fat=_opt(nutrients.get(g.id, _NONE3)[2]),
         )
         for g in db.scalars(select(FoodGroup))
     ]

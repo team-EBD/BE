@@ -11,6 +11,7 @@ _HEAD = {
     "popular": "{meal}에 많이 기록되는 메뉴예요",
     "catalog": "{meal}에 무난한 기본 메뉴예요",
     "collaborative": "비슷한 메뉴를 기록한 다른 이용자들이 먹은 음식이에요",
+    "healthy": "{meal}에 가볍고 균형 잡힌 메뉴예요",
     "similar": "자주 드시는 {anchor}와 음식 특성이 비슷해요",
     "similar_type": "자주 드시는 {anchor} 같은 {kind}예요",
 }

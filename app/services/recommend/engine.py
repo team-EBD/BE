@@ -18,6 +18,7 @@ from .candidates import (
     Candidate,
     catalog_fallback,
     enrich_similarity,
+    healthy_candidates,
     merge,
     nutrient_similar,
     personal_frequent,
@@ -28,7 +29,7 @@ from .feedback import acceptance_rates, excluded_keys, provided_keys
 from .bandit import learn, select_cards
 from .collaborative import collaborative_candidates
 from .groups import ROLE_MEAL, GroupIndex, GroupInfo, load_group_index
-from .ranking import RankContext
+from .ranking import DIET_UNDER_BUDGET_PENALTY, UNDER_BUDGET_PENALTY, RankContext
 from .signals import (
     Budget,
     budget_label,
@@ -38,12 +39,15 @@ from .signals import (
     meal_budget,
     meal_type_for_hour,
     recency_penalties,
+    user_goal,
 )
 
 # 음식 유사 생성기의 기준(anchor) — 90일 안에 2번 이상 먹은 음식 중 감쇠 점수 상위 5개.
 # (점수 임계값 방식은 기록이 3주만 지나도 anchor 가 비어 유사 생성기가 꺼졌다 — 운영 미리보기)
 ANCHOR_MIN_COUNT = 2
 ANCHOR_TOP = 5
+# 건강식 후보·한 장 보장·미달 감점 완화를 적용하는 목표. 그 외 목표는 기존 동작과 동일하다.
+HEALTHY_GOALS = frozenset({"lose_weight", "eat_healthy"})
 
 
 @dataclass
@@ -136,6 +140,8 @@ def recommend(
     personal_companions = companion_stats(db, user_id, now=now, index=index) if index.enabled else {}
     companions = _companion_choices(index, personal_companions)
     options = {"meal_type": meal_type, "companions": companions}
+    goal = user_goal(db, user_id)
+    healthy_mode = settings.recommend_healthy_enabled and goal in HEALTHY_GOALS
     # 표시 수보다 넓게 모아 랭킹이 예산·최근 섭취·채택률을 비교할 기회를 남긴다.
     personal = personal_frequent(personal_stats, budget.meal_budget, top=max(24, k) + len(blocked), **options)
     # 즐겨 먹던 큰 메뉴는 현재 예산에 넘쳐도 더 가벼운 유사 메뉴의 기준이 될 수 있다.
@@ -157,7 +163,10 @@ def recommend(
         db, user_id, budget.meal_budget, now=now, index=index,
         exclude_keys=frozenset(blocked), top=max(15, k), **options,
     )
-    candidates = [c for c in merge(personal, pop, similar, collaborative) if c.key not in blocked]
+    healthy = healthy_candidates(
+        db, budget.meal_budget, index=index, exclude_keys=frozenset(blocked), **options,
+    ) if healthy_mode else []
+    candidates = [c for c in merge(personal, pop, similar, collaborative, healthy) if c.key not in blocked]
     enrich_similarity(candidates, anchors)
     if len(candidates) < k or (not anchors and not pop):
         candidates = merge(candidates, catalog_fallback(
@@ -178,15 +187,17 @@ def recommend(
         protein_gap=budget.protein_gap,
         recency=recency_penalties(db, user_id, now=now, index=index),
         acceptance=rates,
+        under_penalty=DIET_UNDER_BUDGET_PENALTY if healthy_mode else UNDER_BUDGET_PENALTY,
     )
     ranked, decision = select_cards(
         candidates, ctx, learn(db, now=now), meal_type=meal_type, mood=mood,
         k=k, epsilon=settings.recommend_bandit_epsilon, rng=rng,
-        surface=surface,
+        surface=surface, require_healthy=healthy_mode,
     )
+    decision["goal"] = goal
     decision["generator_counts"] = {
         "personal": len(personal), "popular": len(pop), "similar": len(similar),
-        "collaborative": len(collaborative),
+        "collaborative": len(collaborative), "healthy": len(healthy),
         "catalog": sum(c.source == "catalog" for c in candidates),
     }
     decision["excluded_count"] = len(blocked)

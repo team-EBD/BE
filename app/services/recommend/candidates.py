@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
@@ -57,7 +58,7 @@ class Candidate:
     carbs: float
     protein: float
     fat: float
-    source: str  # personal | popular | similar | collaborative | catalog (주된 생성 경로)
+    source: str  # personal | popular | similar | collaborative | catalog | healthy (주된 생성 경로)
     freq: float = 0.0
     popularity: float = 0.0  # 서로 다른 사용자의 시간 감쇠 지지 수
     similarity: float = 0.0
@@ -75,6 +76,10 @@ class Candidate:
     companion_personal: bool = False
     collaborative: float = 0.0  # 음식군 공동 섭취에 기반한 협업 점수 0~1
     collaborative_support: int = 0  # 해당 협업 관계를 뒷받침한 다른 사용자 수
+    sodium: float | None = None  # 메인 1인분 나트륨 mg (군 대표값, 없으면 None)
+    sugar: float | None = None  # 메인 1인분 당류 g
+    companion_sodium: float = 0.0
+    healthy: float = 0.0  # 건강식 생성기 근거 0~1 — 감량·건강 목표에서만 채운다
 
     @property
     def total_calories(self) -> float:
@@ -83,6 +88,10 @@ class Candidate:
     @property
     def total_protein(self) -> float:
         return self.protein + self.companion_protein
+
+    @property
+    def total_sodium(self) -> float | None:
+        return None if self.sodium is None else self.sodium + self.companion_sodium
 
 
 Companions = Mapping[str, GroupInfo | None]
@@ -121,13 +130,14 @@ def attach_companion(
     """대표값이 완비된 동반 역할만 붙인다. 합산 열량과 단백질은 랭킹에도 사용한다."""
     if companion is None or companion.role != ROLE_COMPANION or not companion.has_macros:
         cand.companion_key = cand.companion_name = None
-        cand.companion_kcal = cand.companion_protein = 0.0
+        cand.companion_kcal = cand.companion_protein = cand.companion_sodium = 0.0
         cand.companion_personal = False
         return cand
     cand.companion_key = companion.key
     cand.companion_name = companion.name
     cand.companion_kcal = float(companion.calories or 0.0)
     cand.companion_protein = float(companion.protein or 0.0)
+    cand.companion_sodium = float(companion.sodium or 0.0)
     cand.companion_personal = personal
     return cand
 
@@ -184,7 +194,7 @@ def _similarity_pool(db: Session, index: GroupIndex) -> list[Candidate]:
         return [
             Candidate(g.key, g.name, float(g.calories), float(g.carbs), float(g.protein),
                       float(g.fat), "catalog", group_id=g.id, group_name=g.name,
-                      family=g.family, role=g.role)
+                      family=g.family, role=g.role, sodium=g.sodium, sugar=g.sugar)
             for g in sorted(index.by_id.values(), key=lambda g: g.key)
             if g.has_macros and g.role in RECOMMENDABLE_ROLES
         ]
@@ -281,18 +291,86 @@ def catalog_fallback(
     # 실제 랭킹과 같은 비대칭 열량 적합도를 사용하되 개인 근거를 꾸미지 않는다.
     from .ranking import fit_score
     pool.sort(key=lambda c: (-fit_score(c.total_calories, budget_kcal), c.key))
-    # 한 계열의 세부 메뉴가 처음 top개를 독점하면 랭킹에서 다양성을 회복할 수 없다.
-    # 적합도가 높은 계열부터 하나씩 확보하고, 남은 자리는 다음 회차에서 채운다.
+    return _round_robin_by_family(pool, top)
+
+
+def _round_robin_by_family(pool: list[Candidate], top: int) -> list[Candidate]:
+    """한 계열의 세부 메뉴가 처음 top개를 독점하면 랭킹에서 다양성을 회복할 수 없다.
+
+    정렬된 pool 에서 계열마다 하나씩 확보하고, 남은 자리는 다음 회차에서 채운다.
+    """
     queues: dict[str, deque[Candidate]] = {}
     for cand in pool:
         kind = cand.family or _profile(cand).kind or cand.key
         queues.setdefault(kind, deque()).append(cand)
-    picked = []
+    picked: list[Candidate] = []
     while len(picked) < max(0, top) and any(queues.values()):
         for queue in queues.values():
             if queue and len(picked) < top:
                 picked.append(queue.popleft())
     return picked
+
+
+HEALTHY_TOP = 6
+MEAL_SODIUM_MAX = 700.0  # 1일 나트륨 권장 2,000 mg 의 한 끼 몫 (동반 밥 포함)
+SNACK_SODIUM_MAX = 300.0
+MEAL_PROTEIN_MIN = 12.0  # 동반 포함 단백질 g
+MAX_FAT_SHARE = 0.30  # 지방 열량 비중 상한
+SNACK_KCAL_MAX = 250.0
+SNACK_SUGAR_MAX = 15.0
+# 나트륨 대표값이 없는 군은 원재료 위주 계열만 허용한다 (닭가슴살·달걀·과일·두부류)
+_LOW_SODIUM_FAMILIES = frozenset({"샐러드·채소·나물", "육류·수산물·달걀", "과일", "두부·묵·콩·견과류"})
+# 가공육·내장·튀김·설탕 양념·진한 국물은 영양 기준을 통과해도 건강식으로 권하지 않는다
+_UNHEALTHY_NAME = re.compile(r"런천|베이컨|소시지|햄|곱창|대창|막창|껍데기|삼겹|오겹|차돌|튀김|김구이|데리야끼|곰탕|설렁탕|감자탕|부대|스팸|족발|갈비|덮밥")
+# 인스턴트·가공 위주 계열은 건강식 풀에서 제외한다 (일반 추천 경로에는 그대로 남는다)
+_HEALTHY_SKIP_FAMILIES = frozenset({"면류", "버거·피자·샌드위치", "분식류", "튀김류", "빵·과자·디저트", "음료", "기타", "소스·양념", "김치·절임"})
+
+
+def is_healthy(cand: Candidate) -> bool:
+    """감량·건강 목표에 권할 만한 군인지 — 나트륨·단백질·지방 비중·당류로 판정한다."""
+    if cand.family in _HEALTHY_SKIP_FAMILIES or _UNHEALTHY_NAME.search(cand.name):
+        return False
+    sodium = cand.total_sodium
+    if cand.role == ROLE_SNACK:
+        return (cand.calories <= SNACK_KCAL_MAX
+                and (sodium is None or sodium <= SNACK_SODIUM_MAX)
+                and (cand.sugar is None or cand.sugar <= SNACK_SUGAR_MAX))
+    if sodium is None:
+        if cand.family not in _LOW_SODIUM_FAMILIES:
+            return False
+    elif sodium > MEAL_SODIUM_MAX:
+        return False
+    return (cand.total_protein >= MEAL_PROTEIN_MIN
+            and cand.fat * 9 <= MAX_FAT_SHARE * cand.total_calories)
+
+
+def healthy_candidates(
+    db: Session, budget_kcal: int, *, index: GroupIndex | None = None,
+    meal_type: str | None = None, companions: Companions | None = None,
+    exclude_keys: frozenset[str] = frozenset(), top: int = HEALTHY_TOP,
+) -> list[Candidate]:
+    """감량·건강 목표 사용자용 건강식 후보 — 이력과 무관하게 영양 기준으로 고른다.
+
+    풀은 유사 후보와 같은 군 풀(역할·대표값 검증 완료)이고, 단백질 밀도 순으로 계열마다 하나씩
+    확보한다. 근거(healthy)는 랭킹에서 인기와 개인 이력 사이의 바닥값으로 쓰인다.
+    """
+    index = index or load_group_index(db)
+    choices = companions if companions is not None else {
+        g.key: index.companion_of(g.key) for g in index.by_id.values()
+    }
+    pool = [c for c in _similarity_pool(db, index)
+            if c.key not in exclude_keys and _eligible(c, budget_kcal, meal_type, choices) and is_healthy(c)]
+    for c in pool:
+        c.source, c.healthy = "healthy", 1.0
+    pool.sort(key=_health_key)
+    return _round_robin_by_family(pool, top)
+
+
+def _health_key(cand: Candidate):
+    """단백질 밀도(g/100kcal)에서 나트륨 밀도(mg/kcal)를 뺀 값이 클수록 먼저. 예산 적합은 랭킹이 본다."""
+    density = cand.total_protein / cand.total_calories * 100
+    sodium_density = (cand.total_sodium or 0.0) / cand.total_calories
+    return (-(density - sodium_density), cand.key)
 
 
 def merge(*groups: list[Candidate]) -> list[Candidate]:
@@ -306,6 +384,7 @@ def merge(*groups: list[Candidate]) -> list[Candidate]:
             existing = merged[cand.key]
             existing.freq = max(existing.freq, cand.freq)
             existing.popularity = max(existing.popularity, cand.popularity)
+            existing.healthy = max(existing.healthy, cand.healthy)
             if (cand.collaborative, cand.collaborative_support) > (existing.collaborative, existing.collaborative_support):
                 existing.collaborative = cand.collaborative
                 existing.collaborative_support = cand.collaborative_support

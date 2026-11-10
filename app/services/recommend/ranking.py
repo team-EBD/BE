@@ -29,6 +29,8 @@ POPULARITY_CONFIDENCE = 0.55  # 전체 인기의 개인 선호 근거는 더 약
 DEFAULT_ACCEPTANCE = 0.5  # 채택 데이터 없을 때의 중립값
 UNDER_BUDGET_PENALTY = 0.5  # 미달분 감점 배율
 OVER_BUDGET_PENALTY = 2.0  # 초과분 감점 배율
+DIET_UNDER_BUDGET_PENALTY = 0.2  # 감량·건강 목표의 미달 감점 — 가벼운 메뉴가 예산 미달로 밀리지 않게
+HEALTHY_CONFIDENCE = 0.4  # 건강식 생성기 근거 — 사용자 10명 안팎의 인기(≈0.35~0.4)와 비슷하고 반복된 개인 이력(1.0)보다 약하다
 TOP_K = 3
 MAX_PERSONAL_IN_TOP = 2  # 강제 상한이 아닌, 점수가 가까울 때의 개인 후보 목표
 DIVERSITY_PENALTY = 0.04
@@ -41,6 +43,7 @@ class RankContext:
     protein_gap: float  # 오늘 단백질 부족분 g (양수면 부족)
     recency: Mapping[str, float] = field(default_factory=dict)  # key → 질림 감점 0~1
     acceptance: Mapping[str, float] = field(default_factory=dict)  # key → 섭취율 0~1
+    under_penalty: float = UNDER_BUDGET_PENALTY  # 목표별 미달 감점 배율 (감량·건강은 DIET_UNDER_BUDGET_PENALTY)
 
 
 @dataclass
@@ -50,11 +53,11 @@ class Ranked:
     parts: dict[str, float]  # 항목별 0~1 점수. diversity 만 실제 차감 점수
 
 
-def fit_score(calories: float, budget: int) -> float:
+def fit_score(calories: float, budget: int, under: float = UNDER_BUDGET_PENALTY) -> float:
     if budget <= 0:
         return 0.0
     if calories <= budget:
-        return max(0.0, 1.0 - UNDER_BUDGET_PENALTY * (budget - calories) / budget)
+        return max(0.0, 1.0 - under * (budget - calories) / budget)
     return max(0.0, 1.0 - OVER_BUDGET_PENALTY * (calories - budget) / budget)
 
 
@@ -73,11 +76,13 @@ def score(cand: Candidate, ctx: RankContext, max_freq: float | None = None) -> R
     popularity = _saturate(cand.popularity, POPULARITY_HALF_SATURATION)
     similarity = _unit(cand.similarity)
     collaborative = _unit(cand.collaborative)
+    healthy = _unit(cand.healthy)
     relevance = max(freq, SIMILARITY_CONFIDENCE * similarity,
-                    0.85 * collaborative, POPULARITY_CONFIDENCE * popularity)
+                    0.85 * collaborative, POPULARITY_CONFIDENCE * popularity,
+                    HEALTHY_CONFIDENCE * healthy)
     # 예산 적합은 메인 + 동반(밥) 합산으로 — 김치찌개 320 단독은 예산 630 에 '가벼움'이지만
     # 실제 식사(찌개+밥 620)는 '적정'이다 (docs/음식군-DB-계약.md §8)
-    fit = fit_score(cand.total_calories, ctx.budget)
+    fit = fit_score(cand.total_calories, ctx.budget, ctx.under_penalty)
     protein = (
         _unit(cand.total_protein / ctx.protein_gap) if ctx.protein_gap > 0 else 0.0
     )
@@ -95,6 +100,7 @@ def score(cand: Candidate, ctx: RankContext, max_freq: float | None = None) -> R
             "popularity": round(popularity, 3),
             "similarity": round(similarity, 3),
             "collaborative": round(collaborative, 3),
+            "healthy": round(healthy, 3),
             "relevance": round(relevance, 3),
             "fit": round(fit, 3),
             "protein": round(protein, 3),
