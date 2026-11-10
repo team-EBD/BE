@@ -121,6 +121,7 @@ def select_cards(
     meal_type: str, mood: str, k: int = 3, epsilon: float = 0.1,
     rng: random.Random | None = None,
     surface: str = "recommendation",
+    require_healthy: bool = False,
 ) -> tuple[list[Ranked], dict]:
     """홈은 첫 카드, 추천 탭은 마지막 카드를 탐색하고 나머지는 공통 순위로 결정한다."""
     epsilon = max(0.0, min(0.3, epsilon))
@@ -171,6 +172,23 @@ def select_cards(
         )
         selected.append(next_card)
         fixed.add(next_card.candidate.key)
+    # 감량·건강 목표: 건강식 근거(healthy)가 있는 카드를 한 장 보장한다. 탐색 슬롯은 건드리지 않고
+    # 나머지 중 점수가 가장 낮은 카드를 바꾼다. 이 아래의 features·decision 은 바뀐 selected 기준이다.
+    forced = None
+    if require_healthy and count >= 2 and not any(r.candidate.healthy > 0 for r in selected):
+        chosen_keys = {r.candidate.key for r in selected}
+        pool = [c for c in unique if c.healthy > 0 and c.key not in chosen_keys]
+        if pool:
+            slots = [i for i in range(len(selected)) if i + 1 != bandit_position]
+            drop = min(slots, key=lambda i: (selected[i].score, selected[i].candidate.key))
+            others = [r for i, r in enumerate(selected) if i != drop]
+            forced = min((after_selected(score(c, ctx), others) for c in pool),
+                         key=lambda r: (-r.score, r.candidate.key))
+            fixed.discard(selected[drop].candidate.key)
+            fixed.add(forced.candidate.key)
+            selected[drop] = forced
+            if drop < len(prefix):
+                prefix[drop] = forced
     selected_features = {
         r.candidate.key: (feature_map[r.candidate.key] if pos == bandit_position
                           else features(r, meal_type, mood, pos, surface))
@@ -200,6 +218,7 @@ def select_cards(
         "fixed_keys": [r.candidate.key for r in selected if r.candidate.key in fixed],
         "fixed_prefix_keys": [r.candidate.key for r in prefix], "action_keys": list(probabilities),
         "greedy_key": best.candidate.key if best else None,
+        "require_healthy": require_healthy, "forced_key": forced.candidate.key if forced else None,
         "selected_keys": [r.candidate.key for r in selected],
         "probabilities": {**probabilities, **{key: 1.0 for key in fixed}},
         "action_probabilities": probabilities, "selected_features": selected_features,

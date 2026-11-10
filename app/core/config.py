@@ -77,6 +77,9 @@ class Settings(BaseSettings):
     recommend_engine: str = "v2"
     # 홈은 첫 카드, 추천 탭은 마지막 카드를 탐색한다. 0은 탐색만 끄고 학습은 유지한다.
     recommend_bandit_epsilon: float = Field(default=0.1, ge=0, le=0.3)
+    # 감량·건강 목표(lose_weight/eat_healthy) 사용자에게 건강식 후보·한 장 보장·미달 감점 완화를 적용한다.
+    # 문제가 보이면 env RECOMMEND_HEALTHY_ENABLED=false 로 재배포 없이 끈다 (그 외 목표는 영향 없음).
+    recommend_healthy_enabled: bool = True
 
     # FE 스토어 배포 전에는 기존 일일 한도를 유지한다.
     ai_premium_gate: bool = False

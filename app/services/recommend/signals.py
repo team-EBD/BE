@@ -16,7 +16,8 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.timeutil import from_db, kst_date_of, kst_day_bounds
-from app.models import MealItem, MealRecord, NutritionItem, User
+from app.models import EatingHabit, MealItem, MealRecord, NutritionItem, User, UserProfile
+from app.services.goals import resolve_primary_goal
 from app.services.matching import normalize_name, per_serving_representatives
 from app.services.summary import get_goals
 
@@ -563,6 +564,13 @@ def meal_budget(
         protein_gap=round(float(goals["protein"]) - float(today_protein), 1),
         mood=mood,
     )
+
+
+def user_goal(db: Session, user_id: int) -> str:
+    """추천에 쓸 사용자 목표 — 세분화 목표(primary_goal)가 없으면 예전 meal_goal 을 대응시킨다."""
+    profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user_id))
+    habit = db.scalar(select(EatingHabit).where(EatingHabit.user_id == user_id))
+    return resolve_primary_goal(profile.primary_goal if profile else None, habit.meal_goal if habit else None)
 
 
 def budget_label(calories: float, budget: int) -> str:
