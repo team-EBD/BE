@@ -85,7 +85,7 @@ def test_v2_menu_response_shape_and_no_ai_call(client, auth_headers, db_factory,
     # 최근 먹은 메뉴를 강제로 유지하지 않는다. 유사 음식도 개인 이력에 기반한 추천이다.
     assert any(m["source"] in ("personal", "similar") for m in menus)
     for m in menus:
-        assert m["source"] in ("personal", "popular", "similar", "catalog", "collaborative")
+        assert m["source"] in ("personal", "popular", "similar", "catalog", "collaborative", "healthy")  # 가볍게는 건강식 경로
         assert m["recommendation_item_id"] > 0
         if m["source"] == "similar":
             assert any(anchor in m["reason"] for anchor in ("김치찌개", "제육볶음"))

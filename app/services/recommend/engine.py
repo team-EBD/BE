@@ -141,7 +141,9 @@ def recommend(
     companions = _companion_choices(index, personal_companions)
     options = {"meal_type": meal_type, "companions": companions}
     goal = user_goal(db, user_id)
-    healthy_mode = settings.recommend_healthy_enabled and goal in HEALTHY_GOALS
+    # 감량·건강 목표이거나 '가볍게'를 고른 요청이면 건강식 경로를 켠다 (2026-11-12: 가볍게는 예산 -20% 만으로는
+    # 목표 열량이 큰 사용자에게 고기구이가 그대로 나왔다).
+    healthy_mode = settings.recommend_healthy_enabled and (goal in HEALTHY_GOALS or mood == "light")
     # 표시 수보다 넓게 모아 랭킹이 예산·최근 섭취·채택률을 비교할 기회를 남긴다.
     personal = personal_frequent(personal_stats, budget.meal_budget, top=max(24, k) + len(blocked), **options)
     # 즐겨 먹던 큰 메뉴는 현재 예산에 넘쳐도 더 가벼운 유사 메뉴의 기준이 될 수 있다.
@@ -164,7 +166,7 @@ def recommend(
         exclude_keys=frozenset(blocked), top=max(15, k), **options,
     )
     healthy = healthy_candidates(
-        db, budget.meal_budget, index=index, exclude_keys=frozenset(blocked), **options,
+        db, budget.meal_budget, index=index, exclude_keys=frozenset(blocked), rng=rng or random.SystemRandom(), **options,
     ) if healthy_mode else []
     candidates = [c for c in merge(personal, pop, similar, collaborative, healthy) if c.key not in blocked]
     enrich_similarity(candidates, anchors)
@@ -195,6 +197,7 @@ def recommend(
         surface=surface, require_healthy=healthy_mode,
     )
     decision["goal"] = goal
+    decision["healthy_mode"] = healthy_mode
     decision["generator_counts"] = {
         "personal": len(personal), "popular": len(pop), "similar": len(similar),
         "collaborative": len(collaborative), "healthy": len(healthy),
