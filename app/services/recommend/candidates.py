@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import math
+import random
 import re
 from collections import deque
 from collections.abc import Mapping
@@ -242,6 +243,7 @@ def nutrient_similar(
     choices = companions if companions is not None else {
         g.key: index.companion_of(g.key) for g in index.by_id.values()
     }
+    from .ranking import fit_score
     skip = set(exclude_keys) | {a.key for a in anchors}
     pool = [c for c in _similarity_pool(db, index)
             if c.key not in skip and _eligible(c, budget_kcal, meal_type, choices)]
@@ -255,7 +257,8 @@ def nutrient_similar(
             if kind:
                 queue.append(replace(cand, source="similar", similarity=sim,
                                      similar_to=anchor.group_name or anchor.name, similar_type=kind))
-        queue.sort(key=lambda c: (-c.similarity, c.key))
+        # 같은 계열은 유사도가 동점이라, 이름순이면 '가·갈' 메뉴(갈매기살·갈비)가 늘 앞에 선다. 예산 적합도로 가른다.
+        queue.sort(key=lambda c: (-c.similarity, -fit_score(c.total_calories, budget_kcal), c.key))
         queues.append(queue)
     picked: list[Candidate] = []
     seen: set[str] = set()
@@ -294,15 +297,24 @@ def catalog_fallback(
     return _round_robin_by_family(pool, top)
 
 
-def _round_robin_by_family(pool: list[Candidate], top: int) -> list[Candidate]:
+def _round_robin_by_family(
+    pool: list[Candidate], top: int, *, rotate: int = 0, rng: random.Random | None = None,
+) -> list[Candidate]:
     """한 계열의 세부 메뉴가 처음 top개를 독점하면 랭킹에서 다양성을 회복할 수 없다.
 
     정렬된 pool 에서 계열마다 하나씩 확보하고, 남은 자리는 다음 회차에서 채운다.
+    rotate > 1 이면 계열마다 상위 rotate 개의 순서를 rng 로 섞는다 (건강식 첫 카드 회전용).
     """
     queues: dict[str, deque[Candidate]] = {}
     for cand in pool:
         kind = cand.family or _profile(cand).kind or cand.key
         queues.setdefault(kind, deque()).append(cand)
+    if rotate > 1 and rng is not None:
+        for kind, queue in queues.items():
+            items = list(queue)
+            head = items[:rotate]
+            rng.shuffle(head)
+            queues[kind] = deque(head + items[rotate:])
     picked: list[Candidate] = []
     while len(picked) < max(0, top) and any(queues.values()):
         for queue in queues.values():
@@ -312,47 +324,55 @@ def _round_robin_by_family(pool: list[Candidate], top: int) -> list[Candidate]:
 
 
 HEALTHY_TOP = 6
-MEAL_SODIUM_MAX = 700.0  # 1일 나트륨 권장 2,000 mg 의 한 끼 몫 (동반 밥 포함)
+HEALTHY_ROTATE = 3  # 계열마다 상위 n개 안에서 난수로 순서를 섞어 첫 화면이 모두 같은 카드가 되지 않게
+MEAL_SODIUM_MAX = 1000.0  # 동반 밥 포함 mg — 된장국·미역국 한 그릇이 800~1,000 이라 그 위만 뺀다
 SNACK_SODIUM_MAX = 300.0
-MEAL_PROTEIN_MIN = 12.0  # 동반 포함 단백질 g
-MAX_FAT_SHARE = 0.30  # 지방 열량 비중 상한
+MEAL_FAT_MAX = 20.0  # 메인 1인분 지방 g — 드레싱 샐러드(9 g)는 두고 수육(32 g)·훈제오리(38 g)는 뺀다
 SNACK_KCAL_MAX = 250.0
-SNACK_SUGAR_MAX = 15.0
-# 나트륨 대표값이 없는 군은 원재료 위주 계열만 허용한다 (닭가슴살·달걀·과일·두부류)
-_LOW_SODIUM_FAMILIES = frozenset({"샐러드·채소·나물", "육류·수산물·달걀", "과일", "두부·묵·콩·견과류"})
-# 가공육·내장·튀김·설탕 양념·진한 국물은 영양 기준을 통과해도 건강식으로 권하지 않는다
-_UNHEALTHY_NAME = re.compile(r"런천|베이컨|소시지|햄|곱창|대창|막창|껍데기|삼겹|오겹|차돌|튀김|김구이|데리야끼|곰탕|설렁탕|감자탕|부대|스팸|족발|갈비|덮밥")
-# 인스턴트·가공 위주 계열은 건강식 풀에서 제외한다 (일반 추천 경로에는 그대로 남는다)
-_HEALTHY_SKIP_FAMILIES = frozenset({"면류", "버거·피자·샌드위치", "분식류", "튀김류", "빵·과자·디저트", "음료", "기타", "소스·양념", "김치·절임"})
+SNACK_SUGAR_MAX = 15.0  # 유제품·음료의 당류 g 상한 — 과일·고구마의 자연 당은 보지 않는다
+_SUGAR_FAMILIES = frozenset({"유제품", "음료"})
+# 건강식은 사람이 정한 메뉴 범주가 1차 기준이다. 영양 수치만으로 고르면 닭꼬치구이·도가니탕처럼 수치는
+# 좋아도 아무도 건강식이라 부르지 않는 메뉴가 먼저 올라온다 (2026-11-12). 수치는 아래 안전망으로만 쓴다.
+_HEALTHY_NAME = re.compile(
+    r"샐러드|비빔밥|나물밥|곤드레|콩나물밥|닭가슴살|닭안심|두부|청국장"
+    r"|고등어|삼치|갈치|가자미|조기|황태|북어|연어|생선"
+    r"|오징어(찜|볶음|조림|덮밥)|낙지(찜|볶음|덮밥|비빔밥)|새우(구이|찜|볶음)|조개(탕|구이)|해물찜|콩나물찜"
+    r"|된장국|미역국|콩나물국|무국|뭇국|달걀국|달걀탕|샤브|백숙|삼계탕"
+    r"|콩국수|메밀국수|죽(?!순)|오믈렛|계란덮밥|쌈밥|월남쌈"
+    r"|달걀|계란|고구마|과일|견과|요거트|요구르트|두유|오트밀|현미|잡곡|곤약"
+)
+# 범주에 걸려도 가공육·내장·튀김·부침(…전)·기름진 중식·견과 죽·설탕 양념·진한 국물·롤은 뺀다
+_UNHEALTHY_NAME = re.compile(
+    r"런천|베이컨|소시지|햄|곱창|대창|막창|껍데기|삼겹|오겹|차돌|튀김|김구이|데리야끼|곰탕|설렁탕|감자탕|부대|스팸|족발|갈비|탕수|롤"
+    r"|전$|마파|땅콩죽|잣죽|들깨죽|흑임자죽|깨죽|맛탕"
+)
+_HEALTHY_SKIP_FAMILIES = frozenset({"버거·피자·샌드위치", "분식류", "튀김류", "빵·과자·디저트", "기타", "소스·양념", "김치·절임"})
 
 
 def is_healthy(cand: Candidate) -> bool:
-    """감량·건강 목표에 권할 만한 군인지 — 나트륨·단백질·지방 비중·당류로 판정한다."""
+    """건강식 범주(_HEALTHY_NAME)에 들고 나트륨·지방·당류 안전망을 넘지 않는 군인지 판정한다."""
     if cand.family in _HEALTHY_SKIP_FAMILIES or _UNHEALTHY_NAME.search(cand.name):
+        return False
+    if not _HEALTHY_NAME.search(cand.name):
         return False
     sodium = cand.total_sodium
     if cand.role == ROLE_SNACK:
-        return (cand.calories <= SNACK_KCAL_MAX
-                and (sodium is None or sodium <= SNACK_SODIUM_MAX)
-                and (cand.sugar is None or cand.sugar <= SNACK_SUGAR_MAX))
-    if sodium is None:
-        if cand.family not in _LOW_SODIUM_FAMILIES:
-            return False
-    elif sodium > MEAL_SODIUM_MAX:
-        return False
-    return (cand.total_protein >= MEAL_PROTEIN_MIN
-            and cand.fat * 9 <= MAX_FAT_SHARE * cand.total_calories)
+        sugary = cand.family in _SUGAR_FAMILIES and cand.sugar is not None and cand.sugar > SNACK_SUGAR_MAX
+        return cand.calories <= SNACK_KCAL_MAX and (sodium is None or sodium <= SNACK_SODIUM_MAX) and not sugary
+    return (sodium is None or sodium <= MEAL_SODIUM_MAX) and cand.fat <= MEAL_FAT_MAX
 
 
 def healthy_candidates(
     db: Session, budget_kcal: int, *, index: GroupIndex | None = None,
     meal_type: str | None = None, companions: Companions | None = None,
     exclude_keys: frozenset[str] = frozenset(), top: int = HEALTHY_TOP,
+    rng: random.Random | None = None,
 ) -> list[Candidate]:
-    """감량·건강 목표 사용자용 건강식 후보 — 이력과 무관하게 영양 기준으로 고른다.
+    """감량·건강 목표와 '가볍게' 요청용 건강식 후보 — 이력과 무관하게 범주·영양 기준으로 고른다.
 
-    풀은 유사 후보와 같은 군 풀(역할·대표값 검증 완료)이고, 단백질 밀도 순으로 계열마다 하나씩
-    확보한다. 근거(healthy)는 랭킹에서 인기와 개인 이력 사이의 바닥값으로 쓰인다.
+    풀은 유사 후보와 같은 군 풀(역할·대표값 검증 완료)이고, 예산 적합(미달은 약하게 감점) 순으로
+    계열마다 하나씩 확보한다. rng 가 있으면 계열별 상위 HEALTHY_ROTATE 개 안에서 순서를 섞는다.
+    근거(healthy)는 랭킹에서 인기와 개인 이력 사이의 바닥값으로 쓰인다.
     """
     index = index or load_group_index(db)
     choices = companions if companions is not None else {
@@ -362,15 +382,10 @@ def healthy_candidates(
             if c.key not in exclude_keys and _eligible(c, budget_kcal, meal_type, choices) and is_healthy(c)]
     for c in pool:
         c.source, c.healthy = "healthy", 1.0
-    pool.sort(key=_health_key)
-    return _round_robin_by_family(pool, top)
-
-
-def _health_key(cand: Candidate):
-    """단백질 밀도(g/100kcal)에서 나트륨 밀도(mg/kcal)를 뺀 값이 클수록 먼저. 예산 적합은 랭킹이 본다."""
-    density = cand.total_protein / cand.total_calories * 100
-    sodium_density = (cand.total_sodium or 0.0) / cand.total_calories
-    return (-(density - sodium_density), cand.key)
+    from .ranking import DIET_UNDER_BUDGET_PENALTY, fit_score
+    pool.sort(key=lambda c: (-fit_score(c.total_calories, budget_kcal, DIET_UNDER_BUDGET_PENALTY),
+                             -c.total_protein, c.key))
+    return _round_robin_by_family(pool, top, rotate=HEALTHY_ROTATE if rng is not None else 0, rng=rng)
 
 
 def merge(*groups: list[Candidate]) -> list[Candidate]:
