@@ -110,6 +110,11 @@ def _mission_bonus(rewards: dict) -> tuple[int, int]:
     )
 
 
+def _level_up_points(rewards: dict) -> int:
+    """미션 xp 로 첫 끼에 레벨이 오르는 날의 레벨업 코인. 식사 보상 points 에는 안 들어가고 잔액에만 더해진다."""
+    return int((rewards.get("level_up") or {}).get("points") or 0)
+
+
 def test_meal_create_returns_rewards(client, auth_headers):
     body = create_meal(client, auth_headers, meal_on(_logical_today()))
     rewards = body["rewards"]
@@ -120,7 +125,9 @@ def test_meal_create_returns_rewards(client, auth_headers):
     assert rewards["pet_growth"]["pet_code"] == "pet_cat"
     assert rewards["pet_growth"]["bond_day_added"] is True
     assert rewards["pet_growth"]["bond_days"] == 1
-    assert home(client, auth_headers)["profile"]["points"] == catalog.POINTS_PER_MEAL + bonus_points
+    assert home(client, auth_headers)["profile"]["points"] == (
+        catalog.POINTS_PER_MEAL + bonus_points + _level_up_points(rewards)
+    )
 
 
 def test_photo_meal_gives_more_xp(client, auth_headers):
