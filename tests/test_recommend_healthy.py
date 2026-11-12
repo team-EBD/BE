@@ -29,25 +29,35 @@ def _cand(name, *, family=GRILL, role="meal", calories=300, protein=20, fat=8, s
                      companion_sodium=companion_sodium, **kw)
 
 
-def test_is_healthy_checks_sodium_protein_fat_and_skips_processed_families_and_names():
+def test_is_healthy_is_a_curated_category_with_nutrient_guardrails():
     fish = _cand("고등어구이", calories=278, protein=20, fat=10, sodium=362,
                  companion_kcal=300, companion_protein=5.5, companion_sodium=5)
     assert is_healthy(fish)
-    assert not is_healthy(_cand("건새우볶음", sodium=1334))  # 나트륨 초과
-    assert not is_healthy(_cand("삼겹살구이", calories=660, protein=34, fat=50, sodium=500))  # 이름 제외
-    assert not is_healthy(_cand("라면", family="면류", sodium=1330))  # 인스턴트 계열 제외
-    assert not is_healthy(_cand("버섯볶음", calories=142, protein=4, fat=5, sodium=300))  # 단백질 부족
-    assert not is_healthy(_cand("닭구이", calories=250, protein=21, fat=12, sodium=300))  # 지방 열량 43%
-    # 나트륨 대표값이 없으면 원재료 위주 계열만 허용한다
+    # 사람이 건강식이라 부르는 메뉴는 수치가 조금 빠져도 들어온다
+    assert is_healthy(_cand("비빔밥", family="밥류", calories=560, protein=18, fat=14, sodium=716))
+    assert is_healthy(_cand("샐러드", family="샐러드·채소·나물", calories=130, protein=3, fat=9, sodium=310))  # 드레싱 지방 62%
+    assert is_healthy(_cand("된장국", family="국·탕·찌개류", calories=83, protein=6, fat=2, sodium=845,
+                            companion_kcal=300, companion_protein=5.5, companion_sodium=5))
     assert is_healthy(_cand("닭가슴살", family="육류·수산물·달걀", calories=165, protein=35, fat=3, sodium=None))
-    assert not is_healthy(_cand("소고기볶음", sodium=None))
+    # 수치가 좋아도 범주 밖이면 건강식이 아니다 (닭꼬치구이·도가니탕이 1순위로 올라오던 문제)
+    assert not is_healthy(_cand("닭꼬치구이", calories=272, protein=48, fat=2, sodium=183))
+    assert not is_healthy(_cand("도가니탕", family="국·탕·찌개류", calories=160, protein=34, fat=1, sodium=598))
+    assert not is_healthy(_cand("건새우볶음", sodium=1334))
+    # 범주 안이어도 안전망에 걸리면 뺀다
+    assert not is_healthy(_cand("연어구이", calories=335, protein=40, fat=18, sodium=2058))  # 나트륨
+    assert not is_healthy(_cand("수육", calories=500, protein=44, fat=32, sodium=35))  # 지방 g
+    assert not is_healthy(_cand("갈치튀김", family="튀김류", calories=117, protein=7, fat=8, sodium=258))
+    assert not is_healthy(_cand("삼겹살구이", calories=660, protein=34, fat=50, sodium=500))
+    assert not is_healthy(_cand("연어롤", family="밥류", calories=510, protein=19, fat=15, sodium=1212))
+    assert not is_healthy(_cand("라면", family="면류", sodium=1330))
 
 
-def test_is_healthy_snack_limits_calories_sodium_sugar_and_skips_drinks():
-    assert is_healthy(_cand("그릭요거트", family="유제품", role="snack", calories=120, protein=10, fat=3, sodium=50, sugar=8))
+def test_is_healthy_snack_allows_natural_sugar_but_caps_dairy_and_drinks():
+    assert is_healthy(_cand("고구마", family="샐러드·채소·나물", role="snack", calories=190, protein=2, fat=0, sodium=15, sugar=24))
+    assert is_healthy(_cand("두유", family="음료", role="snack", calories=139, protein=7, fat=5, sodium=160, sugar=7))
     assert is_healthy(_cand("달걀", family="육류·수산물·달걀", role="snack", calories=79, protein=7, fat=5, sodium=None))
     assert not is_healthy(_cand("요구르트(액상)", family="유제품", role="snack", calories=123, protein=3, fat=1, sodium=59, sugar=17))
-    assert not is_healthy(_cand("레몬홍차", family="음료", role="snack", calories=88, protein=22, fat=0, sodium=4))
+    assert not is_healthy(_cand("레몬홍차", family="음료", role="snack", calories=88, protein=22, fat=0, sodium=4))  # 범주 밖
     assert not is_healthy(_cand("옥수수", family="샐러드·채소·나물", role="snack", calories=278, protein=10, fat=3, sodium=73))
 
 
@@ -77,7 +87,8 @@ def test_healthy_candidates_filters_the_group_pool_and_spreads_families():
     picked = healthy_candidates(None, 600, index=_index(), meal_type="lunch")
     names = [c.name for c in picked]
     assert set(names) == {"닭가슴살 샐러드", "고등어구이", "삼치구이"}
-    assert names[0] == "닭가슴살 샐러드"  # 단백질 밀도가 가장 높다
+    assert names[0] == "고등어구이"  # 예산 600 에 가장 맞는 578 kcal
+    assert picked[0].family != picked[1].family  # 계열마다 하나씩 먼저
     assert all(c.source == "healthy" and c.healthy == 1.0 for c in picked)
     fish = next(c for c in picked if c.name == "고등어구이")
     assert fish.companion_name == "쌀밥" and fish.total_sodium == pytest.approx(367)
@@ -86,6 +97,15 @@ def test_healthy_candidates_filters_the_group_pool_and_spreads_families():
     assert two == {"샐러드·채소·나물", GRILL}
     assert "닭가슴살샐러드" not in {c.key for c in healthy_candidates(
         None, 600, index=_index(), meal_type="lunch", exclude_keys=frozenset({"닭가슴살샐러드"}))}
+
+
+def test_healthy_candidates_rotate_within_family_when_rng_given():
+    plain = [c.name for c in healthy_candidates(None, 600, index=_index(), meal_type="lunch")]
+    seen = {tuple(c.name for c in healthy_candidates(None, 600, index=_index(), meal_type="lunch", rng=random.Random(seed)))
+            for seed in range(12)}
+    assert all(set(order) == set(plain) for order in seen)  # 같은 집합 안에서 순서만 바뀐다
+    assert len(seen) > 1  # 시드에 따라 첫 카드가 달라진다
+    assert all(order[0] != order[1] for order in seen)
 
 
 def test_healthy_candidates_snack_path_uses_snack_roles_only():
